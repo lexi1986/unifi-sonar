@@ -1,0 +1,11 @@
+# Nooit committen: lokale instellingen en sleutels
+.env
+config.json
+data/
+scripts/local.env
+# Omgeving en caches
+.venv/
+__pycache__/
+.pytest_cache/
+.claude/
+.DS_Store
