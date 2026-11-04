@@ -6,6 +6,8 @@ UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en a
 
 > Onofficieel hobbyproject. Niet verbonden aan of goedgekeurd door Ubiquiti. "UniFi" is een merk van Ubiquiti Inc.
 
+![Netwerkoverzicht van UniFi Sonar (demodata)](docs/screenshots/overzicht.png)
+
 ## Wat het kan
 
 - **Overzicht:** netwerkscore, open meldingen, je netwerk als boom (gateway → switches → AP's), wifi per access point en grafieken van internetlatency en wifi-ervaring.
@@ -21,6 +23,19 @@ UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en a
 - **Meldingen negeren** voor 1 dag, 1 week, 30 dagen of altijd, bijvoorbeeld een laadpaal die nu eenmaal op 100 Mbit draait.
 - **Pagina's** voor apparaten (radio's, poortenraster, PoE, historie), clients (signaal, retries, ervaring en roaming per apparaat), beveiliging en een tijdlijn met gebeurtenissen.
 - **Demomodus** met een nagebootst netwerk, zodat je zonder controller kunt rondkijken.
+
+## Screenshots
+
+Alle screenshots tonen de ingebouwde demodata.
+
+| | |
+|---|---|
+| ![Issues met uitleg en advies](docs/screenshots/issues.png) | ![Client die na een AP-herstart op een verre AP blijft hangen](docs/screenshots/client-detail.png) |
+| **Issues:** elke melding met uitleg en advies, gegroepeerd op oorzaak | **Clientdetail:** de Kindle bleef na een herstart van AP Boven hangen op de verre AP Schuur |
+| ![Access point met radio's en kanaalbezetting](docs/screenshots/ap-detail.png) | ![IPS-blokkades per regel en bron](docs/screenshots/beveiliging.png) |
+| **Access point:** dekkingsprobleem, radio's, kanaalbezetting en historie | **Beveiliging:** wat de IPS tegenhield, met eigen apparaten apart gemarkeerd |
+| ![Setup-wizard bij eerste gebruik](docs/screenshots/wizard.png) | <img src="docs/screenshots/mobiel.png" alt="Overzicht op een telefoon" width="260"> |
+| **Setup-wizard** bij de eerste start | **Ook op je telefoon** |
 
 ## Wat je nodig hebt
 

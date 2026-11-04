@@ -158,8 +158,9 @@
   const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings };
   let current = null;
   function route() {
-    const name = (location.hash.replace(/^#\/?/, "").split("/")[0]) || "overzicht";
+    const [name, id] = location.hash.replace(/^#\/?/, "").split("/");
     current = routes[name] ? name : "overzicht";
+    state.pendingOpen = id ? decodeURIComponent(id) : null;   // deep link naar een detailpaneel
     document.querySelectorAll(".nav a, .iconlink").forEach((a) => { if (a.dataset.route === current) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     update();
     $("#view").focus({ preventScroll: true });
@@ -174,6 +175,12 @@
     const v = $("#view");
     if (v.dataset.mounted !== current) routes[current]();
     UPDATERS[current]?.();
+    if (state.pendingOpen) {
+      const id = state.pendingOpen;
+      state.pendingOpen = null;
+      if (devByMac()[id]) openDrawer("device", id);
+      else if (cliByMac()[id]) openDrawer("client", id);
+    }
   }
   const UPDATERS = {};
   function mount(name, html) {
@@ -793,14 +800,16 @@
   function openDrawer(type, id, from) {
     lastFocus = from || document.activeElement;
     state.drawer = { type, id };
+    history.replaceState(null, "", `#/${current}/${encodeURIComponent(id)}`);   // deelbare link
     $("#drawer").classList.add("open"); $("#scrim").classList.add("open");
     $("#drawer").setAttribute("aria-hidden", "false");
     renderDrawer();
     markSelected();
-    setTimeout(() => $("#drawer-close").focus(), 50);
+    if (from) setTimeout(() => $("#drawer-close").focus(), 50);   // bij een deep link de focus niet wegtrekken
   }
   function closeDrawer() {
     state.drawer = null;
+    history.replaceState(null, "", `#/${current}`);
     $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open");
     $("#drawer").setAttribute("aria-hidden", "true");
     markSelected();

@@ -373,3 +373,4 @@ details.adv > summary { cursor: pointer; font-weight: 600; color: var(--me-text-
 .checks li { display: flex; gap: 10px; align-items: center; }
 .wiz-card .banner { margin: 16px 0 0; }
 .wiz-foot { text-align: center; font-size: 12px; margin-top: 16px; }
+#view:focus { outline: none; }
