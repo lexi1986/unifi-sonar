@@ -15,8 +15,13 @@ say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mFout:\033[0m %s\n' "$*" >&2; exit 1; }
 run() { if [ -n "$DRY" ]; then echo "   [dry-run] $*"; else "$@"; fi; }
 ask() {   # ask "vraag" "standaard"
+  # De vraag gaat rechtstreeks naar de terminal: deze functie draait binnen $(...), dus stdout wordt
+  # opgevangen, en 'read -p' schrijft naar stderr (dat mag je hier dus niet wegsturen).
   local a=""
-  if { : </dev/tty; } 2>/dev/null; then read -r -p "$1 [$2]: " a </dev/tty 2>/dev/null || true; fi
+  if { : </dev/tty; } 2>/dev/null; then
+    printf '%s [%s]: ' "$1" "$2" >/dev/tty
+    read -r a </dev/tty || true
+  fi
   printf '%s' "${a:-$2}"
 }
 
