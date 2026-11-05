@@ -102,11 +102,29 @@ Met *Testbericht sturen* zie je direct of het aankomt. Wat al openstond toen je 
 
 ## Bijwerken
 
-Draai het installatiecommando gewoon opnieuw; je instellingen en historie blijven staan. In een Proxmox-container kan het ook vanaf de host:
+Je instellingen en historie blijven bij bijwerken altijd staan.
+
+**In een Proxmox-container:** open de console van de container en typ:
 
 ```bash
-pct exec <container-id> -- bash /root/install-unifi-sonar.sh
+update
 ```
+
+Het commando kijkt of er een nieuwe versie op GitHub staat, laat zien wat er veranderd is en werkt alles bij. Bij het inloggen in de container zie je ook welke versie draait en op welk adres. Vanaf de Proxmox-host kan het ook:
+
+```bash
+pct exec <container-id> -- update
+```
+
+**Op Debian, Ubuntu of een Raspberry Pi:**
+
+```bash
+sudo unifi-sonar-update
+```
+
+Met `--check` kijk je alleen of er een update is; met `--force` installeer je opnieuw, ook als je al de nieuwste versie hebt. De poort die je bij het installeren koos, blijft behouden.
+
+Heb je UniFi Sonar geïnstalleerd vóór versie 1.2? Draai dan één keer het installatiecommando opnieuw (of `pct exec <container-id> -- bash /root/install-unifi-sonar.sh`). Daarna is `update` beschikbaar.
 
 ## Privacy en veiligheid
 
@@ -165,7 +183,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | `app/mock.py` | Nagebootst netwerk met ingebouwde problemen (demomodus) |
 | `web/` | Dashboard (vanilla JS, geen build-stap) |
 | `web/world.js` | Landsgrenzen voor de wereldkaart, gemaakt met `tools/make_world.py` uit Natural Earth |
-| `scripts/` | Installeren (Linux, Proxmox) en `dev-deploy.sh` om lokale code naar een test-LXC te zetten |
+| `scripts/` | Installeren (Linux, Proxmox), bijwerken (`update.sh`, wordt het commando `update`) en `dev-deploy.sh` om lokale code naar een test-LXC te zetten |
 
 Ideeën en verbeteringen zijn welkom via issues en pull requests. Plak bij een probleem de debug-info uit *Instellingen → Probleemoplossing*.
 

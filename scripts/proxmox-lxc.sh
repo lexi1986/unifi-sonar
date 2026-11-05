@@ -88,5 +88,6 @@ if [ -z "$DRY" ]; then
   IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
   echo
   say "Klaar! Open http://$IP$([ "$PORT" = 80 ] || echo ":$PORT") en volg de setup-wizard."
-  echo "    Bijwerken later: pct exec $CTID -- bash /root/install-unifi-sonar.sh"
+  echo "    Bijwerken later: typ 'update' in de console van de container,"
+  echo "    of vanaf de host: pct exec $CTID -- update"
 fi

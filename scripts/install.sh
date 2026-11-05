@@ -4,12 +4,16 @@
 #   curl -fsSL https://raw.githubusercontent.com/lexi1986/unifi-sonar/main/scripts/install.sh | sudo bash
 #
 # Opnieuw draaien = bijwerken naar de nieuwste versie; je instellingen en historie blijven staan.
-# Variabelen: PORT (standaard 80), BRANCH (main), REPO, SOURCE_DIR (lokale code i.p.v. git).
+# Daarna kan bijwerken ook met `unifi-sonar-update`, en in een container gewoon met `update`.
+# Variabelen: PORT (standaard 80, of de poort van een bestaande installatie), BRANCH (main), REPO,
+# SOURCE_DIR (lokale code i.p.v. git).
 set -euo pipefail
 
 REPO="${REPO:-https://github.com/lexi1986/unifi-sonar.git}"
 BRANCH="${BRANCH:-main}"
-PORT="${PORT:-80}"
+# Bij bijwerken de poort van de bestaande service houden, tenzij je PORT zelf opgeeft.
+CUR_PORT=$(sed -n 's/.*--port \([0-9][0-9]*\).*/\1/p' /etc/systemd/system/unifi-sonar.service 2>/dev/null | head -n 1 || true)
+PORT="${PORT:-${CUR_PORT:-80}}"
 SOURCE_DIR="${SOURCE_DIR:-}"
 APP=/opt/unifi-sonar
 DATA=/var/lib/unifi-sonar
@@ -82,6 +86,28 @@ EOF
 systemctl daemon-reload
 systemctl enable -q "$SVC"
 systemctl restart "$SVC"
+
+say "Commando 'update' installeren"
+TMPU=$(mktemp /usr/local/bin/.unifi-sonar-update.XXXXXX)
+install -m 755 "$APP/scripts/update.sh" "$TMPU"
+mv -f "$TMPU" /usr/local/bin/unifi-sonar-update   # nieuw bestand i.p.v. overschrijven: een lopende update merkt er niets van
+if systemd-detect-virt -q --container 2>/dev/null; then
+  # Zoals de Proxmox community-scripts: in de console van de container is `update` genoeg.
+  if [ ! -e /usr/bin/update ] || [ "$(readlink /usr/bin/update 2>/dev/null)" = /usr/local/bin/unifi-sonar-update ]; then
+    ln -sfn /usr/local/bin/unifi-sonar-update /usr/bin/update
+  fi
+  SUFFIX=$([ "$PORT" = 80 ] || echo ":$PORT")
+  cat > /etc/profile.d/00-unifi-sonar.sh <<BANNER
+# UniFi Sonar: korte info bij het inloggen (gemaakt door install.sh)
+case \$- in *i*) ;; *) return 0 2>/dev/null || exit 0 ;; esac
+_v=\$(sed -n 's/^VERSION = "\(.*\)"/\1/p' $APP/app/__init__.py 2>/dev/null)
+_ip=\$(hostname -I 2>/dev/null | awk '{print \$1}')
+printf '\n  \033[1;36mUniFi Sonar\033[0m %s\n' "\$_v"
+printf '  Dashboard:  http://%s$SUFFIX\n' "\$_ip"
+printf '  Bijwerken:  typ \033[1mupdate\033[0m\n\n'
+unset _v _ip
+BANNER
+fi
 
 for _ in $(seq 1 20); do
   if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$PORT/api/status', timeout=2)" 2>/dev/null; then
