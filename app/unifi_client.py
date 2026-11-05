@@ -326,6 +326,18 @@ def normalize_flow(f: dict) -> dict:
     }
 
 
+def normalize_usage(rows: list[dict]) -> list[dict]:
+    """Rapportregels → [{ts, rx, tx}] in bytes; rx = gedownload, tx = geüpload (WAN1 + WAN2)."""
+    out = []
+    for r in rows:
+        if not r.get("time"):
+            continue
+        rx = (_num(r.get("wan-rx_bytes"), 0) or 0) + (_num(r.get("wan2-rx_bytes"), 0) or 0)
+        tx = (_num(r.get("wan-tx_bytes"), 0) or 0) + (_num(r.get("wan2-tx_bytes"), 0) or 0)
+        out.append({"ts": int(r["time"] / 1000), "rx": round(rx), "tx": round(tx)})
+    return out
+
+
 def _block_reason(f: dict) -> str:
     """Waardoor een verbinding tegengehouden werd, in gewone woorden."""
     for p in f.get("policies") or []:
@@ -549,6 +561,17 @@ class UnifiClient:
                                        "start": since_s * 1000, "end": until_s * 1000})
         r.raise_for_status()
         return normalize_speedtests(r.json().get("data", []))
+
+    async def usage(self, period: str, since_s: int, until_s: int) -> list[dict]:
+        """Internetverbruik per dag of maand (stat/report/daily.site, monthly.site), alle WAN-poorten samen."""
+        self._legacy_only()
+        report = {"day": "daily", "month": "monthly"}[period]
+        r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/stat/report/{report}.site",
+                                 headers=self._write_headers(),
+                                 json={"attrs": ["wan-rx_bytes", "wan-tx_bytes", "wan2-rx_bytes", "wan2-tx_bytes", "time"],
+                                       "start": since_s * 1000, "end": until_s * 1000})
+        r.raise_for_status()
+        return normalize_usage(r.json().get("data", []))
 
     async def fetch_ips(self, since_ms: int, until_ms: int) -> list[dict] | None:
         """Door de IPS geblokkeerde flows. None = niet beschikbaar met deze bron."""

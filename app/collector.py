@@ -12,7 +12,7 @@ from .config import Settings
 from .db import DB
 from .mock import MockNetwork
 from .notify import Notifier
-from .unifi_client import (UnifiClient, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_speedtest_state,
+from .unifi_client import (UnifiClient, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
                            normalize_speedtests, wan_rates)
 
 log = logging.getLogger(__name__)
@@ -63,6 +63,7 @@ class Collector:
         self._st_checked = 0
         self.speedtest = {"running": False, "started": None, "error": None}
         self.flows_available: bool | None = True if self.mock else None
+        self._usage_checked = 0
         self._flows_checked = 0
 
     async def _fetch(self, dt: float) -> dict:
@@ -287,6 +288,26 @@ class Collector:
             log.warning("Speedtest-historie: %s", e)
             self.optional["speedtest"] = str(e)
 
+    async def sync_usage(self, force: bool = False) -> None:
+        """Datagebruik per dag en maand van de controller overnemen (elk uur), zodat het langer bewaard blijft."""
+        now = int(time.time())
+        if not force and now - self._usage_checked < 3600:
+            return
+        self._usage_checked = now
+        try:
+            for period, days in (("day", 400), ("month", 3 * 366)):
+                if self.mock:
+                    rows = normalize_usage(self.mock.usage_report(period, now))
+                else:
+                    if self.client.source not in ("legacy-key", "legacy-login"):
+                        return
+                    rows = await self.client.usage(period, now - days * 86400, now)
+                self.db.store_usage(period, rows)
+            self.optional["usage"] = None
+        except Exception as e:  # noqa: BLE001 – optioneel
+            log.warning("Datagebruik: %s", e)
+            self.optional["usage"] = str(e)
+
     # ---------------------------------------------------------------- tick
     async def tick(self, ts: int | None = None, dt: float | None = None) -> dict:
         ts = int(ts or time.time())
@@ -302,6 +323,7 @@ class Collector:
         snap["config"] = self.config
         if not self.mock or ts >= time.time() - 120:   # demo: alleen bij echte metingen, niet tijdens het vullen
             await self.sync_speedtests()
+            await self.sync_usage()
         issues = rules.evaluate(snap, self.db, self.s.thresholds, ts)
         self.db.sync_issues(issues, ts)
         snap["issues"] = issues

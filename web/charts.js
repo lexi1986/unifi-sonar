@@ -164,5 +164,91 @@
     });
   }
 
-  window.MEcharts = { lineChart, SERIES };
+  /* Gestapelde staafgrafiek: barChart(el, { series:[{name, color, data:[v, ...]}], labels:[t, ...], unit, fmt,
+     xfmt (aslabel), tfmt (tooltip-kop), height, label, highlight (index die als 'lopend' getoond wordt) }) */
+  function barChart(container, opts) {
+    const series = opts.series;
+    const n = opts.labels.length;
+    container.innerHTML = "";
+    container.classList.add("chart");
+    if (!n) { container.innerHTML = '<div class="chart-empty">Nog geen gegevens</div>'; return; }
+    const fmt = opts.fmt || ((v) => v.toLocaleString("nl-NL"));
+    if (series.length >= 2) {
+      const lg = document.createElement("div");
+      lg.className = "chart-legend";
+      series.forEach((s) => { const sp = document.createElement("span"); sp.innerHTML = `<i style="background:${s.color}"></i>`; sp.append(s.name); lg.appendChild(sp); });
+      container.appendChild(lg);
+    }
+    const W = Math.max(260, container.clientWidth || 600);
+    const H = opts.height || 200;
+    const m = { l: 44, r: 12, t: 10, b: 24 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const totals = opts.labels.map((_, i) => series.reduce((a, s) => a + (s.data[i] || 0), 0));
+    const yt = niceTicks(0, Math.max(...totals, 1), 4);
+    const y1 = yt[yt.length - 1];
+    const y = (v) => m.t + ih - (v / y1) * ih;
+    const slot = iw / n, bw = Math.max(2, Math.min(28, slot * 0.72));
+    const xc = (i) => m.l + slot * i + slot / 2;
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": opts.label || "Staafgrafiek" });
+    container.appendChild(svg);
+    yt.forEach((v) => {
+      el("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: "grid-line" }, svg);
+      const tx = el("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end", class: "axis-label" }, svg);
+      tx.textContent = fmt(v);
+    });
+    const step = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(iw / 70))));
+    for (let i = n - 1; i >= 0; i -= step) {   // vanaf rechts, zodat de laatste periode altijd een label heeft
+      const tx = el("text", { x: xc(i), y: H - 6, "text-anchor": "middle", class: "axis-label" }, svg);
+      tx.textContent = opts.xfmt(opts.labels[i]);
+    }
+    const bars = [];
+    for (let i = 0; i < n; i++) {
+      const g = el("g", { class: "bar" + (i === opts.highlight ? " running" : "") }, svg);
+      let base = 0;
+      const segs = series.map((s) => s.data[i] || 0);
+      const top = segs.reduce((k, v, j) => (v > 0 ? j : k), -1);
+      segs.forEach((v, j) => {
+        if (v <= 0) return;
+        const yTop = y(base + v), yBot = y(base), x0 = xc(i) - bw / 2, h = Math.max(0, yBot - yTop - (j > 0 ? 2 : 0));
+        const r = j === top ? Math.min(4, bw / 2, h) : 0;   // afgeronde bovenkant, 2px ruimte tussen de lagen
+        const yb = yTop + h;
+        el("path", { d: `M${x0},${yb}V${yTop + r}Q${x0},${yTop} ${x0 + r},${yTop}H${x0 + bw - r}Q${x0 + bw},${yTop} ${x0 + bw},${yTop + r}V${yb}Z`,
+          fill: series[j].color }, g);
+        base += v;
+      });
+      bars.push(g);
+    }
+    const tip = document.createElement("div");
+    tip.className = "tooltip";
+    container.appendChild(tip);
+    const hit = el("rect", { x: m.l, y: m.t, width: iw, height: ih, class: "hit", tabindex: 0,
+      "aria-label": "Grafiek: gebruik pijltjestoetsen om waarden te bekijken" }, svg);
+    let cur = -1;
+    function show(i) {
+      cur = Math.max(0, Math.min(n - 1, i));
+      bars.forEach((b, k) => b.classList.toggle("dim", k !== cur));
+      tip.innerHTML = `<div class="tt-time">${opts.tfmt(opts.labels[cur])}${cur === opts.highlight ? " · nog bezig" : ""}</div>` +
+        series.map((s) => `<div class="tt-row"><span><i class="sw" style="background:${s.color};width:8px;height:8px;border-radius:2px"></i>${s.name}</span><b>${fmt(s.data[cur] || 0)}</b></div>`).join("") +
+        `<div class="tt-row"><span>Totaal</span><b>${fmt(totals[cur])}</b></div>`;
+      tip.classList.add("show");
+      const px = xc(cur) * (container.clientWidth / W), tw = tip.offsetWidth;
+      tip.style.left = (px + 14 + tw > container.clientWidth ? px - tw - 14 : px + 14) + "px";
+      tip.style.top = (container.querySelector(".chart-legend") ? 28 : 4) + "px";
+    }
+    function hide() { bars.forEach((b) => b.classList.remove("dim")); tip.classList.remove("show"); }
+    hit.addEventListener("pointermove", (e) => {
+      const r = svg.getBoundingClientRect();
+      show(Math.floor((((e.clientX - r.left) * (W / r.width)) - m.l) / slot));
+    });
+    hit.addEventListener("pointerleave", hide);
+    hit.addEventListener("blur", hide);
+    hit.addEventListener("focus", () => show(cur < 0 ? n - 1 : cur));
+    hit.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") { show(cur - 1); e.preventDefault(); }
+      if (e.key === "ArrowRight") { show(cur + 1); e.preventDefault(); }
+      if (e.key === "Escape") hit.blur();
+    });
+  }
+
+  window.MEcharts = { lineChart, barChart, SERIES };
 })();

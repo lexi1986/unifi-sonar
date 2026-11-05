@@ -437,6 +437,56 @@ def debug_info():
 
 
 # ----------------------------------------------------------------------- internet
+@app.get("/api/usage")
+def usage():
+    """Datagebruik per dag (laatste 90 dagen) en per maand (laatste 24 maanden), met de lopende periodes apart."""
+    collector, db = _need()
+    now = time.localtime()
+    day0 = int(time.mktime(now[:3] + (0, 0, 0, 0, 0, -1)))
+    month0 = int(time.mktime((now.tm_year, now.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+    prev0 = int(time.mktime((now.tm_year - (now.tm_mon == 1), (now.tm_mon - 2) % 12 + 1, 1, 0, 0, 0, 0, 0, -1)))
+    days = db.usage("day", day0 - 89 * 86400)
+    months = db.usage("month", month0 - 730 * 86400)
+    pick = lambda rows, ts: next(({"rx": r["rx"], "tx": r["tx"]} for r in rows if r["ts"] == ts), None)  # noqa: E731
+    full = [r for r in days if r["ts"] < day0][-30:]
+    avg = {"rx": sum(r["rx"] for r in full) / len(full), "tx": sum(r["tx"] for r in full) / len(full)} if full else None
+    return {"days": days, "months": months, "today": pick(days, day0), "this_month": pick(months, month0),
+            "last_month": pick(months, prev0), "avg_day": avg, "day0": day0, "month0": month0,
+            "since": db.q("SELECT MIN(ts) t FROM usage WHERE period='day'")[0]["t"],
+            "error": collector.optional.get("usage")}
+
+
+@app.get("/api/me")
+def me(request: Request, ip: str | None = Query(None, max_length=45)):
+    """Het apparaat waarmee je dit dashboard bekijkt, herkend aan het IP-adres van de browser."""
+    collector, db = _need()
+    addr = request.client.host if request.client else ""
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd and addr in ("127.0.0.1", "::1"):   # achter een reverse proxy op dezelfde machine
+        addr = fwd.split(",")[0].strip()
+    if ip and collector.mock:   # alleen in de demo: een apparaat nadoen
+        addr = ip
+    snap = collector.latest or {}
+    clients = snap.get("clients", [])
+    c = next((x for x in clients if x.get("ip") == addr), None)
+    if c is None and collector.mock and not ip:
+        c = next((x for x in clients if x["name"] == "iPhone"), None)   # demo: doe alsof je op de iPhone kijkt
+    if c is None:
+        return {"found": False, "ip": addr}
+    devs = {d["mac"]: d for d in snap.get("devices", [])}
+    up = devs.get(c.get("ap_mac") or c.get("sw_mac") or "", {})
+    lt = time.localtime()
+    day0 = int(time.mktime(lt[:3] + (0, 0, 0, 0, 0, -1)))
+    issues = [{"title": i["title"], "severity": i["severity"]} for i in snap.get("issues", [])
+              if i.get("client_mac") == c["mac"] and not i.get("muted")]
+    return {"found": True, "ip": addr, "demo": collector.mock is not None and addr != c.get("ip"),
+            "client": {k: c.get(k) for k in ("mac", "name", "ip", "vendor", "wired", "ssid", "band", "channel", "proto",
+                                              "signal", "satisfaction", "tx_rate_mbps", "rx_rate_mbps", "retry_pct",
+                                              "assoc_ts", "uptime", "sw_port", "network")},
+            "uplink": {"mac": up.get("mac"), "name": up.get("name"), "type": up.get("type")},
+            "roams_today": db.client_roams_since(c["mac"], day0), "issues": issues}
+
+
 @app.get("/api/internet")
 async def internet(hours: float = Query(24, gt=0, le=24 * 31)):
     collector, db = _need()

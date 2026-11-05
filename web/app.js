@@ -307,6 +307,7 @@
       <div class="page-head"><div><h1>Netwerkoverzicht</h1><p class="subtitle" id="ov-sub"></p></div>${rangeSeg("ov-range")}</div>
       <div id="ov-banner"></div>
       <section class="grid kpis" id="ov-kpis" aria-label="Kerncijfers"></section>
+      <section class="card me-card" id="ov-me" hidden aria-label="Dit apparaat"></section>
       <section class="grid cols-main" style="margin-bottom:16px">
         <div class="card"><div class="card-head"><h2 style="margin:0">Wat vraagt aandacht</h2><a href="#/issues" class="linkbtn">Alle issues</a></div><div class="issue-list" id="ov-issues"></div></div>
         <div class="card"><div class="card-head"><h2 style="margin:0">Netwerk</h2><span class="muted" id="ov-topo-sub"></span></div><div class="topo" id="ov-topo"></div></div>
@@ -320,8 +321,43 @@
     bindIssueActions($("#ov-issues"), () => UPDATERS.overzicht());
     $("#ov-topo").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("device", n.dataset.id, n); });
     $("#ov-aps").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("device", n.dataset.id, n); });
+    $("#ov-me").addEventListener("click", async (e) => {
+      if (await reconnectAction(e)) return;
+      const n = e.target.closest("[data-open]");
+      if (n) openDrawer(n.dataset.open, n.dataset.id, n);
+    });
+  }
+  // ---- het apparaat waarmee je kijkt (herkend aan je IP-adres)
+  async function loadMe() {
+    let d;
+    try { d = await api("/api/me"); } catch (e) { return; }
+    const el = $("#ov-me");
+    if (!el || current !== "overzicht") return;
+    if (!d.found) { el.hidden = true; return; }
+    const c = d.client, up = d.uplink || {};
+    const stat = (k, v) => `<div class="me-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+    const where = c.wired
+      ? stat("Bedraad via", `${up.mac ? `<button class="linkbtn plain" data-open="device" data-id="${esc(up.mac)}">${esc(up.name || "–")}</button>` : "–"}${c.sw_port ? ` <span class="muted">poort ${c.sw_port}</span>` : ""}`)
+      : stat("Verbonden met", up.mac ? `<button class="linkbtn plain" data-open="device" data-id="${esc(up.mac)}">${esc(up.name || "–")}</button>` : "–") +
+        stat("Band", `${esc(c.band || "–")} GHz <span class="muted">· kanaal ${esc(c.channel ?? "–")}</span>`) +
+        stat("Signaal", signalBars(c.signal, c.band)) +
+        stat("Snelheid", `${nf(c.tx_rate_mbps)} <span class="muted">/ ${nf(c.rx_rate_mbps)} Mbit/s</span>`);
+    const roams = d.roams_today || [];
+    const tip = !c.wired && c.band === "2.4" && c.signal != null && c.signal >= -60
+      ? `<div class="me-hint">${icon("bulb")}<span>Je zit op 2.4 GHz terwijl het signaal sterk is. Kan dit apparaat ook 5 of 6 GHz, dan helpt <b>Opnieuw verbinden</b> vaak: het kiest dan opnieuw.</span></div>` : "";
+    el.hidden = false;
+    el.innerHTML = `<div class="me-row">
+        <div class="me-id"><span class="me-ic">${icon(c.wired ? "cable" : "wifi")}</span><div>
+          <div class="me-label">Dit apparaat${d.demo ? ` <span class="badge">demo</span>` : ""}</div>
+          <div class="me-name">${esc(c.name)}</div>
+          <div class="cell-sub">${esc(c.ip)}${c.ssid ? ` · ${esc(c.ssid)}` : ""}${c.assoc_ts ? ` · verbonden sinds ${stamp(c.assoc_ts)}` : ""}</div></div></div>
+        <div class="me-stats">${where}${stat("Ervaring", c.satisfaction == null ? "–" : nf(c.satisfaction))}
+          ${c.wired ? "" : stat("AP-wissels vandaag", `${roams.length}${roams[0] ? ` <span class="muted" title="${esc(roams.slice(0, 5).map((r) => `${hhmm(r.ts)} ${r.message.split(": ").pop()}`).join("\n"))}">laatst ${hhmm(roams[0].ts)}</span>` : ""}`)}</div>
+        <div class="me-act"><button class="btn" data-open="client" data-id="${esc(c.mac)}">Details</button>${c.wired ? "" : `<button class="btn" data-reconnect="${esc(c.mac)}">Opnieuw verbinden</button>`}</div>
+      </div>${tip}${d.issues?.length ? `<div class="me-issues">${d.issues.map((i) => sevBadge(i.severity) + `<span>${esc(i.title)}</span>`).join("")}</div>` : ""}`;
   }
   UPDATERS.overzicht = function () {
+    loadMe();
     const s = state.snap, h = s.health;
     const devs = s.devices, online = devs.filter((d) => d.state === "online").length;
     const wifi = s.clients.filter((c) => !c.wired).length;
@@ -559,7 +595,8 @@
   };
 
   // ------------------------------------------------------------------ internet
-  const net = { hours: store.get("net.hours", 24), live: [], timer: null, data: null, last: null, wasRunning: false };
+  const net = { hours: store.get("net.hours", 24), live: [], timer: null, data: null, last: null, wasRunning: false,
+                usage: null, usagePeriod: store.get("net.usage", "day") };
   const mb = (bps) => (bps == null ? null : bps / 1e6);
   const mbTxt = (v) => (v == null ? "–" : nf(v, v < 10 ? 1 : 0));
   const dateTxt = (t, withTime) => new Date(t * 1000).toLocaleString("nl-NL", withTime ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short" });
@@ -575,6 +612,10 @@
         <div class="card" id="net-test" aria-live="polite"></div>
       </section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>Internetverkeer</h3><span class="muted" id="net-hist-sub"></span></div><div id="net-hist"></div></section>
+      <section class="card" style="margin-bottom:16px" id="net-usage"><div class="card-head"><h3>Datagebruik</h3>
+          <div class="seg" role="group" aria-label="Per dag of per maand" id="net-usage-seg">${[["day", "Per dag"], ["month", "Per maand"]].map(([k, l]) => `<button data-p="${k}" aria-pressed="${net.usagePeriod === k}">${l}</button>`).join("")}</div></div>
+        <div class="usage-kpis" id="net-usage-kpis"></div><div id="net-usage-chart"></div>
+        <p class="help" id="net-usage-note" style="margin:8px 0 0"></p></section>
       <section class="card"><div class="card-head"><h3>Speedtests</h3><span class="muted" id="net-st-sub">afgelopen 90 dagen</span></div><div id="net-st-chart"></div>
         <div class="table-wrap" style="border:0;margin-top:12px" id="net-st-table"></div></section>`);
     $("#net-range").addEventListener("click", (e) => {
@@ -584,6 +625,12 @@
       loadInternet();
     });
     $("#net-test").addEventListener("click", (e) => { if (e.target.closest("[data-st=start]")) startSpeedtest(); });
+    $("#net-usage-seg").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-p]"); if (!b) return;
+      net.usagePeriod = b.dataset.p; store.set("net.usage", net.usagePeriod);
+      $("#net-usage-seg").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+      renderUsage();
+    });
     net.live = []; net.last = null;
     api("/api/internet?hours=0.25").then((d) => {   // de live-grafiek begint met het laatste kwartier
       net.live = d.series.filter((p) => p.rx != null).map((p) => ({ t: p.t + 30, rx: mb(p.rx), tx: mb(p.tx) }));
@@ -616,7 +663,36 @@
     $("#net-st-table").innerHTML = st.length ? `<table><thead><tr><th>Wanneer</th><th class="r">Download</th><th class="r">Upload</th><th class="r">Ping</th><th>Server</th></tr></thead><tbody>
       ${st.slice(-10).reverse().map((r) => `<tr style="cursor:default"><td class="num">${dateTxt(r.ts, true)}</td><td class="r num">${mbTxt(r.down)} Mbit/s</td><td class="r num">${mbTxt(r.up)} Mbit/s</td><td class="r num">${r.latency == null ? "–" : nf(r.latency) + " ms"}</td><td class="muted">${esc(r.server || "–")}</td></tr>`).join("")}</tbody></table>`
       : `<div class="empty">Nog geen speedtests. Start er hierboven een.</div>`;
-    renderNetKpis(); renderTest();
+    renderNetKpis(); renderTest(); loadUsage();
+  }
+  async function loadUsage() {
+    try { net.usage = await api("/api/usage"); } catch (e) { return; }
+    if (current === "internet") renderUsage();
+  }
+  const gb = (b) => (b == null ? "–" : b >= 1e12 ? `${nf(b / 1e12, 2)} TB` : b >= 1e9 ? `${nf(b / 1e9, b >= 1e11 ? 0 : 1)} GB` : `${nf(b / 1e6)} MB`);
+  function renderUsage() {
+    const u = net.usage;
+    if (!u || !$("#net-usage-chart")) return;
+    const tile = (label, v, sub) => `<div class="usage-kpi"><div class="k">${label}</div><div class="v">${v ? gb(v.rx + v.tx) : "–"}</div><div class="cell-sub">${v ? `↓ ${gb(v.rx)} · ↑ ${gb(v.tx)}` : ""}${sub ? ` · ${sub}` : ""}</div></div>`;
+    const tm = u.this_month, lm = u.last_month;
+    const pace = tm && u.avg_day ? (() => {   // verwachting voor de hele maand op basis van het gemiddelde per dag
+      const d = new Date(), days = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+      return `verwacht ~${gb((u.avg_day.rx + u.avg_day.tx) * days)}`;
+    })() : "";
+    $("#net-usage-kpis").innerHTML = tile("Vandaag", u.today, "tot nu") + tile("Deze maand", tm, pace) + tile("Vorige maand", lm) +
+      tile("Gemiddeld per dag", u.avg_day, "laatste 30 dagen");
+    const rows = net.usagePeriod === "month" ? u.months.slice(-24) : u.days.slice(-60);
+    const running = rows.length && rows[rows.length - 1].ts === (net.usagePeriod === "month" ? u.month0 : u.day0) ? rows.length - 1 : -1;
+    const toGb = (b) => b / 1e9;
+    MEcharts.barChart($("#net-usage-chart"), {
+      labels: rows.map((r) => r.ts), highlight: running, height: 210,
+      series: [{ name: "Download", color: C.cyan, data: rows.map((r) => toGb(r.rx)) }, { name: "Upload", color: C.violet, data: rows.map((r) => toGb(r.tx)) }],
+      fmt: (v) => `${nf(v, v < 10 && v > 0 ? 1 : 0)} GB`, label: `Datagebruik ${net.usagePeriod === "month" ? "per maand" : "per dag"}`,
+      xfmt: (t) => new Date(t * 1000).toLocaleDateString("nl-NL", net.usagePeriod === "month" ? { month: "short", year: "2-digit" } : { day: "numeric", month: "short" }),
+      tfmt: (t) => new Date(t * 1000).toLocaleDateString("nl-NL", net.usagePeriod === "month" ? { month: "long", year: "numeric" } : { weekday: "long", day: "numeric", month: "long" }),
+    });
+    $("#net-usage-note").textContent = u.error ? `Ophalen lukte niet: ${u.error}`
+      : u.since ? `Gegevens van je gateway sinds ${new Date(u.since * 1000).toLocaleDateString("nl-NL", { day: "numeric", month: "long", year: "numeric" })}. Sonar bewaart ze zelf, dus de historie groeit vanaf nu.` : "";
   }
   const normal = (key) => {   // wat is normaal voor deze verbinding: mediaan van de tests
     const v = (net.data?.speedtests || []).map((r) => r[key]).filter(Boolean).sort((a, b) => a - b);
@@ -1888,7 +1964,7 @@
     }
   });
   let rt;
-  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); } if (current === "wereld") renderWorld(); if (state.drawer) renderDrawer(); }, 250); });
+  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); renderUsage(); } if (current === "wereld") renderWorld(); if (state.drawer) renderDrawer(); }, 250); });
   window.addEventListener("hashchange", route);
   route();
   refresh();

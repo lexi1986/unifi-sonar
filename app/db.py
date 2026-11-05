@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS flows (id TEXT PRIMARY KEY, ts INT, dir TEXT, action 
     port INT, domain TEXT, service TEXT, proto TEXT, client_mac TEXT, client_name TEXT, client_ip TEXT, net TEXT,
     up INT, down INT, risk TEXT, reason TEXT);
 CREATE INDEX IF NOT EXISTS ix_flows ON flows(ts);
+CREATE TABLE IF NOT EXISTS usage (period TEXT, ts INT, rx REAL, tx REAL, PRIMARY KEY (period, ts));
 CREATE INDEX IF NOT EXISTS ix_ips ON ips_events(ts);
 CREATE INDEX IF NOT EXISTS ix_dev ON device_samples(mac, ts);
 CREATE INDEX IF NOT EXISTS ix_radio ON radio_samples(mac, ts);
@@ -202,6 +203,20 @@ class DB:
             "AND domain IS NOT NULL GROUP BY domain ORDER BY bytes DESC LIMIT 8", (since,))]
         return {"countries": countries, "totals": {k: tot[k] or 0 for k in tot.keys()},
                 "clients": clients, "domains": domains}
+
+    # ------------------------------------------------------------- datagebruik per dag/maand
+    def store_usage(self, period: str, rows: list[dict]) -> None:
+        """Rapportregels van de controller; de lopende dag/maand wordt telkens overschreven."""
+        with self.lock, self.conn:
+            self.conn.executemany("INSERT OR REPLACE INTO usage VALUES (?,?,?,?)",
+                                  [(period, r["ts"], r["rx"], r["tx"]) for r in rows])
+
+    def usage(self, period: str, since: int) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT ts, rx, tx FROM usage WHERE period=? AND ts>=? ORDER BY ts", (period, since))]
+
+    def client_roams_since(self, mac: str, since: int) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT ts, message FROM events WHERE kind='roam' AND entity_id=? AND ts>=? "
+                                        "ORDER BY ts DESC LIMIT 50", (mac, since))]
 
     def blocked_flows(self, since: int) -> list[dict]:
         return [dict(r) for r in self.q(

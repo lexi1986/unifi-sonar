@@ -79,3 +79,27 @@ def test_demo_speedtest_end_to_end(tmp_path, monkeypatch):
             assert "minuut" in str(e)
 
     asyncio.run(flow())
+
+
+def test_usage_and_me_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setenv("NO_DOTENV", "1")
+    from fastapi.testclient import TestClient
+    from app import main
+    from app.unifi_client import normalize_usage
+    assert normalize_usage([{"time": TS * 1000, "wan-rx_bytes": 10, "wan2-rx_bytes": 5, "wan-tx_bytes": 2}]) == \
+        [{"ts": TS, "rx": 15, "tx": 2}]
+    st = Settings(mode="mock", db_path=str(tmp_path / "u.db"), mock_seed_hours=1)
+    col = Collector(st, DB(st.db_path))
+    asyncio.run(col.seed_history())
+    asyncio.run(col.sync_usage(force=True))
+    col.db.store_usage("day", [{"ts": col.db.usage("day", 0)[-1]["ts"], "rx": 1, "tx": 1}])   # lopende dag overschrijven
+    monkeypatch.setattr(main.rt, "collector", col)
+    monkeypatch.setattr(main.rt, "db", col.db)
+    c = TestClient(main.app)
+    u = c.get("/api/usage").json()
+    assert len(u["days"]) == 90 and u["months"] and u["today"] == {"rx": 1, "tx": 1} and u["avg_day"]["rx"] > 1e9
+    me = c.get("/api/me").json()                       # demo: doet alsof je op de iPhone kijkt
+    assert me["found"] and me["client"]["name"] == "iPhone" and me["uplink"]["name"]
+    wired = c.get("/api/me?ip=192.168.1.10").json()
+    assert wired["client"]["wired"] and wired["client"]["name"] == "Home Assistant"
+    assert c.get("/api/me?ip=10.9.9.9").json() == {"found": False, "ip": "10.9.9.9"}

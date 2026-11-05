@@ -527,3 +527,31 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .world-wrap.globe-mode .zoom-ctl { top: 12px; right: 12px; }
 .world-wrap.globe-mode .zoom-ctl button { background: rgba(19, 28, 43, 0.85); }
 @media (max-width: 640px) { .w-head-r { width: 100%; justify-content: space-between; } }
+
+/* dit apparaat */
+.me-card { margin-bottom: 16px; }
+.me-row { display: grid; grid-template-columns: minmax(200px, 1.1fr) minmax(0, 3fr) auto; gap: 20px; align-items: center; }
+.me-id { display: flex; gap: 12px; align-items: center; min-width: 0; }
+.me-ic { width: 40px; height: 40px; border-radius: var(--me-radius-md); display: grid; place-items: center; flex: none;
+  background: var(--me-primary-tint-strong); color: var(--me-primary); }
+.me-label { font-size: 12px; color: var(--me-text-secondary); display: flex; gap: 6px; align-items: center; }
+.me-name { font-weight: 600; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.me-stats { display: flex; flex-wrap: wrap; gap: 10px 26px; }
+.me-stat .k { font-size: 12px; color: var(--me-text-secondary); margin-bottom: 2px; }
+.me-stat .v { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.me-act { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.me-hint { display: flex; gap: 8px; align-items: flex-start; margin-top: 14px; padding: 10px 12px; border-radius: var(--me-radius-md);
+  background: var(--me-warning-tint); font-size: 13px; color: var(--me-text); }
+.me-hint .icon { color: var(--me-warning); flex: none; margin-top: 1px; }
+.me-issues { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 12px; font-size: 13px; }
+@media (max-width: 1100px) { .me-row { grid-template-columns: 1fr; } .me-act { justify-content: flex-start; } }
+
+/* datagebruik */
+.usage-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+.usage-kpi { padding: 10px 12px; border: 1px solid var(--me-border); border-radius: var(--me-radius-md); background: var(--me-bg); }
+.usage-kpi .k { font-size: 12px; color: var(--me-text-secondary); }
+.usage-kpi .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0; }
+@media (max-width: 820px) { .usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.chart .bar { transition: opacity var(--me-transition-fast); }
+.chart .bar.dim { opacity: 0.45; }
+.chart .bar.running path { opacity: 0.6; }

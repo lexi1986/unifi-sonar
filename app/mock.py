@@ -486,6 +486,29 @@ class MockNetwork:
                 st["status_summary"] = 2
         return {**st, **(self.speedtest_last or {"rundate": 0, "xput_download": 0, "xput_upload": 0, "latency": 0})}
 
+    def usage_report(self, period: str, now: int) -> list[dict]:
+        """Zoals stat/report/daily.site en monthly.site: ~25–45 GB per dag, in het weekend meer."""
+        rnd, out = random.Random(5), []
+        day0 = int(time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1)))
+        days = []
+        for d in range(120, -1, -1):
+            ts = day0 - d * 86400
+            wd = time.localtime(ts).tm_wday
+            rx = rnd.uniform(18e9, 34e9) * (1.35 if wd >= 5 else 1) + (rnd.uniform(25e9, 60e9) if rnd.random() < 0.05 else 0)
+            if d == 0:
+                rx *= (now - day0) / 86400   # vandaag is nog bezig
+            days.append((ts, rx, rx * rnd.uniform(0.08, 0.16)))
+        if period == "day":
+            return [{"time": ts * 1000, "wan-rx_bytes": rx, "wan-tx_bytes": tx} for ts, rx, tx in days]
+        months: dict[int, list] = {}
+        for ts, rx, tx in days:
+            lt = time.localtime(ts)
+            key = int(time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+            m = months.setdefault(key, [0, 0])
+            m[0] += rx
+            m[1] += tx
+        return [{"time": k * 1000, "wan-rx_bytes": v[0], "wan-tx_bytes": v[1]} for k, v in sorted(months.items())]
+
     def speedtest_history(self, now: int, days: int = 30) -> list[dict]:
         """Archief zoals stat/report/archive.speedtest: elke nacht een test, één keer een slechte."""
         rnd, out = random.Random(11), []
