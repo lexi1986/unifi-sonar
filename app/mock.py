@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 
 R = random.Random(42)
 
@@ -71,6 +72,36 @@ WIRED = [  # naam, vendor, switch, poort
     ("UPS", "APC", SW_MK, 20), ("Docker Host", "Intel", SW_MK, 21), ("Mediaspeler", "Nvidia", SW_MK, 22),
 ]
 
+
+# Wie praat met welk land: (apparaat, domein, land, poort, dienst, typische grootte in bytes)
+FLOW_DEST = [
+    ("TV Woonkamer", "nflxvideo.net", "NL", 443, "HTTPS", 180_000_000), ("Apple TV Boven", "youtube.com", "NL", 443, "HTTPS", 90_000_000),
+    ("Mediaspeler", "nflxvideo.net", "NL", 443, "HTTPS", 120_000_000), ("Fire TV", "primevideo.com", "IE", 443, "HTTPS", 60_000_000),
+    ("iPhone", "icloud.com", "US", 443, "HTTPS", 2_000_000), ("iPhone", "whatsapp.net", "DE", 443, "HTTPS", 400_000),
+    ("iPhone", "spotify.com", "SE", 443, "HTTPS", 6_000_000), ("MacBook Pro", "github.com", "US", 443, "HTTPS", 1_500_000),
+    ("MacBook Pro", "apple.com", "NL", 443, "HTTPS", 3_000_000), ("Galaxy S24", "googleapis.com", "NL", 443, "HTTPS", 900_000),
+    ("Galaxy S24", "instagram.com", "IE", 443, "HTTPS", 8_000_000), ("Laptop Werk", "teams.microsoft.com", "IE", 443, "HTTPS", 12_000_000),
+    ("Laptop Werk", "outlook.office365.com", "NL", 443, "HTTPS", 900_000), ("Kantoor-PC", "zoom.us", "US", 8801, "OTHER", 15_000_000),
+    ("Kantoor-PC", "nu.nl", "NL", 443, "HTTPS", 1_200_000), ("iPad Keuken", "bol.com", "NL", 443, "HTTPS", 800_000),
+    ("PS5", "playstation.net", "US", 443, "HTTPS", 40_000_000), ("Switch Nintendo", "nintendo.net", "JP", 443, "HTTPS", 2_000_000),
+    ("Sonos Keuken", "sonos.com", "US", 443, "HTTPS", 120_000), ("Sonos Woonkamer", "spotify.com", "SE", 443, "HTTPS", 5_000_000),
+    ("Ring Deurbel", "ring.com", "US", 443, "HTTPS", 4_000_000), ("Nest Thermostaat", "nest.com", "US", 443, "HTTPS", 30_000),
+    ("Echo Dot Keuken", "avs-alexa-eu.amazon.com", "IE", 443, "HTTPS", 200_000), ("Kindle", "amazon.com", "US", 443, "HTTPS", 60_000),
+    ("Robotstofzuiger", "api.io.mi.com", "CN", 443, "HTTPS", 25_000), ("Shelly Plug Schuur", "shelly.cloud", "DE", 6022, "OTHER", 8_000),
+    ("Tado Bridge", "tado.com", "DE", 443, "HTTPS", 15_000), ("Zonnepanelen Omvormer", "solaredge.com", "IL", 443, "HTTPS", 40_000),
+    ("Garmin Edge", "garmin.com", "US", 443, "HTTPS", 300_000), ("Tesla", "tesla.com", "US", 443, "HTTPS", 1_000_000),
+    ("Bosch Vaatwasser", "home-connect.com", "DE", 443, "HTTPS", 20_000), ("NAS Synology", "backblazeb2.com", "US", 443, "HTTPS", 300_000_000),
+    ("Docker Host", "docker.io", "US", 443, "HTTPS", 50_000_000), ("Proxmox Host", "download.proxmox.com", "AT", 443, "HTTPS", 20_000_000),
+    ("Home Assistant", "nabucasa.com", "DE", 443, "HTTPS", 200_000), ("Pi-hole", "cloudflare-dns.com", "NL", 853, "DNS", 40_000),
+    ("ESP Weerstation", "openweathermap.org", "GB", 443, "HTTPS", 5_000), ("Warmtepomp", "daikineurope.com", "BE", 443, "HTTPS", 30_000),
+]
+FLOW_IN = [  # (apparaat, poort, dienst, land, grootte)
+    ("Home Assistant", 8123, "HTTPS", "NL", 900_000), ("Home Assistant", 8123, "HTTPS", "ES", 600_000),
+    ("NAS Synology", 22, "SSH", "CN", 4_000), ("NAS Synology", 22, "SSH", "US", 4_000), ("NAS Synology", 22, "SSH", "BR", 3_000),
+    ("NAS Synology", 22, "SSH", "VN", 3_000),
+]
+ATTACKER_CC = {"198.51.100.7": "RU", "198.51.100.23": "CN", "198.51.100.61": "US", "198.51.100.88": "BR",
+               "198.51.100.140": "NL", "203.0.113.9": "IN", "203.0.113.45": "KR", "203.0.113.200": "DE"}
 
 REBOOT_T = 3 * 3600   # simulatietijd waarop AP Boven herstart
 PRINTER_T = 3.5 * 3600  # simulatietijd waarop de printer naar AP Schuur zakt
@@ -306,12 +337,52 @@ class MockNetwork:
                                   "GPL SNMP public access udp", 2101411, "emerging-snmp", "medium", proto="UDP"))
         return out
 
+    def flows(self, ts: int, dt: float, rnd: random.Random | None = None) -> list[dict]:
+        """Verbindingen in het formaat van /v2/api/site/<site>/traffic-flows (zonder IPS)."""
+        rnd = rnd or R
+        hour = time.localtime(ts).tm_hour
+        busy = 1.0 if 18 <= hour < 23 else 0.6 if 7 <= hour < 18 else 0.25
+        names = {n: (_mac(0x100 + i), f"192.168.1.{100 + i}") for i, (n, *_r) in enumerate(WIRELESS)}
+        names.update({n: (_mac(0x200 + i), f"192.168.1.{10 + i}") for i, (n, *_r) in enumerate(WIRED)})
+        out = []
+        for k in range(max(1, int(dt / 60 * 22 * busy))):
+            who, domain, cc, port, svc, size = rnd.choice(FLOW_DEST)
+            if who not in names:
+                continue
+            mac, ip = names[who]
+            b = int(size * 0.12 * rnd.lognormvariate(0, 1.1))
+            t_end = ts - rnd.randint(0, int(dt))
+            ext = f"203.0.113.{rnd.randint(1, 250)}"   # documentatie-adressen
+            out.append({"id": f"mockf-{t_end}-{k}-{mac}", "action": "allowed", "direction": "outgoing", "protocol": "TCP",
+                        "flow_start_time": (t_end - rnd.randint(1, 300)) * 1000, "flow_end_time": t_end * 1000,
+                        "in": {"network_name": "Default"}, "out": {"network_name": "WAN"}, "service": svc, "risk": "low",
+                        "source": {"ip": ip, "mac": mac, "client_name": who, "port": rnd.randint(30000, 60000)},
+                        "destination": {"ip": ext, "port": port, "domains": [domain], "region": cc},
+                        "traffic_data": {"bytes_tx": int(b * 0.08), "bytes_rx": int(b * 0.92)}})
+        for k in range(int(dt / 60 * 2)):   # van buiten naar binnen: VPN, Home Assistant en de open SSH-poort
+            host, port, svc, cc, size = rnd.choice(FLOW_IN)
+            mac, ip = names[host]
+            t_end = ts - rnd.randint(0, int(dt))
+            src = f"198.51.100.{rnd.randint(1, 250)}"
+            out.append({"id": f"mockfi-{t_end}-{k}-{port}", "action": "allowed", "direction": "incoming", "protocol": "TCP",
+                        "flow_start_time": (t_end - 30) * 1000, "flow_end_time": t_end * 1000,
+                        "in": {"network_name": "WAN"}, "out": {"network_name": "Default"}, "service": svc, "risk": "low",
+                        "source": {"ip": src, "port": rnd.randint(30000, 60000), "region": cc},
+                        "destination": {"ip": ip, "mac": mac, "client_name": host, "port": port},
+                        "traffic_data": {"bytes_tx": int(size * rnd.random()), "bytes_rx": int(size * rnd.random() * 3)}})
+        if rnd.random() < 0.5:   # tussen eigen netwerken
+            out.append({"id": f"mockfl-{ts}", "action": "allowed", "direction": "local", "protocol": "UDP", "service": "DNS",
+                        "flow_end_time": ts * 1000, "source": {"ip": "192.168.1.105", "client_name": "Kindle"},
+                        "destination": {"ip": "192.168.1.22", "client_name": "Pi-hole", "port": 53},
+                        "traffic_data": {"bytes_tx": 90, "bytes_rx": 180}})
+        return out
+
     @staticmethod
     def _flow(ts, src, sname, snet, dst, dname, port, sig, sid, cat, risk, proto="TCP") -> dict:
         return {
             "id": f"mock-{ts}-{src}-{port}-{sid}", "action": "blocked", "risk": risk, "protocol": proto,
             "flow_start_time": ts * 1000, "in": {"network_name": snet}, "out": {"network_name": "Default"},
-            "source": {"ip": src, "client_name": sname, "country": None if sname else "ZZ"},
+            "source": {"ip": src, "client_name": sname, "region": None if sname else ATTACKER_CC.get(src, "CN")},
             "destination": {"ip": dst, "port": port, "client_name": dname},
             "ips": {"signature": sig, "signature_id": sid, "category_name": cat,
                     "alarm_category_potential_risk": "Demodata"},

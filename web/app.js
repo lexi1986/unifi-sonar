@@ -27,6 +27,8 @@
     roam: '<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>',
     power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
     plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
+    "arrow-up-right": '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+    "arrow-down-left": '<path d="M17 7 7 17"/><path d="M17 17H7V7"/>',
     gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
     radar: '<path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/>',
     settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
@@ -156,7 +158,7 @@
     const stale = s.last_ok && Date.now() / 1000 - s.last_ok > s.poll_seconds * 3;
     const dot = s.last_error || stale ? "err" : s.mode === "mock" ? "warn" : "";
     const src = s.mode === "mock" ? "Demodata" : `Live · ${SOURCE_LABEL[s.source] || s.source || "?"}`;
-    $("#status").innerHTML = `<span class="dot ${dot}"></span>${esc(src)} · bijgewerkt ${ago(s.last_ok)} geleden`;
+    $("#status").innerHTML = `<span class="dot ${dot}"></span>${esc(src)} · ${ago(s.last_ok)} geleden`;
     const top = (state.issues || []).filter((i) => !i.group && !i.resolved_at && !i.muted);
     const cnt = $("#nav-issues");
     cnt.textContent = top.length;
@@ -164,7 +166,7 @@
   }
 
   // ------------------------------------------------------------------ router
-  const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, internet: mountInternet, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings };
+  const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, internet: mountInternet, wereld: mountWorld, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings };
   let current = null;
   function route() {
     const [name, id] = location.hash.replace(/^#\/?/, "").split("/");
@@ -1367,6 +1369,223 @@
     $("#dr-events").innerHTML = eventsHTML(h.events.slice(0, 60));
   }
 
+  // ------------------------------------------------------------------ wereld
+  const world = { hours: store.get("world.hours", 6), show: store.get("world.show", { out: true, in: true, blocked: true }),
+                  data: null, after: 0, timer: null, seen: new Set(), focus: null };
+  const DIR = { out: ["Uitgaand", C.cyan, "arrow-up-right"], in: ["Inkomend", C.violet, "arrow-down-left"], blocked: ["Geblokkeerd", C.rose, "octagon"] };
+  const ccName = (() => {
+    let dn = null;
+    try { dn = new Intl.DisplayNames(["nl"], { type: "region" }); } catch (e) { /* oude browser */ }
+    return (cc) => { try { return (cc && dn?.of(cc)) || cc || "Onbekend"; } catch (e) { return cc; } };
+  })();
+  function bytes(b) {
+    if (b == null) return "–";
+    const u = ["B", "kB", "MB", "GB", "TB"];
+    let i = 0;
+    while (b >= 1000 && i < 4) { b /= 1000; i++; }
+    return `${nf(b, b < 10 && i ? 1 : 0)} ${u[i]}`;
+  }
+  const reduceMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  function arcPath(a, b, kind) {   // boog van a naar b; de bolling verschilt per soort zodat ze niet samenvallen
+    const [x1, y1] = a, [x2, y2] = b;
+    const d = Math.hypot(x2 - x1, y2 - y1);
+    const lift = d * ({ out: 0.28, in: 0.2, blocked: 0.36 }[kind] || 0.28);
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - lift;
+    return `M${x1},${y1} Q${mx.toFixed(1)},${my.toFixed(1)} ${x2},${y2}`;
+  }
+  function mountWorld() {
+    const W = window.WORLD;
+    mount("wereld", `
+      <div class="page-head"><div><h1>Wereld</h1><p class="subtitle">Met welke landen je netwerk praat, live uit het verkeerslogboek van je gateway.</p></div>
+        <div class="seg" role="group" aria-label="Periode" id="w-range">${[[1, "1 u"], [6, "6 u"], [24, "24 u"], [48, "48 u"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${world.hours === h}">${l}</button>`).join("")}</div></div>
+      <div id="w-banner"></div>
+      <section class="grid kpis" id="w-kpis" aria-label="Samenvatting"></section>
+      <section class="card world-card">
+        <div class="card-head"><div class="chips" role="group" aria-label="Soort verkeer" id="w-show">${Object.entries(DIR).map(([k, [l, col]]) => `<button class="chip" data-k="${k}" aria-pressed="${!!world.show[k]}"><i class="sw" style="background:${col}"></i>${l}</button>`).join("")}</div>
+          <span class="muted" id="w-live-sub"><span class="live-dot" aria-hidden="true"></span>live</span></div>
+        <div class="world-wrap" id="w-map">
+          <svg viewBox="0 0 ${W.w} ${W.h}" role="img" aria-labelledby="w-map-title" preserveAspectRatio="xMidYMid meet">
+            <title id="w-map-title">Wereldkaart met verbindingen per land</title>
+            <g class="land">${Object.entries(W.countries).filter(([, c]) => c.d).map(([cc, c]) => `<path data-cc="${cc}" d="${c.d}"/>`).join("")}</g>
+            <g class="arcs" id="w-arcs"></g><g class="pulses" id="w-pulses"></g><g id="w-home"></g>
+          </svg>
+          <div class="tooltip" id="w-tip"></div>
+        </div>
+        <div class="legend-row" id="w-legend"></div>
+      </section>
+      <section class="grid cols-2" style="margin-top:16px">
+        <div class="card"><div class="card-head"><h2 style="margin:0">Landen</h2><span class="muted" id="w-cty-sub"></span></div><div class="rank w-rank" id="w-cty"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">Live</h2><span class="muted">nieuwste eerst</span></div><ol class="ticker" id="w-ticker" aria-live="off"></ol></div>
+      </section>
+      <section class="grid cols-2" style="margin-top:16px">
+        <div class="card"><div class="card-head"><h2 style="margin:0">Apparaten</h2><span class="muted">meeste internetverkeer</span></div><div class="rank w-rank" id="w-cli"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">Bestemmingen</h2><span class="muted">meeste data</span></div><div class="rank w-rank" id="w-dom"></div></div>
+      </section>`);
+    $("#w-range").addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-h]"); if (!b) return;
+      world.hours = +b.dataset.h; store.set("world.hours", world.hours);
+      $("#w-range").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+      loadWorld();
+    });
+    $("#w-show").addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-k]"); if (!b) return;
+      world.show[b.dataset.k] = !world.show[b.dataset.k]; store.set("world.show", world.show);
+      b.setAttribute("aria-pressed", world.show[b.dataset.k]);
+      renderWorld(); renderTicker();
+    });
+    const map = $("#w-map"), tip = $("#w-tip");
+    map.addEventListener("mousemove", (e) => {
+      const t = e.target.closest("[data-cc]");
+      const cc = t?.dataset.cc;
+      if (!cc || !world.byCc?.[cc]) { tip.classList.remove("show"); setFocus(null); return; }
+      setFocus(cc);
+      tip.innerHTML = countryTip(world.byCc[cc]);
+      const r = map.getBoundingClientRect();
+      const x = Math.min(e.clientX - r.left + 14, r.width - tip.offsetWidth - 4);
+      tip.style.left = `${Math.max(4, x)}px`; tip.style.top = `${Math.max(4, e.clientY - r.top - tip.offsetHeight - 12)}px`;
+      tip.classList.add("show");
+    });
+    map.addEventListener("mouseleave", () => { tip.classList.remove("show"); setFocus(null); });
+    $("#w-cty").addEventListener("mouseover", (e) => setFocus(e.target.closest("[data-cc]")?.dataset.cc || null));
+    $("#w-cty").addEventListener("focusin", (e) => setFocus(e.target.closest("[data-cc]")?.dataset.cc || null));
+    $("#w-cty").addEventListener("mouseleave", () => setFocus(null));
+    $("#w-cli").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("client", n.dataset.id, n); });
+    world.after = 0; world.seen = new Set();
+    loadWorld(); worldLoop();
+  }
+  UPDATERS.wereld = () => loadWorld();
+  function setFocus(cc) {
+    if (world.focus === cc) return;
+    world.focus = cc;
+    $("#w-map")?.classList.toggle("focusing", !!cc);
+    document.querySelectorAll("#w-map [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));
+    document.querySelectorAll("#w-cty [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));
+  }
+  function countryTip(c) {
+    const row = (k, l, v) => (v ? `<div class="tt-row"><span><i class="sw" style="background:${DIR[k][1]}"></i>${l}</span><b>${v}</b></div>` : "");
+    return `<div class="tt-time">${esc(ccName(c.cc))}</div>
+      ${row("out", "Uitgaand", c.out_n ? `${nf(c.out_n)} × · ${bytes(c.bytes_out ?? c.up + c.down)}` : "")}
+      ${row("in", "Inkomend", c.in_n ? `${nf(c.in_n)} ×` : "")}
+      ${row("blocked", "Geblokkeerd", c.blocked_n ? `${nf(c.blocked_n)} ×` : "")}
+      ${c.domains?.length ? `<div class="tt-list">${c.domains.slice(0, 3).map((d) => `<div>${esc(d.name)} <span class="muted">${bytes(d.bytes)}</span></div>`).join("")}</div>` : ""}
+      ${c.clients?.length ? `<div class="tt-list muted">${c.clients.slice(0, 3).map((x) => esc(x.name)).join(" · ")}</div>` : ""}`;
+  }
+  async function loadWorld() {
+    let d;
+    try { d = await api(`/api/world?hours=${world.hours}`); } catch (e) { return; }
+    if (current !== "wereld") return;
+    world.data = d;
+    world.byCc = Object.fromEntries(d.countries.map((c) => [c.cc, c]));
+    $("#w-banner").innerHTML = d.available === false ? `<div class="banner err">${icon("info")}<span>Verbindingen zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).</span></div>`
+      : d.error ? `<div class="banner err">${icon("info")}<span>Verbindingen ophalen lukte niet: ${esc(d.error)}</span></div>` : "";
+    const t = d.totals, per = world.hours === 1 ? "het afgelopen uur" : `de afgelopen ${world.hours} uur`;
+    const kpi = (ic, label, v, sub) => `<div class="card compact kpi"><div class="label">${icon(ic)}${label}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`;
+    $("#w-kpis").innerHTML =
+      kpi("globe", "Landen", nf(t.countries), per) +
+      kpi("arrow-up-right", "Uitgaand", nf(t.out_n), "verbindingen") +
+      kpi("arrow-down-left", "Inkomend", nf(t.in_n), "van internet naar binnen") +
+      kpi("activity", "Data", bytes(t.bytes), "op en neer") +
+      kpi("octagon", "Geblokkeerd", nf(t.blocked_n), "door IPS en firewall");
+    renderWorld(); renderWorldLists();
+  }
+  function renderWorld() {
+    const d = world.data, W = window.WORLD;
+    if (!d || !$("#w-arcs")) return;
+    const home = W.countries[d.home]?.c || [512, 60];
+    const max = Math.max(1, ...d.countries.map((c) => c.bytes));
+    const lvl = (b) => (b > 0 ? Math.log10(1 + b) / Math.log10(1 + max) : 0);
+    document.querySelectorAll("#w-map .land path").forEach((p) => {
+      const c = world.byCc[p.dataset.cc];
+      const on = c && ((world.show.out && c.out_n) || (world.show.in && c.in_n) || (world.show.blocked && c.blocked_n));
+      p.style.fill = on && c.bytes ? `rgba(57, 216, 244, ${(0.12 + 0.5 * lvl(c.bytes)).toFixed(3)})` : on ? "rgba(251, 113, 133, 0.10)" : "";
+      p.classList.toggle("home", p.dataset.cc === d.home);
+    });
+    const maxN = Math.max(1, ...d.countries.map((c) => Math.max(c.out_n, c.in_n, c.blocked_n || 0)));
+    const arcs = [];
+    for (const c of d.countries) {
+      const to = W.countries[c.cc]?.c;
+      if (!to || c.cc === d.home) continue;
+      for (const k of ["out", "in", "blocked"]) {
+        const n = c[`${k}_n`] || 0;
+        if (!n || !world.show[k]) continue;
+        const w = 0.6 + 2.4 * (k === "out" ? lvl(c.bytes) : Math.log10(1 + n) / Math.log10(1 + maxN));
+        const path = k === "out" ? arcPath(home, to, k) : arcPath(to, home, k);
+        arcs.push(`<path data-cc="${c.cc}" class="arc ${k}" d="${path}" style="stroke:${DIR[k][1]};stroke-width:${w.toFixed(2)}"/>`);
+      }
+    }
+    $("#w-arcs").innerHTML = arcs.join("");
+    $("#w-home").innerHTML = `<circle class="home-ring" cx="${home[0]}" cy="${home[1]}" r="7"/><circle class="home-dot" cx="${home[0]}" cy="${home[1]}" r="3"/>`;
+    $("#w-legend").innerHTML = `<span><i class="sw" style="background:${C.cyan}"></i>Uitgaand: eigen apparaat → internet</span><span><i class="sw" style="background:${C.violet}"></i>Inkomend: internet → eigen apparaat</span>
+      <span><i class="sw" style="background:${C.rose}"></i>Geblokkeerd: tegengehouden door IPS of firewall</span><span>Kleur van een land: hoeveel data, dikte van de boog: hoeveel verkeer</span>`;
+    if (world.focus) { const f = world.focus; world.focus = null; setFocus(f); }
+  }
+  function renderWorldLists() {
+    const d = world.data;
+    if (!d) return;
+    const cs = d.countries.filter((c) => c.cc !== d.home || c.out_n).sort((a, b) => b.bytes - a.bytes || (b.blocked_n || 0) - (a.blocked_n || 0));
+    const max = Math.max(1, ...cs.map((c) => c.bytes));
+    const unk = d.totals.unknown_n || 0;
+    $("#w-cty-sub").textContent = `${plural(cs.length, "land", "landen")}${unk ? ` · ${nf(unk)} verbindingen zonder land` : ""}`;
+    $("#w-cty-sub").title = unk ? "UniFi geeft niet bij elke verbinding een land mee, bijvoorbeeld bij DNS naar publieke resolvers." : "";
+    $("#w-cty").innerHTML = cs.length ? cs.slice(0, 12).map((c) => `
+      <div class="rank-row w-row" data-cc="${c.cc}" tabindex="0"><div class="rank-main"><div class="rank-name"><span class="cc">${esc(c.cc)}</span>${esc(ccName(c.cc))}${c.cc === d.home ? ` <span class="muted">(thuis)</span>` : ""}</div>
+        <div class="cell-sub">${[c.out_n ? `${nf(c.out_n)} uit` : "", c.in_n ? `${nf(c.in_n)} in` : "", c.blocked_n ? `<span class="t-critical">${nf(c.blocked_n)} geblokkeerd</span>` : ""].filter(Boolean).join(" · ")}${c.domains?.[0] ? ` · ${esc(c.domains[0].name)}` : ""}</div></div>
+        <div class="rank-bar">${meter(100 * c.bytes / max)}</div><span class="num rank-n">${bytes(c.bytes)}</span></div>`).join("")
+      : `<div class="empty">Nog geen verbindingen in deze periode.</div>`;
+    const cmax = Math.max(1, ...d.clients.map((c) => c.bytes));
+    $("#w-cli").innerHTML = d.clients.length ? d.clients.map((c) => `
+      <div class="rank-row"><div class="rank-main"><div class="rank-name">${c.mac && cliByMac()[c.mac] ? `<button class="linkbtn plain" data-open="client" data-id="${esc(c.mac)}">${esc(c.name || c.mac)}</button>` : esc(c.name || "–")}</div>
+        <div class="cell-sub">${nf(c.n)} verbindingen · ${plural(c.countries, "land", "landen")}</div></div>
+        <div class="rank-bar">${meter(100 * c.bytes / cmax)}</div><span class="num rank-n">${bytes(c.bytes)}</span></div>`).join("") : `<div class="empty">Geen gegevens</div>`;
+    const dmax = Math.max(1, ...d.domains.map((x) => x.bytes));
+    $("#w-dom").innerHTML = d.domains.length ? d.domains.map((x) => `
+      <div class="rank-row"><div class="rank-main"><div class="rank-name">${esc(x.name)}</div><div class="cell-sub">${x.cc ? `<span class="cc">${esc(x.cc)}</span>${esc(ccName(x.cc))} · ` : ""}${nf(x.n)} verbindingen</div></div>
+        <div class="rank-bar">${meter(100 * x.bytes / dmax)}</div><span class="num rank-n">${bytes(x.bytes)}</span></div>`).join("") : `<div class="empty">Geen gegevens</div>`;
+  }
+  function renderTicker() {
+    const el = $("#w-ticker");
+    if (!el) return;
+    const rows = (world.live || []).filter((f) => world.show[f.dir]).slice(0, 18);
+    el.innerHTML = rows.length ? rows.map((f) => {
+      const [l, col] = DIR[f.dir];
+      const what = f.dir === "blocked" ? `${esc(f.service || "IPS-regel")}` : `${esc(f.domain || (f.port ? `poort ${f.port}` : "–"))}`;
+      const who = f.dir === "out" ? `${esc(f.client_name || "–")} → ${what}`
+        : f.dir === "in" ? `${esc(ccName(f.cc))} → ${esc(f.client_name || "–")}${f.port ? ` <span class="muted">poort ${f.port}</span>` : ""}`
+        : `${what}${f.port ? ` <span class="muted">→ poort ${f.port}</span>` : ""}`;
+      return `<li><span class="num muted">${hhmm(f.ts)}</span><i class="sw" style="background:${col}" title="${l}"></i>
+        <span class="t-main">${who}</span><span class="t-cc" title="${esc(ccName(f.cc))}">${esc(f.cc || "–")}</span><span class="num muted t-b">${f.up + f.down ? bytes(f.up + f.down) : ""}</span></li>`;
+    }).join("") : `<li class="empty">Wachten op verbindingen…</li>`;
+  }
+  function pulse(f) {
+    const W = window.WORLD, d = world.data;
+    if (!d || reduceMotion() || !world.show[f.dir] || f.cc === d.home) return;
+    const home = W.countries[d.home]?.c, far = W.countries[f.cc]?.c, g = $("#w-pulses");
+    if (!home || !far || !g) return;
+    const path = f.dir === "out" ? arcPath(home, far, "out") : arcPath(far, home, f.dir);
+    const ns = "http://www.w3.org/2000/svg";
+    const c = document.createElementNS(ns, "circle");
+    c.setAttribute("r", "2.6"); c.setAttribute("fill", DIR[f.dir][1]); c.setAttribute("class", "pulse");
+    const m = document.createElementNS(ns, "animateMotion");
+    m.setAttribute("dur", "1.8s"); m.setAttribute("path", path); m.setAttribute("fill", "freeze"); m.setAttribute("begin", "indefinite");
+    c.appendChild(m); g.appendChild(c);
+    m.beginElement();
+    setTimeout(() => c.remove(), 1900);
+  }
+  async function worldLoop() {
+    clearTimeout(world.timer);
+    if (current !== "wereld") return;
+    try {
+      const r = await api(`/api/world/live?after=${world.after}&limit=60`);
+      const fresh = r.flows.filter((f) => !world.seen.has(f.id));
+      fresh.forEach((f) => world.seen.add(f.id));
+      if (world.seen.size > 5000) world.seen = new Set(r.flows.map((f) => f.id));
+      world.live = [...fresh, ...(world.live || [])].sort((a, b) => b.ts - a.ts).slice(0, 60);
+      if (world.after) fresh.slice(0, 14).forEach((f, i) => setTimeout(() => pulse(f), i * 350));   // eerste keer niet alles tegelijk
+      world.after = Math.max(world.after, r.now - 600);
+      renderTicker();
+    } catch (e) { /* volgende ronde opnieuw */ }
+    world.timer = setTimeout(worldLoop, 8000);
+  }
   // ------------------------------------------------------------------ init
   hydrateIcons(document);
   $("#drawer-close").onclick = closeDrawer;
@@ -1391,7 +1610,7 @@
     }
   });
   let rt;
-  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); } if (state.drawer) renderDrawer(); }, 250); });
+  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); } if (current === "wereld") renderWorld(); if (state.drawer) renderDrawer(); }, 250); });
   window.addEventListener("hashchange", route);
   route();
   refresh();

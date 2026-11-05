@@ -274,6 +274,52 @@ def _name(n: str | None, ip: str | None) -> str | None:
     return ip if not n or _MAC.match(n) else n
 
 
+def _is_local_ip(ip: str | None) -> bool:
+    try:
+        a = ipaddress.ip_address(ip or "")
+    except ValueError:
+        return False
+    return a.is_private or a.is_link_local or a.is_loopback or a in ipaddress.ip_network("100.64.0.0/10")
+
+
+def normalize_flow(f: dict) -> dict:
+    """Eén verbinding uit /v2/api/site/<site>/traffic-flows, vanuit je eigen netwerk bekeken.
+
+    dir: 'out' (eigen apparaat → internet), 'in' (internet → eigen apparaat), 'blocked' (door de gateway
+    tegengehouden) of 'local' (tussen eigen netwerken/VPN). up/down: bytes verstuurd/ontvangen door de eigen kant.
+    """
+    src, dst, td = f.get("source") or {}, f.get("destination") or {}, f.get("traffic_data") or {}
+    incoming = f.get("direction") == "incoming"
+    local_side, remote = (dst, src) if incoming else (src, dst)
+    cc = remote.get("region") or remote.get("country")
+    external = bool(cc) or not _is_local_ip(remote.get("ip"))
+    blocked = (f.get("action") or "allowed") != "allowed"
+    if not external or f.get("direction") == "local":
+        direction = "local"
+    else:
+        direction = "blocked" if blocked else "in" if incoming else "out"   # bijv. regioblokkade of firewallregel
+    tx, rx = int(td.get("bytes_tx") or 0), int(td.get("bytes_rx") or 0)
+    return {
+        "id": f.get("id") or f"{f.get('flow_start_time')}-{src.get('ip')}-{dst.get('ip')}-{dst.get('port')}",
+        "ts": int((f.get("flow_end_time") or f.get("time") or f.get("flow_start_time") or 0) / 1000),
+        "dir": direction,
+        "action": f.get("action") or "allowed",
+        "cc": (cc or "").upper()[:2] or None,
+        "remote_ip": remote.get("ip"),
+        "port": dst.get("port"),          # de dienst: poort aan de ontvangende kant
+        "domain": (remote.get("domains") or [None])[0] or _name(remote.get("client_name"), None),
+        "service": f.get("service"),
+        "proto": f.get("protocol"),
+        "client_mac": (local_side.get("mac") or "").lower() or None,
+        "client_name": _name(local_side.get("client_name") or local_side.get("device_name"), local_side.get("ip")),
+        "client_ip": local_side.get("ip"),
+        "net": (f.get("in") or {}).get("network_name") if not incoming else (f.get("out") or {}).get("network_name"),
+        "up": rx if incoming else tx,
+        "down": tx if incoming else rx,
+        "risk": f.get("risk"),
+    }
+
+
 def normalize_ips(f: dict) -> dict:
     """Eén geblokkeerde flow uit /v2/api/site/<site>/traffic-flows (policy_type INTRUSION_PREVENTION)."""
     ips, src, dst = f.get("ips") or {}, f.get("source") or {}, f.get("destination") or {}
@@ -499,6 +545,25 @@ class UnifiClient:
                 return out or None
             body = r.json()
             out += [normalize_ips(f) for f in body.get("data", [])]
+            if page + 1 >= body.get("total_page_count", 1):
+                break
+        return out
+
+    async def fetch_flows(self, since_ms: int, until_ms: int, max_pages: int = 40) -> list[dict] | None:
+        """Alle verbindingen (toegestaan en geblokkeerd) uit het verkeerslogboek. None = niet beschikbaar."""
+        if self.source not in ("legacy-key", "legacy-login"):
+            return None
+        headers = self._write_headers()
+        out: list[dict] = []
+        for page in range(max_pages):
+            r = await self.http.post(
+                f"/proxy/network/v2/api/site/{self.s.site}/traffic-flows", headers=headers,
+                json={"timestampFrom": since_ms, "timestampTo": until_ms, "pageNumber": page, "pageSize": 200})
+            if r.status_code != 200:
+                log.warning("Verbindingen ophalen mislukt: %s %s", r.status_code, r.text[:200])
+                return out or None
+            body = r.json()
+            out += [normalize_flow(f) for f in body.get("data", []) if not f.get("ips")]
             if page + 1 >= body.get("total_page_count", 1):
                 break
         return out

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_KEYS = ("mode", "controller_url", "site", "api_key", "username", "password", "verify_tls",
-               "allowed_hosts", "notify")
+               "allowed_hosts", "notify", "home_country")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -78,6 +78,7 @@ class Settings:
     db_path: str = ""                  # leeg = automatisch in data_dir (los bestand voor demodata)
     data_dir: str = "data"
     mock_seed_hours: int = 6
+    home_country: str = "NL"   # waar de bogen op de wereldkaart vertrekken
     allowed_hosts: list = field(default_factory=list)   # extra hostnamen (instellingenpagina); env ALLOWED_HOSTS telt ook
     notify: dict = field(default_factory=dict)          # meldingen naar buiten, zie notify.py
     thresholds: Thresholds = field(default_factory=Thresholds)

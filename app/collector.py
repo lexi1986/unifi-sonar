@@ -3,6 +3,7 @@ events, slaat alles op en draait de issue-regels."""
 from __future__ import annotations
 
 import asyncio
+import random
 import logging
 import time
 
@@ -11,7 +12,7 @@ from .config import Settings
 from .db import DB
 from .mock import MockNetwork
 from .notify import Notifier
-from .unifi_client import (UnifiClient, normalize_config, normalize_ips, normalize_legacy, normalize_speedtest_state,
+from .unifi_client import (UnifiClient, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_speedtest_state,
                            normalize_speedtests, wan_rates)
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,9 @@ def _retry_pct(pk: float | None, rt: float | None, ppk: float | None, prt: float
     return round(min(100.0, 100.0 * drt / dpk), 1)
 
 
+FLOW_HOURS = 48   # verbindingen zijn talrijk (duizenden per uur): kort bewaren
+
+
 class Collector:
     def __init__(self, settings: Settings, db: DB):
         self.s = settings
@@ -58,6 +62,8 @@ class Collector:
         self._live_lock = asyncio.Lock()
         self._st_checked = 0
         self.speedtest = {"running": False, "started": None, "error": None}
+        self.flows_available: bool | None = True if self.mock else None
+        self._flows_checked = 0
 
     async def _fetch(self, dt: float) -> dict:
         if self.mock:
@@ -160,6 +166,26 @@ class Collector:
             n = self.db.store_ips(rows)
             if n:
                 log.info("IPS: %s nieuwe blokkades", n)
+
+    async def _collect_flows(self, ts: int, dt: float) -> None:
+        """Verbindingen voor de wereldkaart: in demo elke tick, live elke minuut (UniFi levert ze per minuut)."""
+        if self.mock:
+            self.db.store_flows([normalize_flow(f) for f in self.mock.flows(ts, dt)])
+            return
+        if ts - self._flows_checked < 60:
+            return
+        self._flows_checked = ts
+        since = max(self.db.last_flow_ts() or 0, ts - 3600) - 300   # overlap: lange verbindingen worden bijgewerkt
+        try:
+            rows = await self.client.fetch_flows(since * 1000, ts * 1000)
+        except Exception as e:  # noqa: BLE001 – bijzaak, poll mag doorgaan
+            log.warning("Verbindingen: %s", e)
+            self.optional["flows"] = str(e)
+            return
+        self.flows_available = rows is not None
+        self.optional["flows"] = None if rows is not None else "alleen via de uitgebreide API"
+        if rows:
+            self.db.store_flows(rows)
 
     async def _collect_config(self, ts: int) -> None:
         """Instellingen veranderen zelden: live elke 15 minuten, demo altijd."""
@@ -271,6 +297,7 @@ class Collector:
         events = self._enrich(snap)
         self.db.store(snap, events)
         await self._collect_ips(ts, dt or self.s.poll_seconds)
+        await self._collect_flows(ts, dt or self.s.poll_seconds)
         await self._collect_config(ts)
         snap["config"] = self.config
         if not self.mock or ts >= time.time() - 120:   # demo: alleen bij echte metingen, niet tijdens het vullen
@@ -306,6 +333,9 @@ class Collector:
         start = now - self.s.mock_seed_hours * 3600
         log.info("Demohistorie aanmaken: %s uur (en een week grove historie)", self.s.mock_seed_hours)
         self.mock.backfill(self.db, start - 7 * 86400, start)
+        rnd = random.Random(11)
+        for ts in range(start - 42 * 3600, start, 300):   # verbindingen: 48 uur voor de wereldkaart
+            self.db.store_flows([normalize_flow(f) for f in self.mock.flows(ts, 300, rnd)])
         for ts in range(start, now - step, step):
             await self.tick(ts=ts, dt=step)
         # De laatste tick schrijft 'latest' weg zodat het dashboard direct data heeft.
@@ -319,6 +349,7 @@ class Collector:
                 self.db.set_kv("latest", self.latest)
                 if time.time() - last_purge > 3600:
                     self.db.purge(int(time.time()) - self.s.retention_days * 86400)
+                    self.db.purge_flows(int(time.time()) - FLOW_HOURS * 3600)
                     last_purge = time.time()
             except Exception as e:  # noqa: BLE001 – collector mag niet stoppen
                 self.last_error = str(e)

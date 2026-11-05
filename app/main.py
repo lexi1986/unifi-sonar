@@ -614,6 +614,53 @@ def _exposure(collector, rows: list[dict]) -> dict | None:
     return {"upnp_enabled": cfg.get("upnp_enabled"), "forwards": out}
 
 
+# ---------------------------------------------------------------- wereldkaart
+def _flow_names(collector) -> dict:
+    snap = collector.latest or {}
+    return {c["mac"]: c["name"] for c in snap.get("clients", []) if c.get("name") and c["name"] != c["mac"]}
+
+
+@app.get("/api/world")
+def world(hours: float = Query(1, gt=0, le=48)):
+    collector, db = _need()
+    since = int(time.time() - hours * 3600)
+    w = db.world(since)
+    blocked: dict[str, int] = {}
+    for e in db.ips_events(since, "external"):
+        if e.get("src_country"):
+            blocked[e["src_country"]] = blocked.get(e["src_country"], 0) + 1
+    for cc, n in blocked.items():   # IPS-blokkades komen uit een eigen tabel; regioblokkades zitten al in de flows
+        c = w["countries"].setdefault(cc, {"cc": cc, "out_n": 0, "in_n": 0, "blocked_n": 0, "bytes": 0, "up": 0,
+                                           "down": 0, "domains": [], "clients": []})
+        c["blocked_n"] = c.get("blocked_n", 0) + n
+    names = _flow_names(collector)
+    for c in w["clients"]:
+        c["name"] = names.get(c["mac"], c["name"])
+    w["totals"]["blocked_n"] += sum(blocked.values())
+    w["totals"]["countries"] = sum(1 for c in w["countries"].values() if c["out_n"] or c["in_n"])
+    return {"hours": hours, "home": (rt.settings.home_country or "NL").upper(), "available": collector.flows_available,
+            "error": collector.optional.get("flows"), "countries": list(w["countries"].values()),
+            "totals": w["totals"], "clients": w["clients"], "domains": w["domains"]}
+
+
+@app.get("/api/world/live")
+def world_live(after: int = 0, limit: int = Query(40, ge=1, le=200)):
+    collector, db = _need()
+    after = max(after, int(time.time()) - 3600)
+    names = _flow_names(collector)
+    rows = db.flows_recent(after, limit)
+    for r in rows:
+        r["client_name"] = names.get(r["client_mac"], r["client_name"])
+        r.pop("remote_ip", None)
+        r.pop("client_ip", None)
+    for e in db.ips_events(after, "external")[:limit]:
+        rows.append({"id": e["id"], "ts": e["ts"], "dir": "blocked", "action": "blocked", "cc": e.get("src_country"),
+                     "port": e.get("dst_port"), "domain": None, "service": e.get("signature"),
+                     "client_name": e.get("dst_name"), "up": 0, "down": 0})
+    rows.sort(key=lambda r: -r["ts"])
+    return {"flows": rows[:limit], "now": int(time.time())}
+
+
 @app.get("/api/ips")
 def ips(hours: float = 24, scope: str = Query("all", pattern="^(all|internal|external)$"), ignored: bool = False):
     collector, db = _need()

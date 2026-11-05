@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS speedtests (ts INT PRIMARY KEY, down REAL, up REAL, l
 CREATE TABLE IF NOT EXISTS ips_ignore (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, sid INT, label TEXT, created INT);
 CREATE TABLE IF NOT EXISTS notified (channel TEXT, key TEXT, severity TEXT, sent_ts INT, gone_ts INT, announced INT,
     PRIMARY KEY (channel, key));
+CREATE TABLE IF NOT EXISTS flows (id TEXT PRIMARY KEY, ts INT, dir TEXT, action TEXT, cc TEXT, remote_ip TEXT,
+    port INT, domain TEXT, service TEXT, proto TEXT, client_mac TEXT, client_name TEXT, client_ip TEXT, net TEXT,
+    up INT, down INT, risk TEXT);
+CREATE INDEX IF NOT EXISTS ix_flows ON flows(ts);
 CREATE INDEX IF NOT EXISTS ix_ips ON ips_events(ts);
 CREATE INDEX IF NOT EXISTS ix_dev ON device_samples(mac, ts);
 CREATE INDEX IF NOT EXISTS ix_radio ON radio_samples(mac, ts);
@@ -141,6 +145,64 @@ class DB:
             self.conn.executemany("INSERT OR IGNORE INTO ips_events VALUES (?,?,?,?,?,?)", [
                 (e["id"], e["ts"], int(e["internal"]), e["src_ip"], e["sid"], json.dumps(e)) for e in events])
             return self.conn.total_changes - before
+
+    # ------------------------------------------------------------- verbindingen (wereldkaart)
+    FLOW_COLS = ("id", "ts", "dir", "action", "cc", "remote_ip", "port", "domain", "service", "proto",
+                 "client_mac", "client_name", "client_ip", "net", "up", "down", "risk")
+
+    def store_flows(self, flows: list[dict]) -> int:
+        """Nieuwe of bijgewerkte verbindingen (UniFi meldt lange verbindingen opnieuw met meer bytes)."""
+        if not flows:
+            return 0
+        sql = f"INSERT OR REPLACE INTO flows VALUES ({','.join('?' * len(self.FLOW_COLS))})"
+        with self.lock, self.conn:
+            before = self.conn.total_changes
+            self.conn.executemany(sql, [tuple(f.get(c) for c in self.FLOW_COLS) for f in flows])
+            return self.conn.total_changes - before
+
+    def last_flow_ts(self) -> int | None:
+        return self.q("SELECT MAX(ts) t FROM flows")[0]["t"]
+
+    def purge_flows(self, before_ts: int) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM flows WHERE ts < ?", (before_ts,))
+
+    def world(self, since: int) -> dict:
+        """Verkeer per land en richting, met de belangrijkste domeinen en apparaten."""
+        countries: dict[str, dict] = {}
+        for r in self.q("SELECT cc, dir, COUNT(*) n, SUM(up) up, SUM(down) down FROM flows "
+                        "WHERE ts>=? AND cc IS NOT NULL AND dir IN ('out','in','blocked') GROUP BY cc, dir", (since,)):
+            c = countries.setdefault(r["cc"], {"cc": r["cc"], "out_n": 0, "in_n": 0, "bytes": 0, "up": 0, "down": 0,
+                                               "blocked_n": 0, "domains": [], "clients": []})
+            c[f"{r['dir']}_n"] = r["n"]
+            if r["dir"] != "blocked":
+                c["up"] += r["up"] or 0
+                c["down"] += r["down"] or 0
+            c["bytes"] = c["up"] + c["down"]
+        for r in self.q("SELECT cc, domain, SUM(up+down) b, COUNT(*) n FROM flows WHERE ts>=? AND cc IS NOT NULL "
+                        "AND dir IN ('out','in') AND domain IS NOT NULL GROUP BY cc, domain ORDER BY b DESC", (since,)):
+            if r["cc"] in countries and len(countries[r["cc"]]["domains"]) < 4:
+                countries[r["cc"]]["domains"].append({"name": r["domain"], "bytes": r["b"], "n": r["n"]})
+        for r in self.q("SELECT cc, COALESCE(client_name, client_ip) name, SUM(up+down) b, COUNT(*) n FROM flows "
+                        "WHERE ts>=? AND cc IS NOT NULL AND dir IN ('out','in') GROUP BY cc, name ORDER BY b DESC", (since,)):
+            if r["cc"] in countries and r["name"] and len(countries[r["cc"]]["clients"]) < 4:
+                countries[r["cc"]]["clients"].append({"name": r["name"], "bytes": r["b"], "n": r["n"]})
+        tot = self.q("SELECT SUM(dir='out') out_n, SUM(dir='in') in_n, SUM(dir='local') local_n, SUM(dir='blocked') blocked_n, "
+                     "SUM(dir IN ('out','in') AND cc IS NULL) unknown_n, "
+                     "SUM(CASE WHEN dir IN ('out','in') THEN up+down ELSE 0 END) bytes, COUNT(*) n FROM flows WHERE ts>=?", (since,))[0]
+        clients = [dict(r) for r in self.q(
+            "SELECT client_mac mac, COALESCE(client_name, client_ip) name, SUM(up+down) bytes, COUNT(*) n, "
+            "COUNT(DISTINCT cc) countries FROM flows WHERE ts>=? AND dir IN ('out','in') GROUP BY mac, name "
+            "ORDER BY bytes DESC LIMIT 8", (since,))]
+        domains = [dict(r) for r in self.q(
+            "SELECT domain name, cc, SUM(up+down) bytes, COUNT(*) n FROM flows WHERE ts>=? AND dir IN ('out','in') "
+            "AND domain IS NOT NULL GROUP BY domain ORDER BY bytes DESC LIMIT 8", (since,))]
+        return {"countries": countries, "totals": {k: tot[k] or 0 for k in tot.keys()},
+                "clients": clients, "domains": domains}
+
+    def flows_recent(self, after: int, limit: int = 40, include_local: bool = False) -> list[dict]:
+        cond = "" if include_local else "AND dir!='local'"
+        return [dict(r) for r in self.q(f"SELECT * FROM flows WHERE ts>? {cond} ORDER BY ts DESC LIMIT ?", (after, limit))]
 
     def last_ips_ts(self) -> int | None:
         return self.q("SELECT MAX(ts) t FROM ips_events")[0]["t"]

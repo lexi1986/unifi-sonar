@@ -283,8 +283,8 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                           "Kijk of er een grote download/back-up loopt; anders ligt het waarschijnlijk bij de provider.",
                           "latency_ms", lat, th.wan_latency_warn, gw))
     elif whour.get("lat_max") and whour["lat_max"] >= th.wan_latency_crit:
-        sp = db.q("SELECT COUNT(*) n, MAX(ts) t FROM wan_samples WHERE ts>=? AND latency_ms>=?",
-                  (ts - HOUR, th.wan_latency_crit))[0]
+        sp = dict(db.q("SELECT COUNT(*) n, MAX(ts) t FROM wan_samples WHERE ts>=? AND latency_ms>=?",
+                       (ts - HOUR, th.wan_latency_crit))[0])
         spikes = sp["n"]
         if spikes >= 2:
             out.append(_issue("wan_spikes", "info", "wan", "wan", "wan", "Af en toe latency-pieken",
