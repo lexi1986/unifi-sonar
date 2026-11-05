@@ -59,10 +59,14 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
             base = rt.get(rs.get("name"), {})
             cu_total = _num(rs.get("cu_total"), 0)
             cu_self = (_num(rs.get("cu_self_rx"), 0) or 0) + (_num(rs.get("cu_self_tx"), 0) or 0)
+            ch_cfg = base.get("channel")
             radios.append({
                 "radio": BAND.get(rs.get("radio") or base.get("radio"), "?"),
                 "channel": rs.get("channel") or base.get("channel"),
+                "channel_auto": ch_cfg in (None, "auto", 0, "0"),
                 "width": _num(base.get("ht")),
+                "tx_power_mode": base.get("tx_power_mode"),
+                "min_rssi": _num(base.get("min_rssi")) if base.get("min_rssi_enabled") else None,
                 "tx_power": _num(rs.get("tx_power")),
                 "cu_total": cu_total,
                 "cu_self": cu_self,
@@ -118,6 +122,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
             "poe_used_w": sum(p["poe_w"] or 0 for p in ports) if poe_budget else None,
             "radios": radios,
             "ports": ports,
+            "bandsteering": d.get("bandsteering_mode") if radios else None,
         }
         out_devices.append(dev)
         if dtype == "gateway":
@@ -168,8 +173,45 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
             "connected": wired or bool(c.get("ap_mac")),
             "last_ap_mac": None if wired else c.get("ap_mac") or c.get("last_uplink_mac"),
             "last_seen": int(_num(c.get("last_seen"), 0) or 0) or None,
+            # door de gebruiker vastgezet aan één AP (UniFi "Lock to AP")
+            "fixed_ap": c.get("fixed_ap_mac") if not wired and c.get("fixed_ap_enabled") else None,
         })
     return {"wan": wan, "devices": out_devices, "clients": out_clients}
+
+
+# ------------------------------------------------------------------ configuratie
+
+def normalize_config(wlans: list[dict], settings: list[dict], forwards: list[dict]) -> dict:
+    """Wifi-netwerken, UPnP en port forwards. Wachtwoorden en sleutels worden bewust overgeslagen."""
+    out_wlans = []
+    for w in wlans:
+        bands = w.get("wlan_bands") or {"both": ["2g", "5g"], "2g": ["2g"], "5g": ["5g"]}.get(w.get("wlan_band"), ["2g", "5g"])
+        out_wlans.append({
+            "name": w.get("name", "?"),
+            "enabled": bool(w.get("enabled", True)),
+            "bands": [{"2g": "2.4", "5g": "5", "6e": "6"}.get(b, b) for b in bands],
+            "guest": bool(w.get("is_guest")),
+            "iot": bool(w.get("enhanced_iot")) or bands == ["2g"],
+            "fast_roaming": bool(w.get("fast_roaming_enabled")),
+            "bss_transition": bool(w.get("bss_transition")),
+            "minrate_24": int(_num(w.get("minrate_ng_data_rate_kbps"), 0)) if w.get("minrate_ng_enabled") else 0,
+        })
+    usg = next((x for x in settings if x.get("key") == "usg"), {})
+    out_fw = []
+    for f in forwards:
+        upnp = bool(f.get("is_upnp")) or f.get("rule_type") == "upnp"
+        out_fw.append({
+            "name": f.get("name") or f.get("description") or ("UPnP" if upnp else "Port forward"),
+            "enabled": bool(f.get("enabled", True)),
+            "upnp": upnp,
+            "proto": f.get("proto") or f.get("protocol") or "",
+            "port": str(f.get("dst_port") or f.get("external_port") or ""),
+            "fwd_ip": f.get("fwd") or f.get("internal_ip") or "",
+            "fwd_port": str(f.get("fwd_port") or f.get("internal_port") or ""),
+            "src": f.get("src") or "any",
+            "rx_bytes": _num(f.get("rx_bytes"), 0),
+        })
+    return {"wlans": out_wlans, "upnp_enabled": usg.get("upnp_enabled"), "forwards": out_fw}
 
 
 # ----------------------------------------------------------------------------- IPS
@@ -238,7 +280,7 @@ def normalize_integration(devices: list[dict], stats: dict[str, dict], clients: 
             ghz = _num(r.get("frequencyGHz"))
             radios.append({
                 "radio": "2.4" if ghz and ghz < 3 else "6" if ghz and ghz > 5.9 else "5",
-                "channel": None, "width": None, "tx_power": None,
+                "channel": None, "channel_auto": None, "width": None, "tx_power": None, "tx_power_mode": None, "min_rssi": None,
                 "cu_total": None, "cu_self": None, "interference": None,
                 "num_clients": 0, "satisfaction": None,
                 "tx_packets": None, "tx_retries": None,
@@ -256,7 +298,7 @@ def normalize_integration(devices: list[dict], stats: dict[str, dict], clients: 
             "temp": None, "num_clients": 0, "satisfaction": None,
             "uplink_mac": None, "uplink_port": None, "uplink_type": None,
             "poe_budget_w": None, "poe_used_w": None,
-            "radios": radios, "ports": [],
+            "radios": radios, "ports": [], "bandsteering": None,
         })
     out_clients = []
     for c in clients:
@@ -271,7 +313,7 @@ def normalize_integration(devices: list[dict], stats: dict[str, dict], clients: 
             "band": None, "channel": None, "proto": None, "signal": None, "noise": None,
             "satisfaction": None, "tx_rate_mbps": None, "rx_rate_mbps": None,
             "tx_packets": None, "tx_retries": None, "uptime": 0, "assoc_ts": None,
-            "connected": True, "last_ap_mac": None if wired else up_mac, "last_seen": None,
+            "connected": True, "last_ap_mac": None if wired else up_mac, "last_seen": None, "fixed_ap": None,
         })
     for dev in out_devices:
         dev["num_clients"] = sum(1 for c in out_clients if dev["mac"] in (c["ap_mac"], c["sw_mac"]))
@@ -354,12 +396,31 @@ class UnifiClient:
             pass
         return None
 
+    def _write_headers(self) -> dict:
+        return self._headers() if self.source == "legacy-key" else ({"x-csrf-token": self._csrf} if self._csrf else {})
+
+    async def fetch_config(self) -> dict | None:
+        """Wifi-instellingen, UPnP en port forwards (alleen lezen). None = niet beschikbaar."""
+        if self.source not in ("legacy-key", "legacy-login"):
+            return None
+        use_key = self.source == "legacy-key"
+        wlans = await self._legacy("rest/wlanconf", use_key)
+        settings = await self._legacy("rest/setting", use_key)
+        forwards = await self._legacy("stat/portforward", use_key)   # statisch én actieve UPnP-mappings
+        return normalize_config(wlans, settings, forwards)
+
+    async def sysinfo(self) -> dict:
+        if self.source not in ("legacy-key", "legacy-login"):
+            return {}
+        rows = await self._legacy("stat/sysinfo", self.source == "legacy-key")
+        si = rows[0] if rows else {}
+        return {"network_version": si.get("version"), "build": si.get("build"), "timezone": si.get("timezone")}
+
     async def fetch_ips(self, since_ms: int, until_ms: int) -> list[dict] | None:
         """Door de IPS geblokkeerde flows. None = niet beschikbaar met deze bron."""
         if self.source not in ("legacy-key", "legacy-login"):
             return None
-        headers = self._headers() if self.source == "legacy-key" else (
-            {"x-csrf-token": self._csrf} if self._csrf else {})
+        headers = self._write_headers()
         out: list[dict] = []
         for page in range(20):
             r = await self.http.post(
@@ -379,8 +440,7 @@ class UnifiClient:
         """Laat een wifi-client opnieuw verbinden (UniFi 'kick-sta'); hij kiest dan zelf opnieuw een AP."""
         if self.source not in ("legacy-key", "legacy-login"):
             raise RuntimeError("Opnieuw verbinden kan alleen via de uitgebreide API")
-        headers = self._headers() if self.source == "legacy-key" else (
-            {"x-csrf-token": self._csrf} if self._csrf else {})
+        headers = self._write_headers()
         r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/cmd/stamgr", headers=headers,
                                  json={"cmd": "kick-sta", "mac": mac.lower()})
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}

@@ -13,6 +13,10 @@ Bewust ingebouwde problemen:
   * AP Kantoor: firmware-update beschikbaar
   * WAN: af en toe een latency-piek
   * AP Boven herstart na 3 uur; de Kindle blijft daarna hangen op AP Schuur
+  * Printer HP zakt na 3,5 uur weg naar AP Schuur en blijft daar (zonder herstart)
+  * Instellingen: AP Woonkamer en AP Schuur in hetzelfde 5 GHz-blok, 2.4 GHz-kanaal 11 vrij,
+    band steering uit op AP Schuur, Fast Roaming uit, UPnP aan, SSH doorgezet naar de NAS
+  * Een week grove historie voor de patronen (aanwezigheid, drukte per uur)
 """
 from __future__ import annotations
 
@@ -69,6 +73,10 @@ WIRED = [  # naam, vendor, switch, poort
 
 
 REBOOT_T = 3 * 3600   # simulatietijd waarop AP Boven herstart
+PRINTER_T = 3.5 * 3600  # simulatietijd waarop de printer naar AP Schuur zakt
+CH5 = {AP_WK: 36, AP_BV: 100, AP_KT: 149, AP_SC: 44}   # AP Woonkamer en AP Schuur delen 36–48
+CH24 = {AP_WK: 6, AP_BV: 1, AP_KT: 6, AP_SC: 6}       # kanaal 11 blijft vrij
+AWAY = {"iPhone", "MacBook Pro", "Galaxy S24", "Laptop Werk", "Pixel 8", "Apple Watch", "Tesla"}   # overdag weg
 
 
 class MockNetwork:
@@ -137,7 +145,7 @@ class MockNetwork:
 
     def _radio_stats(self, ap: str, dt: float, clients: list[dict]) -> tuple[list, list]:
         table, stats = [], []
-        for name, radio, ch, ht in (("wifi0", "ng", 6 if ap != AP_BV else 1, 20), ("wifi1", "na", 36 + 8 * (list(APS).index(ap)), 80)):
+        for name, radio, ch, ht in (("wifi0", "ng", CH24[ap], 20), ("wifi1", "na", CH5[ap], 80)):
             on = [c for c in clients if c.get("ap_mac") == ap and c.get("radio") == radio]
             cu_self = 5 + 1.5 * len(on) + R.uniform(-2, 2)
             other = R.uniform(8, 18)
@@ -148,7 +156,8 @@ class MockNetwork:
             retry = 0.04 + (0.10 if (ap == AP_WK and radio == "ng") else 0) + (0.12 if ap == AP_SC and radio == "ng" else 0)
             pkts = R.uniform(300, 900) * dt * max(1, len(on))
             key = f"{ap}:{radio}"
-            table.append({"name": name, "radio": radio, "channel": ch, "ht": ht})
+            table.append({"name": name, "radio": radio, "channel": ch if radio == "ng" else "auto", "ht": ht,
+                          "tx_power_mode": "auto", "min_rssi_enabled": False})
             stats.append({
                 "name": name, "radio": radio, "channel": ch, "num_sta": len(on), "satisfaction": round(sat),
                 "cu_total": round(cu_total), "cu_self_rx": round(cu_self * 0.6), "cu_self_tx": round(cu_self * 0.4),
@@ -168,6 +177,9 @@ class MockNetwork:
             if name == "Kindle" and self.t >= REBOOT_T + 30:   # blijft hangen na herstart AP Boven
                 ap, sig, retry = AP_SC, -80, 14
                 assoc = int(self.now - (self.t - REBOOT_T) + 40)
+            if name == "Printer HP" and self.t >= PRINTER_T:     # zakt weg naar een verre AP, zonder herstart
+                ap, sig, retry = AP_SC, -78, 15
+                assoc = int(self.now - (self.t - PRINTER_T))
             s = sig + R.uniform(-3, 3)
             if name == "Ring Deurbel":
                 s += 2 * math.sin(self.t / 1800)
@@ -177,8 +189,8 @@ class MockNetwork:
             rate = max(6.5, min(1200, 2.2 ** ((s + 95) / 5)) if radio == "na" else min(144, 2.2 ** ((s + 95) / 6.5))) * 1000
             out.append({
                 "mac": mac, "name": name, "hostname": name.lower().replace(" ", "-"), "oui": vendor,
-                "ip": f"192.168.1.{100 + i}", "is_wired": False, "network": "Default", "essid": "LVD",
-                "ap_mac": ap, "radio": radio, "channel": 6 if radio == "ng" else 36,
+                "ip": f"192.168.1.{100 + i}", "is_wired": False, "network": "Default", "essid": "Thuis",
+                "ap_mac": ap, "radio": radio, "channel": CH24[ap] if radio == "ng" else CH5[ap],
                 "radio_proto": "ax" if radio == "na" else "n", "signal": round(s), "noise": -95,
                 "satisfaction": round(sat), "tx_rate": round(rate), "rx_rate": round(rate * 0.8),
                 "tx_packets": self._cnt(mac, "pk", pkts), "tx_retries": self._cnt(mac, "rt", pkts * rpct / 100),
@@ -235,6 +247,7 @@ class MockNetwork:
                 "system-stats": {"cpu": f"{R.uniform(4, 18):.1f}", "mem": f"{R.uniform(40, 60):.1f}"},
                 "num_sta": len(on), "satisfaction": round(sum(c["satisfaction"] for c in on) / len(on)) if on else 100,
                 "radio_table": table, "radio_table_stats": stats,
+                "bandsteering_mode": "off" if mac == AP_SC else "prefer_5g",
                 "uplink": {"uplink_mac": info["uplink"][0], "uplink_remote_port": info["uplink"][1], "type": "wire"},
                 "port_table": [self._port(mac, 1, dt, name="Uplink", uplink=True)],
             })
@@ -250,6 +263,8 @@ class MockNetwork:
     # ------------------------------------------------------------------ IPS
     EXT_SIGS = [
         ("ET SCAN Suspicious inbound to mySQL port 3306", 2010937, "emerging-scan", 3306),
+        ("ET WEB_SERVER Possible CVE-2021-41773 Path Traversal Attempt", 2034125, "emerging-web_server", 443),
+        ("ET SCAN Nikto Web App Scan in Progress", 2002677, "emerging-scan", 443),
         ("ET SCAN Potential VNC Scan 5900-5920", 2002911, "emerging-scan", 5901),
         ("ET CINS Active Threat Intelligence Poor Reputation IP group 42", 2403341, "ciarmy", 443),
         ("ET DROP Dshield Block Listed Source group 1", 2402000, "dshield", 22),
@@ -281,6 +296,68 @@ class MockNetwork:
             "ips": {"signature": sig, "signature_id": sid, "category_name": cat,
                     "alarm_category_potential_risk": "Demodata"},
         }
+
+    # ------------------------------------------------------------ instellingen
+    @staticmethod
+    def config() -> tuple[list, list, list]:
+        """Ruwe rest/wlanconf, rest/setting en stat/portforward."""
+        wlans = [
+            {"name": "Thuis", "enabled": True, "wlan_bands": ["2g", "5g"], "fast_roaming_enabled": False,
+             "bss_transition": True, "minrate_ng_enabled": True, "minrate_ng_data_rate_kbps": 1000},
+            {"name": "Thuis-IoT", "enabled": True, "wlan_bands": ["2g"], "enhanced_iot": True, "fast_roaming_enabled": False,
+             "minrate_ng_enabled": True, "minrate_ng_data_rate_kbps": 1000},
+            {"name": "Thuis-Gast", "enabled": True, "wlan_bands": ["2g", "5g"], "is_guest": True, "fast_roaming_enabled": False},
+        ]
+        settings = [{"key": "usg", "upnp_enabled": True, "upnp_secure_mode": True}]
+        forwards = [
+            {"name": "Home Assistant", "enabled": True, "proto": "tcp", "dst_port": "443", "fwd": "192.168.1.10",
+             "fwd_port": "8123", "src": "any", "rx_bytes": 48_211_904},
+            {"name": "NAS SSH", "enabled": True, "proto": "tcp", "dst_port": "22", "fwd": "192.168.1.13",
+             "fwd_port": "22", "src": "any", "rx_bytes": 1_204_332},
+            {"name": "Oude camera", "enabled": False, "proto": "tcp", "dst_port": "8080", "fwd": "192.168.1.30",
+             "fwd_port": "80", "src": "any", "rx_bytes": 0},
+            {"name": "PS5", "enabled": True, "is_upnp": 1, "proto": "udp", "dst_port": "3074", "fwd": "192.168.1.119",
+             "fwd_port": "3074", "rx_bytes": 3_400_112},
+            {"name": "Camera Tuin", "enabled": True, "is_upnp": 1, "proto": "tcp", "dst_port": "80", "fwd": "192.168.1.123",
+             "fwd_port": "80", "rx_bytes": 92_118},
+        ]
+        return wlans, settings, forwards
+
+    # ------------------------------------------------------------ historie
+    def backfill(self, db, start: int, end: int, step: int = 300) -> None:
+        """Grove historie (elke 5 min) voor de patronen: wie is wanneer thuis en wanneer is het druk."""
+        import time as _t
+        rnd = random.Random(7)
+        cli, rad, wan = [], [], []
+        band = {"ng": "2.4", "na": "5"}
+        for ts in range(start, end, step):
+            lt = _t.localtime(ts)
+            weekday, hour = lt.tm_wday < 5, lt.tm_hour + lt.tm_min / 60
+            evening = 1.0 if 18 <= hour < 23 else 0.4 if 7 <= hour < 18 else 0.1
+            wan.append((ts, 1, 9 + rnd.uniform(-2, 3) + (30 * evening if rnd.random() < 0.03 else 0), 0))
+            per_ap: dict[tuple, int] = {}
+            for i, (name, _v, ap, radio, sig, retry) in enumerate(WIRELESS):
+                if name in AWAY and weekday and 8.5 <= hour < 17.5:
+                    continue
+                if name == "iPhone Gast" and weekday:
+                    continue
+                if name == "Sonos Keuken" and rnd.random() < 0.3:
+                    ap = AP_BV
+                per_ap[(ap, radio)] = per_ap.get((ap, radio), 0) + 1
+                cli.append((ts, _mac(0x100 + i), ap, band[radio], round(sig + rnd.uniform(-3, 3)),
+                            round(max(5, 100 - max(0, -sig - 60) * 2 - retry * 0.7)), max(0.5, retry + rnd.uniform(-2, 2)), None))
+            for i, (_n, _v, _s, _p) in enumerate(WIRED):
+                cli.append((ts, _mac(0x200 + i), None, None, None, 100, None, None))
+            for ap in APS:
+                for radio in ("ng", "na"):
+                    n = per_ap.get((ap, radio), 0)
+                    own = 4 + 1.5 * n * (0.5 + evening)
+                    other = (48 + 14 * evening if ap == AP_WK and radio == "ng" else 8 + 8 * evening) + rnd.uniform(-3, 3)
+                    rad.append((ts, ap, band[radio], CH24[ap] if radio == "ng" else CH5[ap], min(100, own + other),
+                                other, n, 95, 4 + rnd.uniform(0, 3)))
+        db.store_rows("client_samples", cli)
+        db.store_rows("radio_samples", rad)
+        db.store_rows("wan_samples", wan)
 
     def snapshot(self, dt: float) -> tuple[list, list, list]:
         self.advance(dt)

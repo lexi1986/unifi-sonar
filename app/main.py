@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
+import platform
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,10 +34,13 @@ def load_dotenv(path: Path) -> None:
 if not os.environ.get("NO_DOTENV"):   # tests/verse installaties: .env overslaan
     load_dotenv(ROOT / ".env")
 
-from .collector import Collector  # noqa: E402
-from .config import Settings  # noqa: E402
-from .db import DB  # noqa: E402
+from . import VERSION  # noqa: E402
+from . import notify as notify_mod  # noqa: E402
 from . import setup as setup_mod  # noqa: E402
+from .collector import Collector  # noqa: E402
+from .config import Settings, Thresholds  # noqa: E402
+from .db import DB  # noqa: E402
+from .rules import ips_ignored  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -66,6 +74,8 @@ class Runtime:
             await asyncio.gather(self.task, return_exceptions=True)
         if self.collector and self.collector.client:
             await self.collector.client.close()
+        if self.collector:
+            await self.collector.notifier.close()
         self.task = self.collector = None
 
     async def apply(self, settings: Settings) -> None:
@@ -92,6 +102,53 @@ async def no_cache(request, call_next):
     resp = await call_next(request)
     resp.headers["Cache-Control"] = "no-cache"   # na een update altijd de nieuwe frontend
     return resp
+
+
+# ----------------------------------------------------------------------- toegang
+LOCAL_SUFFIXES = (".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain", ".localhost")
+HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+
+
+def _hostname(host: str) -> str:
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        return host[1:host.find("]")] if "]" in host else host
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+def env_hosts() -> set[str]:
+    return {h.strip().lower() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()}
+
+
+def host_allowed(host: str) -> bool:
+    """Bescherming tegen DNS-rebinding: alleen IP-adressen, lokale namen en zelf opgegeven hostnamen."""
+    h = _hostname(host).rstrip(".")
+    if not h:
+        return False
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        pass
+    if h == "localhost" or "." not in h or h.endswith(LOCAL_SUFFIXES):
+        return True
+    return h in {x.lower() for x in rt.settings.allowed_hosts or []} | env_hosts()
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    host = request.headers.get("host", "")
+    if not host_allowed(host):
+        return PlainTextResponse(
+            f"UniFi Sonar: onbekende hostnaam '{_hostname(host)}'.\n\nOpen het dashboard via het IP-adres en voeg deze "
+            "naam toe onder Instellingen → Toegang, of zet ALLOWED_HOSTS in de service (systemctl edit unifi-sonar).", 421)
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        # Acties alleen vanaf het dashboard zelf, niet vanaf een andere website in dezelfde browser.
+        origin = request.headers.get("origin")
+        if request.headers.get("sec-fetch-site") == "cross-site" or (
+                origin and origin != "null" and urlsplit(origin).netloc.lower() != host.lower()):
+            return JSONResponse({"detail": "Verzoek van een andere website geweigerd."}, 403)
+    return await call_next(request)
 
 
 def _need() -> tuple[Collector, DB]:
@@ -179,6 +236,227 @@ async def setup_demo(req: SetupRequest):
     return {"ok": True}
 
 
+# ----------------------------------------------------------------------- toegang (instellingen)
+class AccessRequest(BaseModel):
+    allowed_hosts: list[str] = Field(default_factory=list, max_length=20)
+
+
+@app.get("/api/access")
+def access_info(request: Request):
+    return {"allowed_hosts": rt.settings.allowed_hosts or [], "env_hosts": sorted(env_hosts()),
+            "current_host": _hostname(request.headers.get("host", ""))}
+
+
+@app.post("/api/access")
+def access_save(req: AccessRequest):
+    hosts = []
+    for h in req.allowed_hosts:
+        h = _hostname(h.strip()).rstrip(".")
+        if not h:
+            continue
+        if not HOSTNAME_RE.match(h):
+            raise HTTPException(400, f"Geen geldige hostnaam: {h}")
+        if h not in hosts:
+            hosts.append(h)
+    s = Settings.load(DATA_DIR)
+    s.allowed_hosts = rt.settings.allowed_hosts = hosts
+    s.save()
+    return {"ok": True, "allowed_hosts": hosts}
+
+
+# ----------------------------------------------------------------------- meldingen
+class ChannelIn(BaseModel):
+    id: str = Field(default="", max_length=20)
+    kind: Literal["homeassistant", "ntfy", "discord", "slack", "webhook"] = "webhook"
+    name: str = Field(default="", max_length=60)
+    url: str = Field(default="", max_length=600)       # leeg = bestaande behouden
+    token: str | None = Field(default=None, max_length=300)   # None = bestaande behouden
+    min_severity: Literal["critical", "warning", "info"] = "warning"
+    resolved: bool = True
+    enabled: bool = True
+
+
+class NotifySave(BaseModel):
+    channels: list[ChannelIn] = Field(default_factory=list, max_length=5)
+    delay_min: int = Field(default=5, ge=0, le=120)
+    digest_hour: int | None = Field(default=None, ge=0, le=23)
+    base_url: str = Field(default="", max_length=300)
+
+
+def _channel(c: ChannelIn, stored: dict[str, dict]) -> dict:
+    old = stored.get(c.id, {})
+    url = c.url.strip() or old.get("url", "")
+    if url and not re.match(r"^https?://[^\s/]+", url):
+        raise HTTPException(400, "Een webhook-adres begint met http:// of https://")
+    token = old.get("token", "") if c.token is None else c.token.strip()
+    return {"id": c.id if c.id in stored else notify_mod.new_id(), "kind": c.kind, "name": c.name.strip(), "url": url,
+            "token": token, "min_severity": c.min_severity, "resolved": c.resolved, "enabled": c.enabled}
+
+
+@app.get("/api/notify")
+def notify_info():
+    cfg = notify_mod.config(rt.settings)
+    status = rt.collector.notifier.status if rt.collector else {}
+    return {**{k: cfg[k] for k in ("delay_min", "digest_hour", "base_url")},
+            "channels": [{**{k: v for k, v in c.items() if k not in ("url", "token")},
+                          "url_masked": notify_mod.mask(c.get("url", "")), "has_token": bool(c.get("token")),
+                          "status": status.get(c["id"])} for c in cfg["channels"]]}
+
+
+@app.post("/api/notify/save")
+def notify_save(req: NotifySave):
+    stored = {c["id"]: c for c in notify_mod.config(rt.settings)["channels"]}
+    channels = [_channel(c, stored) for c in req.channels]
+    if any(not c["url"] for c in channels):
+        raise HTTPException(400, "Vul bij elk kanaal een webhook-adres in.")
+    base = req.base_url.strip().rstrip("/")
+    if base and not re.match(r"^https?://", base):
+        raise HTTPException(400, "Het dashboard-adres begint met http:// of https://")
+    s = Settings.load(DATA_DIR)
+    s.notify = {"channels": channels, "delay_min": req.delay_min, "digest_hour": req.digest_hour, "base_url": base}
+    s.save()
+    rt.settings.notify = s.notify
+    if rt.collector and rt.db:
+        issues = (rt.collector.latest or {}).get("issues", [])
+        for c in channels:
+            if c["id"] not in stored:
+                rt.collector.notifier.baseline(c["id"], issues)   # wat nu al openstaat niet alsnog sturen
+        for cid in set(stored) - {c["id"] for c in channels}:
+            rt.db.drop_notified(cid)
+    return {"ok": True}
+
+
+class NotifyTest(BaseModel):
+    channel: ChannelIn
+    base_url: str = Field(default="", max_length=300)
+
+
+@app.post("/api/notify/test")
+async def notify_test(req: NotifyTest):
+    collector, db = _need()
+    stored = {c["id"]: c for c in notify_mod.config(rt.settings)["channels"]}
+    ch = _channel(req.channel, stored)
+    if not ch["url"]:
+        raise HTTPException(400, "Vul een webhook-adres in.")
+    msg = collector.notifier.test_msg()
+    if req.base_url:
+        msg["url"] = req.base_url.rstrip("/") + "/#/issues"
+    try:
+        await collector.notifier.send(ch, msg)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Versturen mislukt: {e}") from e
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------- probleemoplossing
+def _git_version() -> str:
+    head = ROOT / ".git" / "HEAD"
+    try:
+        ref = head.read_text().strip()
+        if ref.startswith("ref:"):
+            p = ROOT / ".git" / ref[5:]
+            sha = p.read_text().strip() if p.exists() else next(
+                (ln.split()[0] for ln in (ROOT / ".git" / "packed-refs").read_text().splitlines() if ln.endswith(ref[5:])), "")
+        else:
+            sha = ref
+        return sha[:7] or "?"
+    except OSError:
+        return "lokaal"
+
+
+def scrub(text: str) -> str:
+    """Haal adressen, namen en MAC's uit een tekst, zodat hij veilig te delen is."""
+    text = re.sub(r"https?://[^\s'\"<>]+", "<url>", str(text))
+    text = re.sub(r"\b([0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", "<mac>", text, flags=re.I)
+    text = re.sub(r"\b\d{1,3}(\.\d{1,3}){3}\b", "<ip>", text)
+    host = urlsplit(rt.settings.controller_url).hostname if rt.settings.controller_url else None
+    if host:
+        text = text.replace(host, "<controller>")
+    return text
+
+
+@app.get("/api/debug")
+def debug_info():
+    s, c = rt.settings, rt.collector
+    lines = [f"UniFi Sonar {VERSION} ({_git_version()}) · Python {platform.python_version()} · {platform.system()} {platform.machine()}"]
+    if not c:
+        lines.append(f"Modus: {s.mode or 'nog niet ingesteld'}")
+        return {"text": "\n".join(lines)}
+    snap = c.latest or {}
+    port = urlsplit(s.controller_url).port if s.controller_url else None
+    lines.append(f"Modus: {s.mode} · bron: {snap.get('source') or '?'} · elke {s.poll_seconds} s · bewaren {s.retention_days} d")
+    if s.mode == "live":
+        host = urlsplit(s.controller_url).hostname or ""
+        kind = "IP-adres" if re.match(r"^[\d.]+$|:", host) else "hostnaam"
+        lines.append(f"Controller: {kind}, poort {port or 443}, certificaat controleren: {'ja' if s.verify_tls else 'nee'}")
+    si = c.sysinfo or {}
+    if si.get("network_version"):
+        lines.append(f"UniFi Network: {si['network_version']}" + (f" (build {si['build']})" if si.get("build") else ""))
+    devs = snap.get("devices", [])
+    by_type: dict[str, list[str]] = {}
+    for d in devs:
+        by_type.setdefault(d["type"], []).append(d["model"] or "?")
+    lines.append("Apparaten: " + (" · ".join(f"{len(v)} {k} ({', '.join(sorted(set(v)))})" for k, v in sorted(by_type.items())) or "geen"))
+    states = {d["state"] for d in devs if d["state"] != "online"}
+    if states:
+        lines.append("Niet online: " + ", ".join(sorted(states)))
+    cl = snap.get("clients", [])
+    lines.append(f"Clients: {sum(not x['wired'] for x in cl)} wifi · {sum(x['wired'] for x in cl)} bedraad")
+    opt = {"IPS": c.optional.get("ips", "nog niet geprobeerd" if c.ips_available is None else None),
+           "instellingen": c.optional.get("config", None if c.config else "nog niet geprobeerd")}
+    lines.append("Extra gegevens: " + " · ".join(f"{k} {'ok' if v is None else scrub(v)[:80]}" for k, v in opt.items()))
+    errs = {k: scrub(v)[:160] for k, v in (getattr(c.client, "errors", {}) or {}).items()} if c.client else {}
+    if c.last_error:
+        lines.append(f"Laatste fout: {scrub(c.last_error)[:200]}")
+    for k, v in errs.items():
+        lines.append(f"Fout bron {k}: {v}")
+    if c.last_ok:
+        lines.append(f"Laatste meting: {int(time.time() - c.last_ok)} s geleden")
+    iss = [i for i in snap.get("issues", []) if not i.get("group")]
+    kinds: dict[str, int] = {}
+    for i in iss:
+        kinds[i["key"].split(":")[0]] = kinds.get(i["key"].split(":")[0], 0) + 1
+    h = snap.get("health") or {}
+    lines.append(f"Meldingen: {len(iss)} (score {h.get('score', '?')}) · " + ", ".join(f"{k} {n}" for k, n in sorted(kinds.items())))
+    default = vars(Thresholds())
+    changed = [f"{k}={v:g}" for k, v in vars(s.thresholds).items() if v != default[k]]
+    lines.append("Aangepaste drempels: " + (", ".join(changed) if changed else "geen"))
+    ncfg = notify_mod.config(s)
+    if ncfg["channels"]:
+        st = c.notifier.status
+        lines.append("Meldingen versturen: " + ", ".join(
+            f"{ch['kind']} ({'fout: ' + scrub(st[ch['id']]['error'])[:60] if st.get(ch['id'], {}).get('error') else 'ok'})"
+            for ch in ncfg["channels"]))
+    try:
+        size = Path(s.database).stat().st_size / 1e6
+        oldest = rt.db.q("SELECT MIN(ts) t FROM wan_samples")[0]["t"]
+        lines.append(f"Database: {size:.0f} MB, historie van {round((time.time() - oldest) / 86400, 1) if oldest else 0} dagen")
+    except (OSError, TypeError):
+        pass
+    return {"text": "\n".join(lines)}
+
+
+# ----------------------------------------------------------------------- patronen
+@app.get("/api/patterns/client/{mac}")
+def patterns_client(mac: str, days: int = Query(7, ge=1, le=31)):
+    collector, db = _need()
+    since = int(time.time()) - days * 86400
+    st = db.client_ap_stats(mac.lower(), since)
+    total = sum(a["seconds"] for a in st["aps"]) or 1
+    names = {d["mac"]: d["name"] for d in (collector.latest or {}).get("devices", [])}
+    first = db.q("SELECT MIN(ts) t FROM wan_samples WHERE ts>=?", (since,))[0]["t"]   # sinds wanneer Sonar meet
+    return {"days": days, "since": first, "switches": st["switches"], "presence": db.presence(mac.lower(), since),
+            "aps": [{"ap_mac": a["ap_mac"], "name": names.get(a["ap_mac"], a["ap_mac"]), "seconds": a["seconds"],
+                     "share": round(a["seconds"] / total, 3), "signal": a["signal"]} for a in st["aps"]]}
+
+
+@app.get("/api/patterns/device/{mac}")
+def patterns_device(mac: str, days: int = Query(7, ge=1, le=31)):
+    collector, db = _need()
+    since = int(time.time()) - days * 86400
+    return {"days": days, "radios": db.radio_heatmap(mac.lower(), since)}
+
+
 @app.get("/api/snapshot")
 def snapshot():
     collector, db = _need()
@@ -253,12 +531,67 @@ def events(hours: float = 24, limit: int = 300):
     return db.events(int(time.time() - hours * 3600), limit)
 
 
+class IpsIgnore(BaseModel):
+    ip: str | None = Field(default=None, max_length=64)
+    sid: int | None = None
+    label: str = Field(default="", max_length=200)
+
+
+@app.post("/api/ips/ignore")
+def ips_ignore(req: IpsIgnore):
+    collector, db = _need()
+    if req.ip is None and req.sid is None:
+        raise HTTPException(400, "Kies een adres, een regel of allebei.")
+    if req.ip:
+        try:
+            ipaddress.ip_address(req.ip)
+        except ValueError as e:
+            raise HTTPException(400, "Geen geldig IP-adres") from e
+    db.add_ips_ignore(req.ip or None, req.sid, req.label, int(time.time()))
+    return {"ok": True}
+
+
+class IpsUnignore(BaseModel):
+    id: int
+
+
+@app.post("/api/ips/unignore")   # POST i.p.v. DELETE, zie /api/unmute
+def ips_unignore(req: IpsUnignore):
+    collector, db = _need()
+    db.remove_ips_ignore(req.id)
+    return {"ok": True}
+
+
+def _exposure(collector, rows: list[dict]) -> dict | None:
+    """Port forwards en UPnP-mappings, met hoe vaak de IPS er aanvallen op tegenhield."""
+    from .rules import _ports
+    cfg = collector.config
+    if not cfg or cfg.get("forwards") is None:
+        return None
+    who = {c["ip"]: c["name"] for c in (collector.latest or {}).get("clients", []) if c.get("ip")}
+    ext = [e for e in rows if not e["internal"]]
+    out = []
+    for f in cfg["forwards"]:
+        ports, fports = _ports(f["port"]), _ports(f["fwd_port"]) or _ports(f["port"])
+        hits = sum(1 for e in ext if e.get("dst_port") in ports or (e.get("dst_ip") == f["fwd_ip"] and e.get("dst_port") in fports))
+        out.append({**f, "target_name": who.get(f["fwd_ip"]), "attacks": hits})
+    out.sort(key=lambda f: (not f["enabled"], f["upnp"], -f["attacks"]))
+    return {"upnp_enabled": cfg.get("upnp_enabled"), "forwards": out}
+
+
 @app.get("/api/ips")
-def ips(hours: float = 24, scope: str = Query("all", pattern="^(all|internal|external)$")):
+def ips(hours: float = 24, scope: str = Query("all", pattern="^(all|internal|external)$"), ignored: bool = False):
     collector, db = _need()
     now = int(time.time())
     since = now - int(hours * 3600)
     rows = db.ips_events(since, "all")
+    ignores = db.ips_ignores()
+    for e in rows:
+        e["ignored"] = ips_ignored(e, ignores)
+    n_ignored = sum(e["ignored"] for e in rows)
+    exposure = _exposure(collector, [e for e in rows if not e["ignored"]])
+    if not ignored:
+        rows = [e for e in rows if not e["ignored"]]
     names = {c["ip"]: c["name"] for c in (collector.latest or {}).get("clients", [])
              if c.get("ip") and c["name"] != c["mac"]}
     names.update({d["ip"]: d["name"] for d in (collector.latest or {}).get("devices", []) if d.get("ip")})
@@ -291,11 +624,13 @@ def ips(hours: float = 24, scope: str = Query("all", pattern="^(all|internal|ext
         "available": collector.ips_available,
         "summary": {"total": len(rows), "internal": sum(e["internal"] for e in rows),
                     "external": sum(not e["internal"] for e in rows),
-                    "sources": len({e["src_ip"] for e in rows})},
+                    "sources": len({e["src_ip"] for e in rows}), "ignored": n_ignored},
+        "ignores": ignores, "exposure": exposure,
         "by_signature": top(lambda e: e["sid"] or e["signature"],
                             lambda e: {"signature": e["signature"], "sid": e["sid"], "category": e["category"]}),
         "by_source": top(lambda e: e["src_ip"],
-                         lambda e: {"ip": e["src_ip"], "name": e["src_name"], "net": e["src_net"], "internal": e["internal"]}),
+                         lambda e: {"ip": e["src_ip"], "name": e["src_name"], "net": e["src_net"], "internal": e["internal"],
+                                    "country": e.get("src_country")}),
         "series": list(series.values()), "bucket": bucket,
         "events": shown[:300],
     }

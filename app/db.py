@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS issues (key TEXT PRIMARY KEY, severity TEXT, category
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS muted (key TEXT PRIMARY KEY, until INT, created INT, title TEXT);
 CREATE TABLE IF NOT EXISTS ips_events (id TEXT PRIMARY KEY, ts INT, internal INT, src_ip TEXT, sid INT, data TEXT);
+CREATE TABLE IF NOT EXISTS ips_ignore (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, sid INT, label TEXT, created INT);
+CREATE TABLE IF NOT EXISTS notified (channel TEXT, key TEXT, severity TEXT, sent_ts INT, gone_ts INT, announced INT,
+    PRIMARY KEY (channel, key));
 CREATE INDEX IF NOT EXISTS ix_ips ON ips_events(ts);
 CREATE INDEX IF NOT EXISTS ix_dev ON device_samples(mac, ts);
 CREATE INDEX IF NOT EXISTS ix_radio ON radio_samples(mac, ts);
@@ -135,6 +138,119 @@ class DB:
         cond = {"internal": "AND internal=1", "external": "AND internal=0"}.get(scope, "")
         return [json.loads(r["data"]) for r in
                 self.q(f"SELECT data FROM ips_events WHERE ts>=? {cond} ORDER BY ts DESC LIMIT ?", (since, limit))]
+
+    # ------------------------------------------------------ IPS negeerregels
+    def ips_ignores(self) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM ips_ignore ORDER BY created DESC")]
+
+    def add_ips_ignore(self, ip: str | None, sid: int | None, label: str, created: int) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM ips_ignore WHERE ip IS ? AND sid IS ?", (ip, sid))
+            self.conn.execute("INSERT INTO ips_ignore (ip, sid, label, created) VALUES (?,?,?,?)", (ip, sid, label, created))
+
+    def remove_ips_ignore(self, rule_id: int) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM ips_ignore WHERE id=?", (rule_id,))
+
+    # ------------------------------------------------------------ meldingen
+    def notified(self, channel: str) -> dict[str, dict]:
+        return {r["key"]: dict(r) for r in self.q("SELECT * FROM notified WHERE channel=?", (channel,))}
+
+    def set_notified(self, channel: str, key: str, severity: str, ts: int, announced: bool = True) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO notified VALUES (?,?,?,?,NULL,?)",
+                              (channel, key, severity, ts, int(announced)))
+
+    def set_notified_gone(self, channel: str, key: str, ts: int | None) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("UPDATE notified SET gone_ts=? WHERE channel=? AND key=?", (ts, channel, key))
+
+    def drop_notified(self, channel: str, key: str | None = None) -> None:
+        with self.lock, self.conn:
+            if key is None:
+                self.conn.execute("DELETE FROM notified WHERE channel=?", (channel,))
+            else:
+                self.conn.execute("DELETE FROM notified WHERE channel=? AND key=?", (channel, key))
+
+    def issue(self, key: str) -> dict | None:
+        rows = self.q("SELECT data FROM issues WHERE key=?", (key,))
+        return json.loads(rows[0]["data"]) if rows else None
+
+    def first_seen(self) -> dict[str, int]:
+        return {r["key"]: r["first_seen"] for r in self.q("SELECT key, first_seen FROM issues WHERE resolved_at IS NULL")}
+
+    # ------------------------------------------------------------- patronen
+    def last_state_ts(self, mac: str, state: str = "online") -> int | None:
+        return self.q("SELECT MAX(ts) t FROM device_samples WHERE mac=? AND state=?", (mac, state))[0]["t"]
+
+    def client_ap_stats(self, mac: str, since: int, gap: int = 300) -> dict:
+        """Per AP: tijd (s) en gemiddeld signaal, plus hoe vaak de client van AP wisselde."""
+        rows = self.q("SELECT ts, ap_mac, signal FROM client_samples WHERE mac=? AND ts>=? AND ap_mac IS NOT NULL "
+                      "ORDER BY ts", (mac, since))
+        per: dict[str, dict] = {}
+        switches, prev = 0, None
+        for i, r in enumerate(rows):
+            nxt = rows[i + 1]["ts"] if i + 1 < len(rows) else r["ts"] + 60
+            dt = max(0, min(gap, nxt - r["ts"]))
+            a = per.setdefault(r["ap_mac"], {"ap_mac": r["ap_mac"], "seconds": 0, "n": 0, "_sig": 0.0, "_ns": 0})
+            a["seconds"] += dt
+            a["n"] += 1
+            if r["signal"] is not None:
+                a["_sig"] += r["signal"]
+                a["_ns"] += 1
+            if prev and prev != r["ap_mac"]:
+                switches += 1
+            prev = r["ap_mac"]
+        for a in per.values():
+            a["signal"] = round(a.pop("_sig") / a["_ns"], 1) if a["_ns"] else None
+            a.pop("_ns")
+        return {"aps": sorted(per.values(), key=lambda a: -a["seconds"]), "switches": switches}
+
+    def _slot_seconds(self, sql: str, args: tuple, gap: int = 300) -> dict[tuple, float]:
+        """Tijd per (weekdag ma=0, uur) uit een gesorteerde reeks tijdstippen (lokale tijd)."""
+        import time as _t
+        rows = [r[0] for r in self.q(sql, args)]
+        out: dict[tuple, float] = defaultdict(float)
+        for i, t in enumerate(rows):
+            nxt = rows[i + 1] if i + 1 < len(rows) else t + 60
+            lt = _t.localtime(t)
+            out[(lt.tm_wday, lt.tm_hour)] += max(0, min(gap, nxt - t))
+        return out
+
+    def presence(self, mac: str, since: int) -> list[list[float | None]]:
+        """7×24 raster: deel van de gemeten tijd dat de client verbonden was (None = geen metingen)."""
+        seen = self._slot_seconds("SELECT ts FROM client_samples WHERE mac=? AND ts>=? ORDER BY ts", (mac, since))
+        base = self._slot_seconds("SELECT ts FROM wan_samples WHERE ts>=? ORDER BY ts", (since,))
+        return [[round(min(1.0, seen.get((d, h), 0) / base[(d, h)]), 3) if base.get((d, h)) else None
+                 for h in range(24)] for d in range(7)]
+
+    def radio_heatmap(self, mac: str, since: int) -> dict[str, dict]:
+        import time as _t
+        acc: dict[str, dict] = {}
+        for r in self.q("SELECT ts, radio, cu_total, interference, num_clients FROM radio_samples WHERE mac=? AND ts>=?",
+                        (mac, since)):
+            lt = _t.localtime(r["ts"])
+            cell = acc.setdefault(r["radio"], {}).setdefault((lt.tm_wday, lt.tm_hour), [0.0, 0.0, 0.0, 0])
+            cell[0] += r["cu_total"] or 0
+            cell[1] += r["interference"] or 0
+            cell[2] += r["num_clients"] or 0
+            cell[3] += 1
+        out = {}
+        for radio, cells in acc.items():
+            grid = {k: [[None] * 24 for _ in range(7)] for k in ("cu", "interference", "clients")}
+            for (d, h), (cu, intf, ncl, n) in cells.items():
+                grid["cu"][d][h] = round(cu / n, 1)
+                grid["interference"][d][h] = round(intf / n, 1)
+                grid["clients"][d][h] = round(ncl / n, 1)
+            out[radio] = grid
+        return out
+
+    def store_rows(self, table: str, rows: list[tuple]) -> None:
+        """Ruwe rijen (demodata-historie)."""
+        if not rows:
+            return
+        with self.lock, self.conn:
+            self.conn.executemany(f"INSERT INTO {table} VALUES ({','.join('?' * len(rows[0]))})", rows)
 
     def is_empty(self) -> bool:
         return not self.q("SELECT 1 FROM wan_samples LIMIT 1")

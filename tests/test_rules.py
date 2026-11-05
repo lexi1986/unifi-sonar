@@ -15,9 +15,13 @@ class EmptyDB:
     def radio_window(self, since): return {}
     def port_window(self, since): return {}
     def wan_window(self, since): return {}
-    def event_counts(self, since, kind): return {}
-    def ips_events(self, since, scope="all", limit=5000): return getattr(self, "ips", [])
+    def event_counts(self, since, kind): return getattr(self, "events", {}).get(kind, {})
+    def ips_events(self, since, scope="all", limit=5000):
+        return [e for e in getattr(self, "ips", []) if scope == "all" or e["internal"] == (scope == "internal")]
     def client_before(self, mac, t0, t1): return None
+    def last_state_ts(self, mac, state="online"): return getattr(self, "online_ts", None)
+    def client_ap_stats(self, mac, since): return getattr(self, "ap_stats", {}).get(mac, {"aps": [], "switches": 0})
+    def ips_ignores(self): return getattr(self, "ignores", [])
     def q(self, *a): return [{"n": 0}]
 
 
@@ -98,7 +102,8 @@ def test_mock_end_to_end(tmp_path):
     seen = col.db.issues(open_only=False, limit=1000)   # ook issues die tussendoor opgelost zijn
     keys = {i["key"].split(":")[0] for i in seen}
     titles = " ".join(i["title"] for i in seen)
-    assert {"coverage", "client_roam", "port_err", "port_speed", "dev_poe", "port_flap", "dev_fw", "ips_internal"} <= keys
+    assert {"coverage", "client_roam", "port_err", "port_speed", "dev_poe", "port_flap", "dev_fw", "ips_internal",
+            "cfg_cochannel5", "cfg_ch24", "cfg_bandsteer", "cfg_ft", "upnp_on", "upnp_priv", "pf_risky"} <= keys
     assert "Ring Deurbel" in titles and "Sonos Keuken" in titles
 
 
@@ -187,3 +192,131 @@ def test_sticky_without_history_needs_weak_signal_on_ap_that_stayed_up():
     out = {i["key"]: i for i in rules.evaluate(snap([a1, a2], [weak, ok, back, old]), db, Thresholds(), TS)}
     assert out["sticky:lamp"]["severity"] == "info"
     assert not any(k in out for k in ("sticky:bulb", "sticky:tv", "sticky:old"))
+
+
+# ---------------------------------------------------------------- tijdelijke toestand, stille controller
+def test_upgrading_is_info_then_warning():
+    db = EmptyDB(); db.online_ts = TS - 120
+    out = {i["key"]: i for i in rules.evaluate(snap([ap(state="upgrading")], []), db, Thresholds(), TS)}
+    assert out["dev_state:ap1"]["severity"] == "info"
+    db.online_ts = TS - 3600
+    out = {i["key"]: i for i in rules.evaluate(snap([ap(state="upgrading")], []), db, Thresholds(), TS)}
+    assert out["dev_state:ap1"]["severity"] == "warning" and "blijft hangen" in out["dev_state:ap1"]["title"]
+
+
+def test_controller_quiet_groups_offline_devices():
+    devs = [ap("a", state="offline"), ap("b", state="offline"), ap("c", state="heartbeat_missed"), ap("d")]
+    out = run(snap(devs, []))
+    assert out["controller_quiet"]["severity"] == "critical"
+    assert all(out[f"dev_state:{m}"]["group"] == "controller_quiet" for m in "abc")
+    assert "controller_quiet" not in run(snap([ap("a", state="offline"), ap("b"), ap("c"), ap("d")], []))
+
+
+def test_reboot_by_firmware_update_is_not_flagged():
+    db = EmptyDB(); db.events = {"device_reboot": {"ap1": 1}, "device_upgrade": {"ap1": 1}}
+    assert "dev_reboot:ap1" not in {i["key"] for i in rules.evaluate(snap([ap()], []), db, Thresholds(), TS)}
+    db.events["device_reboot"]["ap1"] = 2
+    assert "dev_reboot:ap1" in {i["key"] for i in rules.evaluate(snap([ap()], []), db, Thresholds(), TS)}
+
+
+# ---------------------------------------------------------------- blijft hangen (algemeen)
+def _sticky_db(switches=1):
+    db = EmptyDB()
+    db.ap_stats = {"lamp": {"switches": switches, "aps": [
+        {"ap_mac": "near", "seconds": 6 * 86400, "n": 8000, "signal": -58.0},
+        {"ap_mac": "far", "seconds": 7200, "n": 120, "signal": -79.0}]}}
+    return db
+
+
+def test_sticky_general_static_device():
+    devs = [ap("near", uptime=30 * 86400), ap("far", uptime=30 * 86400)]
+    lamp = client("lamp", ap_mac="far", signal=-79, assoc_ts=TS - 2 * 3600)
+    out = {i["key"]: i for i in rules.evaluate(snap(devs, [lamp]), _sticky_db(), Thresholds(), TS)}
+    i = out["sticky:lamp"]
+    assert i["severity"] == "warning" and i["reconnect"] and "AP near" in i["detail"]
+    assert out["client_signal:lamp"]["group"] == "sticky:lamp"
+
+
+def test_sticky_general_skips_mobile_locked_and_fresh():
+    devs = [ap("near", uptime=30 * 86400), ap("far", uptime=30 * 86400)]
+    lamp = client("lamp", ap_mac="far", signal=-79, assoc_ts=TS - 2 * 3600)
+    keys = lambda c, db: {i["key"] for i in rules.evaluate(snap(devs, [c]), db, Thresholds(), TS)}  # noqa: E731
+    assert "sticky:lamp" not in keys(lamp, _sticky_db(switches=40))                    # telefoon die rondloopt
+    assert "sticky:lamp" not in keys(dict(lamp, fixed_ap="far"), _sticky_db())          # bewust vastgezet
+    assert "sticky:lamp" not in keys(dict(lamp, assoc_ts=TS - 600), _sticky_db())       # net verbonden
+
+
+# ---------------------------------------------------------------- instellingen
+def radio(band, ch, width=20, **kw):
+    r = dict(radio=band, channel=ch, channel_auto=False, width=width, tx_power=20, tx_power_mode="auto", min_rssi=None,
+             cu_total=10, cu_self=5, interference=5, num_clients=2, satisfaction=95, tx_packets=1, tx_retries=0, retry_pct=2)
+    r.update(kw)
+    return r
+
+
+def test_blocks5():
+    assert rules._blocks5(44, 80) == {36, 40, 44, 48}
+    assert rules._blocks5(104, 40) == {100, 104}
+    assert rules._blocks5(157, 80) == {149, 153, 157, 161}
+    assert rules._blocks5("auto", 80) == set()
+
+
+def test_config_checks():
+    a = ap("a", bandsteering="prefer_5g", radios=[radio("2.4", 6), radio("5", 36, 80)])
+    b = ap("b", bandsteering="off", radios=[radio("2.4", 6, 40), radio("5", 44, 80)])
+    c = ap("c", bandsteering="prefer_5g", radios=[radio("2.4", 1), radio("5", 149, 80, min_rssi=-65)])
+    s = snap([a, b, c], [])
+    s["config"] = {"wlans": [
+        {"name": "Thuis", "enabled": True, "bands": ["2.4", "5"], "guest": False, "iot": False,
+         "fast_roaming": False, "bss_transition": True, "minrate_24": 1000},
+        {"name": "IoT", "enabled": True, "bands": ["2.4"], "guest": False, "iot": True,
+         "fast_roaming": False, "bss_transition": False, "minrate_24": 1000}], "upnp_enabled": None, "forwards": None}
+    out = run(s)
+    assert out["cfg_cochannel5:a,b"]["severity"] == "info"
+    assert "kanaal 11" in out["cfg_ch24"]["title"]
+    assert "niet overal" in out["cfg_bandsteer"]["title"]
+    assert "cfg_ft:Thuis" in out and "cfg_minrate:Thuis" in out
+    assert "cfg_ft:IoT" not in out and "cfg_minrate:IoT" not in out      # IoT-netwerk met rust laten
+    assert out["cfg_width24:b@2.4"]["severity"] == "warning"
+    assert out["cfg_minrssi:c@5"]["severity"] == "warning"
+
+
+def test_normalize_config_drops_secrets():
+    from app.unifi_client import normalize_config
+    cfg = normalize_config([{"name": "x", "x_passphrase": "geheim", "x_iapp_key": "k", "wlan_band": "both"}],
+                           [{"key": "usg", "upnp_enabled": True}],
+                           [{"name": "pf", "dst_port": "22", "fwd": "10.0.0.2", "fwd_port": "22", "enabled": True}])
+    assert "geheim" not in str(cfg) and "x_iapp" not in str(cfg)
+    assert cfg["wlans"][0]["bands"] == ["2.4", "5"] and cfg["upnp_enabled"] is True and not cfg["forwards"][0]["upnp"]
+
+
+# ---------------------------------------------------------------- open naar internet + IPS negeren
+def _ext(port, n, ip="198.51.100.7"):
+    return [{"ts": TS - 60, "src_ip": ip, "dst_ip": "203.0.113.1", "dst_port": port, "sid": 1, "internal": False}] * n
+
+
+def test_exposure_checks():
+    s = snap([ap()], [client("nas", wired=True, ip="10.0.0.2", name="NAS")])
+    fw = [{"name": "NAS SSH", "enabled": True, "upnp": False, "proto": "tcp", "port": "22", "fwd_ip": "10.0.0.2",
+           "fwd_port": "22", "src": "any", "rx_bytes": 0},
+          {"name": "Web", "enabled": True, "upnp": False, "proto": "tcp", "port": "443", "fwd_ip": "10.0.0.3",
+           "fwd_port": "8443", "src": "any", "rx_bytes": 0},
+          {"name": "UPnP", "enabled": True, "upnp": True, "proto": "tcp", "port": "80", "fwd_ip": "10.0.0.9",
+           "fwd_port": "80", "src": "any", "rx_bytes": 0}]
+    s["config"] = {"wlans": None, "upnp_enabled": True, "forwards": fw}
+    db = EmptyDB()
+    db.ips = _ext(443, 12)
+    out = {i["key"]: i for i in rules.evaluate(s, db, Thresholds(), TS)}
+    assert "SSH" in out["pf_risky:22"]["title"] and "NAS" in out["pf_risky:22"]["detail"]
+    assert out["pf_attacked:443"]["value"] == 12
+    assert "upnp_on" in out and out["upnp_priv:10.0.0.9:80"]["severity"] == "warning"
+    db.ignores = [{"ip": "198.51.100.7", "sid": None}]
+    assert "pf_attacked:443" not in {i["key"] for i in rules.evaluate(s, db, Thresholds(), TS)}
+
+
+def test_ips_ignore_rules():
+    e = {"src_ip": "10.0.0.5", "sid": 7}
+    assert rules.ips_ignored(e, [{"ip": "10.0.0.5", "sid": None}])
+    assert rules.ips_ignored(e, [{"ip": None, "sid": 7}])
+    assert rules.ips_ignored(e, [{"ip": "10.0.0.5", "sid": 7}])
+    assert not rules.ips_ignored(e, [{"ip": "10.0.0.5", "sid": 8}, {"ip": "10.0.0.6", "sid": None}])

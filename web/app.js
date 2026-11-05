@@ -39,7 +39,8 @@
   const devIcon = (t) => ({ gateway: "router", switch: "switch", ap: "ap" }[t] || "router");
   const SOURCE_LABEL = { "legacy-key": "uitgebreide API", "legacy-login": "uitgebreide API (account)", integration: "officiële API (beperkt)", mock: "demodata" };
   const SEV = { critical: ["Kritiek", "octagon"], warning: ["Waarschuwing", "alert"], info: ["Info", "info"] };
-  const CAT = { wifi: "Wifi", switch: "Switch", device: "Apparaat", wan: "Internet", security: "Beveiliging" };
+  const CAT = { wifi: "Wifi", switch: "Switch", device: "Apparaat", wan: "Internet", security: "Beveiliging", config: "Configuratie" };
+  const DAYS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
 
   // ------------------------------------------------------------------ helpers
   const $ = (s, r = document) => r.querySelector(s);
@@ -143,12 +144,12 @@
   }
 
   function renderStatus() {
-    const s = state.status, h = state.snap.health;
+    const s = state.status, h = state.snap?.health || {};
     const stale = s.last_ok && Date.now() / 1000 - s.last_ok > s.poll_seconds * 3;
     const dot = s.last_error || stale ? "err" : s.mode === "mock" ? "warn" : "";
     const src = s.mode === "mock" ? "Demodata" : `Live · ${SOURCE_LABEL[s.source] || s.source || "?"}`;
     $("#status").innerHTML = `<span class="dot ${dot}"></span>${esc(src)} · bijgewerkt ${ago(s.last_ok)} geleden`;
-    const top = state.issues.filter((i) => !i.group && !i.resolved_at && !i.muted);
+    const top = (state.issues || []).filter((i) => !i.group && !i.resolved_at && !i.muted);
     const cnt = $("#nav-issues");
     cnt.textContent = top.length;
     cnt.className = "count" + (h.critical ? " crit" : "");
@@ -387,7 +388,7 @@
         <button class="chip" id="is-resolved" aria-pressed="${state.showResolved}">${icon("clock")}Ook opgeloste tonen</button></div></div>
       <div class="toolbar">
         <div class="chips" role="group" aria-label="Ernst">${chips("sev", [["all", "Alles"], ["critical", "Kritiek"], ["warning", "Waarschuwing"], ["info", "Info"]], state.issueSev)}</div>
-        <div class="chips" role="group" aria-label="Categorie">${chips("cat", [["all", "Alle categorieën"], ["wifi", "Wifi"], ["switch", "Switch"], ["device", "Apparaat"], ["wan", "Internet"], ["security", "Beveiliging"]], state.issueCat)}</div>
+        <div class="chips" role="group" aria-label="Categorie">${chips("cat", [["all", "Alle categorieën"], ["wifi", "Wifi"], ["switch", "Switch"], ["device", "Apparaat"], ["wan", "Internet"], ["security", "Beveiliging"], ["config", "Configuratie"]], state.issueCat)}</div>
       </div>
       <div class="issue-list" id="is-list"></div>`);
     $("#view").querySelector(".toolbar").addEventListener("click", (e) => {
@@ -536,7 +537,8 @@
   };
 
   // ------------------------------------------------------------------ beveiliging
-  const secState = { hours: store.get("sec.hours", 24), scope: "all" };
+  const secState = { hours: store.get("sec.hours", 24), scope: "all", ignored: false };
+  const ignMenu = (opts) => `<details class="mute ign"><summary class="mutebtn">Negeren</summary><div class="mute-menu" role="group" aria-label="Negeren">${opts.map(([l, o]) => `<button data-ign="${esc(JSON.stringify(o))}">${l}</button>`).join("")}</div></details>`;
   const catLabel = (c) => (c || "").replace(/^emerging-/, "").replace(/-/g, " ");
   function mountSecurity() {
     mount("beveiliging", `
@@ -548,9 +550,12 @@
         <div class="card"><div class="card-head"><h2 style="margin:0">Meest geraakte regels</h2></div><div class="rank" id="sec-sigs"></div></div>
         <div class="card"><div class="card-head"><h2 style="margin:0">Bronnen</h2></div><div class="rank" id="sec-srcs"></div></div>
       </section>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">Open naar internet</h2><span class="muted" id="sec-expo-sub"></span></div><div id="sec-expo"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>Blokkades in de tijd</h3><span class="muted" id="sec-bucket"></span></div><div id="sec-chart"></div></section>
-      <div class="toolbar"><div class="chips" role="group" aria-label="Bron" id="sec-scope">${[["all", "Alles"], ["internal", "Eigen apparaten"], ["external", "Van buiten"]].map(([v, l]) => `<button class="chip" data-s="${v}" aria-pressed="${secState.scope === v}">${l}</button>`).join("")}</div></div>
-      <div class="table-wrap" id="sec-table"></div>`);
+      <div class="toolbar"><div class="chips" role="group" aria-label="Bron" id="sec-scope">${[["all", "Alles"], ["internal", "Eigen apparaten"], ["external", "Van buiten"]].map(([v, l]) => `<button class="chip" data-s="${v}" aria-pressed="${secState.scope === v}">${l}</button>`).join("")}</div>
+        <button class="chip" id="sec-ignored" aria-pressed="${secState.ignored}">Genegeerde tonen <span class="num" id="sec-ignored-n"></span></button></div>
+      <div class="table-wrap" id="sec-table"></div>
+      <section class="card" style="margin-top:16px" id="sec-ign-card" hidden><div class="card-head"><h3>Negeerregels</h3><span class="muted">tellen niet mee in de cijfers en geven geen meldingen</span></div><div id="sec-ign"></div></section>`);
     $("#sec-range").addEventListener("click", (e) => {
       const b = e.target.closest("button[data-h]"); if (!b) return;
       secState.hours = +b.dataset.h; store.set("sec.hours", secState.hours);
@@ -563,10 +568,33 @@
       $("#sec-scope").querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", x === b));
       UPDATERS.beveiliging();
     });
+    $("#sec-ignored").onclick = (e) => { secState.ignored = !secState.ignored; e.currentTarget.setAttribute("aria-pressed", secState.ignored); UPDATERS.beveiliging(); };
+  }
+  $("#view").addEventListener("click", async (e) => {   // één keer gebonden; #view blijft bestaan
+    const g = e.target.closest("[data-ign]"), u = e.target.closest("[data-unign]");
+    if ((!g && !u) || current !== "beveiliging") return;
+    e.preventDefault();
+    try {
+      if (g) await post("/api/ips/ignore", JSON.parse(g.dataset.ign));
+      else await post("/api/ips/unignore", { id: +u.dataset.unign });
+    } catch (err) { alert(err.message); }
+    UPDATERS.beveiliging();
+  });
+  function exposureHTML(x) {
+    if (!x) return `<p class="muted">Port forwards en UPnP zijn alleen te zien via de uitgebreide UniFi-API (API-key of lokaal account).</p>`;
+    const f = x.forwards;
+    if (!f.length) return `<div class="empty">${icon("check")}<div>Geen port forwards en geen actieve UPnP-mappings</div></div>`;
+    return `<div class="table-wrap" style="border:0"><table><thead><tr><th>Naam</th><th>Poort op internet</th><th>Naar</th><th>Soort</th><th class="r">Aanvallen</th><th>Status</th></tr></thead><tbody>
+      ${f.map((r) => `<tr style="cursor:default" class="${r.enabled ? "" : "off"}"><td class="cell-name">${esc(r.name)}</td>
+        <td class="num">${esc(r.port)}<span class="muted"> ${esc(r.proto)}</span></td>
+        <td>${esc(r.target_name || r.fwd_ip)}<div class="cell-sub">${esc(r.fwd_ip)}:${esc(r.fwd_port || r.port)}</div></td>
+        <td>${r.upnp ? badge("info", "UPnP") : badge("", "Vast")}${r.src && r.src !== "any" ? `<div class="cell-sub">alleen ${esc(r.src)}</div>` : ""}</td>
+        <td class="r num ${r.attacks >= 10 ? "t-warning" : ""}">${r.enabled ? nf(r.attacks) : "–"}</td>
+        <td>${r.enabled ? badge("warning", "Open", "globe") : badge("", "Uit")}</td></tr>`).join("")}</tbody></table></div>`;
   }
   const srcLabel = (e) => `${esc(e.src_name && e.src_name !== e.src_ip ? e.src_name : e.src_ip)}${e.src_name && e.src_name !== e.src_ip ? `<div class="cell-sub">${esc(e.src_ip)}</div>` : ""}`;
   UPDATERS.beveiliging = async function () {
-    const d = await api(`/api/ips?hours=${secState.hours}&scope=${secState.scope}`);
+    const d = await api(`/api/ips?hours=${secState.hours}&scope=${secState.scope}&ignored=${secState.ignored}`);
     if (current !== "beveiliging") return;
     const s = d.summary;
     $("#sec-banner").innerHTML = d.available === false
@@ -579,26 +607,37 @@
         <div class="sub">${s.internal ? badge("warning", "Bekijken", "alert") : badge("ok", "Geen", "check")}</div></div>
       <div class="card compact kpi"><div class="label">${icon("users")}Unieke bronnen</div><div class="value">${nf(s.sources)}</div><div class="sub">IP-adressen</div></div>`;
     const max1 = Math.max(1, ...d.by_signature.map((x) => x.count)), max2 = Math.max(1, ...d.by_source.map((x) => x.count));
+    const srcName = (x) => (x.name && x.name !== x.ip ? `${x.name} (${x.ip})` : x.ip);
     $("#sec-sigs").innerHTML = d.by_signature.length ? d.by_signature.map((x) => `
       <div class="rank-row"><div class="rank-main"><div class="rank-name" title="${esc(x.signature)}">${esc(x.signature)}</div><div class="cell-sub">${esc(catLabel(x.category))}${x.sid ? ` · SID ${x.sid}` : ""}</div></div>
-        <div class="rank-bar">${meter(100 * x.count / max1)}</div><span class="num rank-n">${x.count}</span></div>`).join("")
+        <div class="rank-bar">${meter(100 * x.count / max1)}</div><span class="num rank-n">${x.count}</span>
+        <span>${x.sid ? ignMenu([["Negeer deze regel", { sid: x.sid, label: x.signature }]]) : ""}</span></div>`).join("")
       : `<div class="empty">${icon("check")}<div>Niets geblokkeerd in deze periode</div></div>`;
     $("#sec-srcs").innerHTML = d.by_source.length ? d.by_source.map((x) => `
-      <div class="rank-row"><div class="rank-main"><div class="rank-name">${esc(x.name && x.name !== x.ip ? `${x.name} (${x.ip})` : x.ip)}</div><div class="cell-sub">${x.internal ? badge("warning", "eigen netwerk", "home") : badge("", "internet", "globe")} ${esc(x.net || "")}</div></div>
-        <div class="rank-bar">${meter(100 * x.count / max2, x.internal ? "warning" : "")}</div><span class="num rank-n">${x.count}</span></div>`).join("")
+      <div class="rank-row"><div class="rank-main"><div class="rank-name">${esc(srcName(x))}</div><div class="cell-sub">${x.internal ? badge("warning", "eigen netwerk", "home") : badge("", "internet", "globe")} ${esc(x.net || "")}</div></div>
+        <div class="rank-bar">${meter(100 * x.count / max2, x.internal ? "warning" : "")}</div><span class="num rank-n">${x.count}</span>
+        <span>${ignMenu([["Negeer dit adres", { ip: x.ip, label: srcName(x) }]])}</span></div>`).join("")
       : `<div class="empty">Geen bronnen</div>`;
+    $("#sec-expo-sub").textContent = d.exposure ? (d.exposure.upnp_enabled ? "UPnP staat aan" : d.exposure.upnp_enabled === false ? "UPnP staat uit" : "") + ` · aanvallen in de afgelopen ${per}` : "";
+    $("#sec-expo").innerHTML = exposureHTML(d.exposure);
+    $("#sec-ignored-n").textContent = s.ignored ? `(${s.ignored})` : "";
+    $("#sec-ign-card").hidden = !d.ignores.length;
+    $("#sec-ign").innerHTML = d.ignores.map((r) => `<div class="rank-row ign-row"><div class="rank-main"><div class="rank-name">${esc(r.label || (r.ip || "") + (r.sid ? " SID " + r.sid : ""))}</div>
+      <div class="cell-sub">${r.ip && r.sid ? `regel ${r.sid} voor ${esc(r.ip)}` : r.ip ? `alle regels voor ${esc(r.ip)}` : `regel ${r.sid}, alle adressen`} · sinds ${new Date(r.created * 1000).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}</div></div>
+      <button class="linkbtn" data-unign="${r.id}">Niet meer negeren</button></div>`).join("");
     $("#sec-bucket").textContent = d.bucket === 3600 ? "per uur" : "per 6 uur";
     MEcharts.lineChart($("#sec-chart"), { series: [
       { name: "Van buiten", color: C.cyan, data: d.series.map((p) => [p.t, p.external]) },
       { name: "Eigen apparaten", color: C.amber, data: d.series.map((p) => [p.t, p.internal]) }],
       yMin: 0, bucket: d.bucket, fmt: (v) => nf(v), label: "Aantal IPS-blokkades" });
     const ev = d.events;
-    $("#sec-table").innerHTML = ev.length ? `<table><thead><tr><th>Tijd</th><th>Bron</th><th>Doel</th><th>Regel</th><th>Risico</th></tr></thead><tbody>
+    $("#sec-table").innerHTML = ev.length ? `<table><thead><tr><th>Tijd</th><th>Bron</th><th>Doel</th><th>Regel</th><th>Risico</th><th><span class="sr-only">Acties</span></th></tr></thead><tbody>
       ${ev.map((e) => `<tr style="cursor:default"><td class="num"><div>${hhmm(e.ts)}</div><div class="cell-sub">${new Date(e.ts * 1000).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}</div></td>
         <td>${e.internal ? `<span class="t-warning">${icon("home", "")}</span> ` : ""}${srcLabel(e)}<div class="cell-sub">${esc(e.src_net || "")}</div></td>
         <td>${esc(e.dst_name || e.dst_ip)}${e.dst_port ? `<span class="muted">:${e.dst_port}</span>` : ""}<div class="cell-sub">${esc([e.proto, e.service].filter(Boolean).join(" · "))}</div></td>
         <td style="white-space:normal;min-width:240px"><div>${esc(e.signature)}</div><div class="cell-sub">${esc(catLabel(e.category))}${e.sid ? ` · SID ${e.sid}` : ""}</div></td>
-        <td>${badge(e.risk === "high" ? "critical" : e.risk === "medium" ? "warning" : "", e.risk || "–")}</td></tr>`).join("")}</tbody></table>`
+        <td>${badge(e.risk === "high" ? "critical" : e.risk === "medium" ? "warning" : "", e.risk || "–")}${e.ignored ? ` ${badge("", "genegeerd")}` : ""}</td>
+        <td>${e.ignored ? "" : ignMenu([...(e.sid ? [["Deze regel voor dit adres", { ip: e.src_ip, sid: e.sid, label: `${e.signature} · ${e.src_name || e.src_ip}` }], ["Deze regel overal", { sid: e.sid, label: e.signature }]] : []), ["Dit adres", { ip: e.src_ip, label: e.src_name || e.src_ip }]])}</td></tr>`).join("")}</tbody></table>`
       : `<div class="empty">${icon("check")}<div>Geen blokkades voor deze filter</div></div>`;
   };
 
@@ -731,36 +770,189 @@
 
   // ------------------------------------------------------------------ instellingen
   function mountSettings() {
-    mount("instellingen", `<div class="page-head"><div><h1>Instellingen</h1><p class="subtitle">Koppeling met je UniFi-controller.</p></div></div><div id="set-body"></div>`);
-    $("#set-body").addEventListener("click", (e) => {
+    mount("instellingen", `<div class="page-head"><div><h1>Instellingen</h1><p class="subtitle">Koppeling, meldingen naar je telefoon, toegang en probleemoplossing.</p></div></div>
+      <div class="settings">
+        <section class="card" aria-labelledby="h-conn"><h2 id="h-conn">Koppeling</h2><div id="set-conn"></div></section>
+        <section class="card" aria-labelledby="h-notify"><h2 id="h-notify">Meldingen versturen</h2>
+          <p class="help" style="margin:-4px 0 4px">Krijg een bericht als er iets misgaat: via Home Assistant, ntfy, Discord, Slack of een eigen webhook.</p><div id="set-notify"></div></section>
+        <section class="card" aria-labelledby="h-access"><h2 id="h-access">Toegang</h2><div id="set-access"></div></section>
+        <section class="card" aria-labelledby="h-debug"><h2 id="h-debug">Probleemoplossing</h2><div id="set-debug"></div></section>
+      </div>
+      <p class="muted" style="font-size:12px;margin-top:16px">UniFi Sonar is een onofficieel hobbyproject en niet verbonden aan Ubiquiti.</p>`);
+    $("#set-conn").addEventListener("click", (e) => {
       const b = e.target.closest("[data-act]");
       if (!b) return;
       if (b.dataset.act === "change") { wiz.step = 2; wiz.address = ""; showWizard(2); }
       if (b.dataset.act === "demo") { wiz.step = 1; showWizard(1); }
     });
+    loadNotify(); loadAccess(); loadDebug();
   }
-  UPDATERS.instellingen = async function () {
+  UPDATERS.instellingen = async function () {   // alleen de koppeling ververst; formulieren blijven staan
     const info = await api("/api/setup").catch(() => ({}));
     const s = state.status || {};
-    if (current !== "instellingen" || !$("#set-body")) return;
+    if (current !== "instellingen" || !$("#set-conn")) return;
     const live = info.mode === "live";
-    $("#set-body").innerHTML = `<div class="card" style="max-width:760px">
+    $("#set-conn").innerHTML = `
       ${kv([["Modus", live ? badge("ok", "Live", "check") : badge("info", "Demodata")],
             ["Controller", live ? esc(info.controller_url) : "–"], ["Site", live ? esc(info.site) : "–"],
             ["Bron", esc(SOURCE_LABEL[s.source] || s.source || "–")], ["Laatste meting", s.last_ok ? `${ago(s.last_ok)} geleden` : "–"],
             ["API-key", info.has_api_key ? "opgeslagen (verborgen)" : "–"]])}
       ${s.last_error ? `<div class="banner err" style="margin-top:16px">${icon("octagon")}<span>${esc(s.last_error)}</span></div>` : ""}
       <div class="wiz-actions" style="margin-top:20px"><button class="btn primary" data-act="change">${live ? "Koppeling wijzigen" : "Koppel mijn UniFi-controller"}</button>
-      ${live ? `<button class="btn" data-act="demo">Overschakelen naar demodata</button>` : ""}</div></div>
-      <p class="muted" style="font-size:12px;margin-top:16px">UniFi Sonar is een onofficieel hobbyproject en niet verbonden aan Ubiquiti.</p>`;
+      ${live ? `<button class="btn" data-act="demo">Overschakelen naar demodata</button>` : ""}</div>`;
   };
+
+  // ---- meldingen versturen
+  const KIND = {
+    homeassistant: ["Home Assistant", "http://homeassistant.local:8123/api/webhook/unifi-sonar",
+      "Maak in Home Assistant een automatisering met als trigger <b>Webhook</b> (bijv. ID <code>unifi-sonar</code>) en plak hier de webhook-URL. In de automatisering heb je <code>trigger.json.title</code>, <code>.message</code>, <code>.severity</code> en <code>.event</code>."],
+    ntfy: ["ntfy", "https://ntfy.sh/kies-een-lastig-te-raden-naam",
+      "Installeer de ntfy-app, abonneer je op een topic met een lastig te raden naam en vul die URL hier in. Eigen ntfy-server met login? Vul dan ook een toegangstoken in."],
+    discord: ["Discord", "https://discord.com/api/webhooks/…",
+      "In Discord: Serverinstellingen → Integraties → Webhooks → Nieuwe webhook → Webhook-URL kopiëren."],
+    slack: ["Slack", "https://hooks.slack.com/services/…", "Maak een <b>Incoming Webhook</b> aan in Slack en plak de URL hier."],
+    webhook: ["Eigen webhook", "https://…",
+      "Krijgt een POST met JSON: <code>event</code>, <code>severity</code>, <code>title</code>, <code>message</code>, <code>url</code> en <code>key</code>. Handig voor n8n of Node-RED."],
+  };
+  const nfy = { cfg: null, msg: {}, saving: false, banner: null };
+  async function loadNotify() {
+    try { nfy.cfg = await api("/api/notify"); } catch (e) { nfy.cfg = null; }
+    if (nfy.cfg && !nfy.cfg.base_url) nfy.cfg.base_url = location.origin;
+    renderNotify();
+  }
+  function readNotify() {
+    const root = $("#set-notify");
+    if (!root || !nfy.cfg) return;
+    nfy.cfg.delay_min = +root.querySelector("#n-delay").value;
+    const dh = root.querySelector("#n-digest").value;
+    nfy.cfg.digest_hour = dh === "" ? null : +dh;
+    nfy.cfg.base_url = root.querySelector("#n-base").value.trim();
+    root.querySelectorAll("[data-ch]").forEach((n) => {
+      const c = nfy.cfg.channels[+n.dataset.ch];
+      c.kind = n.querySelector("[name=kind]").value;
+      c.url = n.querySelector("[name=url]").value.trim();
+      const t = n.querySelector("[name=token]");
+      if (t && t.value) c.token = t.value.trim();
+      c.min_severity = n.querySelector("[name=sev]").value;
+      c.resolved = n.querySelector("[name=resolved]").checked;
+      c.enabled = n.querySelector("[name=enabled]").checked;
+    });
+  }
+  function channelHTML(c, i) {
+    const [label, ph, help] = KIND[c.kind] || KIND.webhook;
+    const st = c.status || {};
+    const msg = nfy.msg[i];
+    const stat = msg ? `<span class="${msg.ok ? "t-ok" : "t-critical"}">${esc(msg.text)}</span>`
+      : st.error ? `<span class="t-critical">Laatste poging mislukt: ${esc(st.error)}</span>`
+      : st.ok ? `<span class="muted">Laatst verstuurd ${ago(st.ok)} geleden</span>` : "";
+    return `<div class="channel" data-ch="${i}">
+      <div class="channel-head"><b>${esc(label)}</b>
+        <label class="check" style="margin:0"><input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}> Aan</label>
+        <button type="button" class="linkbtn" data-n="remove" data-i="${i}">Verwijderen</button></div>
+      <div class="form-grid">
+        <div class="field"><label for="n-kind-${i}">Soort</label><select class="input" id="n-kind-${i}" name="kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${k === c.kind ? "selected" : ""}>${v[0]}</option>`).join("")}</select></div>
+        <div class="field"><label for="n-sev-${i}">Vanaf</label><select class="input" id="n-sev-${i}" name="sev">${[["critical", "Alleen kritiek"], ["warning", "Waarschuwing en kritiek"], ["info", "Alles, ook info"]].map(([k, l]) => `<option value="${k}" ${k === (c.min_severity || "warning") ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      </div>
+      <div class="field"><label for="n-url-${i}">Webhook-adres</label><input class="input" id="n-url-${i}" name="url" autocomplete="off" spellcheck="false" value="${esc(c.url || "")}" placeholder="${esc(c.url_masked ? c.url_masked + "  (leeg laten = behouden)" : ph)}">
+        <div class="help">${help}</div></div>
+      ${c.kind === "ntfy" ? `<div class="field"><label for="n-tok-${i}">Toegangstoken (optioneel)</label><input class="input" id="n-tok-${i}" name="token" type="password" autocomplete="off" placeholder="${c.has_token ? "opgeslagen (leeg laten = behouden)" : "tk_…"}"></div>` : ""}
+      <label class="check"><input type="checkbox" name="resolved" ${c.resolved !== false ? "checked" : ""}> Ook een bericht als het weer is opgelost</label>
+      <div class="channel-foot"><button type="button" class="btn" data-n="test" data-i="${i}">Testbericht sturen</button>${stat}</div>
+    </div>`;
+  }
+  function renderNotify() {
+    const root = $("#set-notify");
+    if (!root) return;
+    if (!nfy.cfg) { root.innerHTML = `<p class="muted">Beschikbaar zodra UniFi Sonar is gekoppeld.</p>`; return; }
+    const c = nfy.cfg;
+    root.innerHTML = `
+      ${c.channels.length ? c.channels.map(channelHTML).join("") : `<p class="muted">Nog geen kanalen. Voeg er een toe om meldingen te krijgen.</p>`}
+      <div class="wiz-actions" style="margin-top:12px"><button type="button" class="btn" data-n="add" ${c.channels.length >= 5 ? "disabled" : ""}>Kanaal toevoegen</button></div>
+      <div class="form-grid" style="margin-top:8px">
+        <div class="field"><label for="n-delay">Pas melden na</label><select class="input" id="n-delay">${[0, 2, 5, 10, 15, 30].map((m) => `<option value="${m}" ${m === c.delay_min ? "selected" : ""}>${m ? m + " minuten" : "direct"}</option>`).join("")}</select>
+          <div class="help">Een probleem moet zo lang aanhouden; voorkomt berichten bij één uitschieter.</div></div>
+        <div class="field"><label for="n-digest">Dagoverzicht</label><select class="input" id="n-digest"><option value="">Uit</option>${[6, 7, 8, 9, 12, 17, 18, 19, 20, 21].map((h) => `<option value="${h}" ${h === c.digest_hour ? "selected" : ""}>Elke dag om ${String(h).padStart(2, "0")}:00</option>`).join("")}</select>
+          <div class="help">Eén bericht met de netwerkscore en alle open meldingen.</div></div>
+      </div>
+      <div class="field"><label for="n-base">Adres van dit dashboard</label><input class="input" id="n-base" value="${esc(c.base_url || "")}" spellcheck="false"><div class="help">Voor de link in elk bericht.</div></div>
+      ${nfy.banner ? `<div class="banner ${nfy.banner.ok ? "" : "err"}" role="status" style="margin-top:16px">${icon(nfy.banner.ok ? "check" : "octagon")}<span>${esc(nfy.banner.text)}</span></div>` : ""}
+      <div class="wiz-actions"><button type="button" class="btn primary" data-n="save" ${nfy.saving ? "disabled" : ""}>${nfy.saving ? "Opslaan…" : "Meldingen opslaan"}</button></div>`;
+  }
+  const chBody = (c) => ({ id: c.id || "", kind: c.kind, name: c.name || "", url: c.url || "", token: c.token ?? null,
+    min_severity: c.min_severity || "warning", resolved: c.resolved !== false, enabled: c.enabled !== false });
+  async function notifyAction(e) {
+    const b = e.target.closest("[data-n]");
+    if (!b || !nfy.cfg) return;
+    readNotify();
+    const act = b.dataset.n, i = +b.dataset.i;
+    nfy.banner = null;
+    if (act === "add") { nfy.cfg.channels.push({ kind: "homeassistant", min_severity: "warning", resolved: true, enabled: true }); nfy.msg = {}; }
+    if (act === "remove") { nfy.cfg.channels.splice(i, 1); nfy.msg = {}; }
+    if (act === "test") {
+      b.disabled = true; b.textContent = "Versturen…";
+      try { await post("/api/notify/test", { channel: chBody(nfy.cfg.channels[i]), base_url: nfy.cfg.base_url }); nfy.msg[i] = { ok: true, text: "Verstuurd, kijk of het aankomt." }; }
+      catch (err) { nfy.msg[i] = { ok: false, text: err.message }; }
+    }
+    if (act === "save") {
+      nfy.saving = true; renderNotify();
+      try {
+        await post("/api/notify/save", { channels: nfy.cfg.channels.map(chBody), delay_min: nfy.cfg.delay_min, digest_hour: nfy.cfg.digest_hour, base_url: nfy.cfg.base_url });
+        nfy.cfg = await api("/api/notify"); nfy.msg = {};
+        nfy.banner = { ok: true, text: "Opgeslagen. Wat nu al openstaat wordt niet alsnog verstuurd; nieuwe problemen wel." };
+      } catch (err) { nfy.banner = { ok: false, text: err.message }; }
+      nfy.saving = false;
+    }
+    renderNotify();
+  }
+  $("#view").addEventListener("click", (e) => { if (e.target.closest("#set-notify")) notifyAction(e); });
+  $("#view").addEventListener("change", (e) => {   // andere soort → andere velden en uitleg
+    if (e.target.name === "kind" && e.target.closest("#set-notify")) { readNotify(); renderNotify(); }
+  });
+
+  // ---- toegang
+  async function loadAccess(msg) {
+    const root = $("#set-access");
+    if (!root) return;
+    const a = await api("/api/access").catch(() => null);
+    if (!a) { root.innerHTML = `<p class="muted">Niet beschikbaar.</p>`; return; }
+    root.innerHTML = `<p class="help" style="margin-top:-4px">Het dashboard heeft geen login. Het werkt via een IP-adres, <code>localhost</code> en lokale namen zoals <code>sonar.local</code> of <code>sonar.lan</code>. Andere hostnamen worden geweigerd, zodat een website in je browser het dashboard niet stiekem kan aansturen (DNS-rebinding). Gebruik je een eigen naam of een reverse proxy, zet die hieronder.</p>
+      <div class="field"><label for="a-hosts">Extra hostnamen</label><input class="input" id="a-hosts" spellcheck="false" placeholder="sonar.mijndomein.nl, sonar.tailnet.ts.net" value="${esc((a.allowed_hosts || []).join(", "))}">
+        <div class="help">Gescheiden door komma's, precies zoals in de adresbalk.${a.env_hosts.length ? ` Al toegestaan via de service: <code>${esc(a.env_hosts.join(", "))}</code>.` : ""} Je bent nu verbonden via <code>${esc(a.current_host)}</code>.</div></div>
+      ${msg ? `<div class="banner ${msg.ok ? "" : "err"}" role="status" style="margin-top:16px">${icon(msg.ok ? "check" : "octagon")}<span>${esc(msg.text)}</span></div>` : ""}
+      <div class="wiz-actions"><button type="button" class="btn" id="a-save">Opslaan</button></div>`;
+    $("#a-save").onclick = async () => {
+      const hosts = $("#a-hosts").value.split(/[,\s]+/).map((h) => h.trim()).filter(Boolean);
+      try { await post("/api/access", { allowed_hosts: hosts }); loadAccess({ ok: true, text: "Opgeslagen." }); }
+      catch (err) { loadAccess({ ok: false, text: err.message }); }
+    };
+  }
+
+  // ---- probleemoplossing
+  async function loadDebug() {
+    const root = $("#set-debug");
+    if (!root) return;
+    const d = await api("/api/debug").catch((e) => ({ text: "Kon geen debug-info ophalen: " + e.message }));
+    root.innerHTML = `<p class="help" style="margin-top:-4px">Werkt er iets niet? Kopieer deze gegevens en plak ze in een issue op GitHub. IP-adressen, namen, MAC-adressen en sleutels zijn eruit gehaald.</p>
+      <pre class="debug" id="dbg-text" tabindex="0">${esc(d.text)}</pre>
+      <div class="wiz-actions" style="margin-top:12px"><button type="button" class="btn" id="dbg-copy">Debug-info kopiëren</button><button type="button" class="btn ghost" id="dbg-reload">Vernieuwen</button><span class="muted" id="dbg-msg" role="status"></span></div>`;
+    $("#dbg-reload").onclick = loadDebug;
+    $("#dbg-copy").onclick = async () => {
+      const text = $("#dbg-text").textContent;
+      try { await navigator.clipboard.writeText(text); $("#dbg-msg").textContent = "Gekopieerd."; }
+      catch {   // geen clipboard-API (http): selecteer de tekst zodat ⌘C/Ctrl+C werkt
+        const r = document.createRange(); r.selectNodeContents($("#dbg-text"));
+        const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+        $("#dbg-msg").textContent = "Geselecteerd: druk op Ctrl+C of ⌘C.";
+      }
+    };
+  }
 
   // ------------------------------------------------------------------ tijdlijn
   const EV = {
-    device_offline: ["octagon", "bad"], device_online: ["check", "good"], device_reboot: ["power", "bad"],
+    device_offline: ["octagon", "bad"], device_online: ["check", "good"], device_reboot: ["power", "bad"], device_upgrade: ["check", "good"],
     port_down: ["plug", "bad"], port_up: ["plug", "good"], roam: ["roam", "roam"], client_join: ["wifi", "good"], client_leave: ["wifi", ""],
   };
-  const EKIND = { all: null, device: ["device_offline", "device_online", "device_reboot"], port: ["port_down", "port_up"], roam: ["roam"], client: ["client_join", "client_leave"] };
+  const EKIND = { all: null, device: ["device_offline", "device_online", "device_reboot", "device_upgrade"], port: ["port_down", "port_up"], roam: ["roam"], client: ["client_join", "client_leave"] };
   function eventsHTML(evts) {
     let day = "", out = "";
     evts.forEach((e) => {
@@ -800,6 +992,7 @@
   function openDrawer(type, id, from) {
     lastFocus = from || document.activeElement;
     state.drawer = { type, id };
+    hm.mac = null;   // patroon opnieuw ophalen
     history.replaceState(null, "", `#/${current}/${encodeURIComponent(id)}`);   // deelbare link
     $("#drawer").classList.add("open"); $("#scrim").classList.add("open");
     $("#drawer").setAttribute("aria-hidden", "false");
@@ -851,7 +1044,11 @@
           <td class="r num">${nf(r.interference)}%</td><td class="r num">${nf(r.retry_pct, 1)}%</td><td class="r num">${nf(r.satisfaction)}</td></tr>`; }).join("")}
         </tbody></table></div></div>
         <div class="card"><div class="card-head"><h3>Kanaalbezetting per band</h3>${rangeSeg("dr-range")}</div><div id="dr-ch-cu"></div></div>
-        <div class="card"><div class="card-head"><h3>Retries per band</h3></div><div id="dr-ch-rt"></div></div>`;
+        <div class="card"><div class="card-head"><h3>Retries per band</h3></div><div id="dr-ch-rt"></div></div>
+        <div class="card"><div class="card-head"><h3>Drukte per uur van de week</h3><span class="muted">afgelopen 7 dagen</span></div>
+          <div class="toolbar" style="margin-bottom:12px"><div class="seg" role="group" aria-label="Band" id="dr-hm-band">${d.radios.map((r) => `<button data-b="${r.radio}" aria-pressed="${r.radio === (hm.mac === d.mac ? hm.band : d.radios[0].radio)}">${r.radio} GHz</button>`).join("")}</div>
+          <div class="seg" role="group" aria-label="Meting" id="dr-hm-metric">${[["cu", "Bezetting"], ["interference", "Storing"], ["clients", "Clients"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${k === hm.metric}">${l}</button>`).join("")}</div></div>
+          <div id="dr-heat"><div class="chart-empty">Laden…</div></div></div>`;
       const cl = state.snap.clients.filter((c) => c.ap_mac === d.mac).sort((a, b) => (a.satisfaction ?? 100) - (b.satisfaction ?? 100));
       body += `<div class="card"><h3 style="margin-bottom:8px">Clients op dit access point</h3><div class="table-wrap" style="border:0"><table><thead><tr><th>Naam</th><th>Band</th><th>Signaal</th><th class="r">Retries</th><th class="r">Ervaring</th></tr></thead><tbody>
         ${cl.map((c) => `<tr data-id="${esc(c.mac)}" data-client tabindex="0"><td class="cell-name">${esc(c.name)}</td><td>${c.band} GHz</td><td>${signalBars(c.signal, c.band)}</td><td class="r num ${level("retry", c.retry_pct) !== "ok" ? "t-" + level("retry", c.retry_pct) : ""}">${nf(c.retry_pct, 1)}%</td><td class="r num">${nf(c.satisfaction)}</td></tr>`).join("")}
@@ -877,7 +1074,76 @@
     $("#drawer-body").innerHTML = body;
     $("#dr-goclients")?.addEventListener("click", () => { state.cuplink = d.mac; state.ckind = "issues"; closeDrawer(); location.hash = "#/clients"; $("#view").dataset.mounted = ""; update(); });
     bindRange("dr-range", () => loadDeviceHistory(d));
+    if (d.radios.length) loadDevicePattern(d);
     await loadDeviceHistory(d);
+  }
+
+  // ------------------------------------------------------------------ patronen (heatmaps)
+  const hm = { band: null, metric: "cu", data: null, mac: null };
+  function heatmap(grid, { min, max, fmt, what }) {
+    const vals = grid.flat().filter((v) => v != null);
+    if (!vals.length) return `<div class="chart-empty">Nog te weinig historie: na een dag meten verschijnt hier een patroon.</div>`;
+    const top = max ?? (Math.max(...vals) || 1);
+    const bottom = Math.min(min ?? Math.min(...vals), top - 1e-9);   // schaal op de eigen waarden: patroon zichtbaar
+    let hi = null, lo = null;
+    grid.forEach((row, d) => row.forEach((v, h) => {
+      if (v == null) return;
+      if (!hi || v > hi[2]) hi = [d, h, v];
+      if (!lo || v < lo[2]) lo = [d, h, v];
+    }));
+    const at = ([d, h]) => `${DAYS[d]} ${String(h).padStart(2, "0")}:00`;
+    const cells = grid.map((row, d) => `<span class="hm-day">${DAYS[d]}</span>` + row.map((v, h) => {
+      const tip = `${at([d, h])} · ${v == null ? "geen meting" : fmt(v)}`;
+      return `<span class="hm-c ${v == null ? "na" : ""}" data-tip="${esc(tip)}" style="${v == null ? "" : `background:rgba(57,216,244,${(0.07 + 0.78 * Math.max(0, Math.min(1, (v - bottom) / (top - bottom)))).toFixed(3)})`}"></span>`;
+    }).join("")).join("");
+    const hours = `<span></span>` + Array.from({ length: 24 }, (_, h) => `<span class="hm-h">${h % 6 === 0 ? h : ""}</span>`).join("");
+    const flat = hi[2] - lo[2] < 0.05 * top;
+    const summary = flat ? (what === "presence" ? (lo[2] >= 0.95 ? "Altijd verbonden" : `Elk uur ongeveer even vaak verbonden (${fmt(hi[2])})`) : `Elk uur ongeveer gelijk (${fmt(hi[2])})`)
+      : `${what === "presence" ? "Meest verbonden" : "Drukst"}: ${at(hi)} (${fmt(hi[2])}) · ${what === "presence" ? "minst" : "rustigst"}: ${at(lo)} (${fmt(lo[2])})`;
+    return `<div class="heat" role="img" aria-label="${esc(summary)}">${cells}${hours}</div>
+      <div class="hm-foot"><span class="hm-read" aria-hidden="true">${esc(summary)}</span>
+        <span class="hm-legend" aria-hidden="true">${fmt(bottom)}<i></i>${fmt(top)}</span></div>`;
+  }
+  $("#drawer-body").addEventListener("mouseover", (e) => {
+    const c = e.target.closest(".hm-c");
+    const read = c?.closest(".card")?.querySelector(".hm-read");
+    if (c && read) read.textContent = c.dataset.tip;
+  });
+  async function loadClientPattern(c) {
+    const p = await api(`/api/patterns/client/${encodeURIComponent(c.mac)}?days=7`).catch(() => null);
+    const root = $("#dr-pattern");
+    if (!root || state.drawer?.id !== c.mac || !p) return;
+    let html = "";
+    const total = p.aps.reduce((a, x) => a + x.seconds, 0);
+    if (!c.wired && p.aps.length && total > 0) {
+      const fav = p.aps[0];
+      html += `<p style="margin:0 0 10px">Meestal op <b>${esc(fav.name)}</b> (${Math.round(fav.share * 100)}% van de tijd)${p.switches ? `, ${p.switches}× van AP gewisseld` : ", nooit van AP gewisseld"}.</p>
+        <div class="ap-share">${p.aps.slice(0, 6).map((a) => `<div class="ap-row"><span class="cell-name">${esc(a.name)}</span>${meter(a.share * 100)}<span class="num">${Math.round(a.share * 100)}%</span><span class="muted num">${dur(a.seconds)}</span><span>${signalBars(a.signal, c.band)}</span></div>`).join("")}</div>
+        <h4 class="sub-h">Wanneer verbonden</h4>`;
+    }
+    html += heatmap(p.presence, { min: 0, max: 1, fmt: (v) => `${Math.round(v * 100)}%`, what: "presence" });
+    if (p.since && p.since > Date.now() / 1000 - p.days * 86400 + 6 * 3600) html += `<p class="help">Historie sinds ${new Date(p.since * 1000).toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" })}.</p>`;
+    root.innerHTML = html;
+  }
+  async function loadDevicePattern(d) {
+    if (hm.mac !== d.mac) { hm.mac = d.mac; hm.band = d.radios[0].radio; hm.data = null; }
+    const draw = () => {
+      const root = $("#dr-heat");
+      if (!root || !hm.data) return;
+      const g = hm.data.radios[hm.band];
+      const unit = hm.metric === "clients" ? "" : "%";
+      root.innerHTML = g ? heatmap(g[hm.metric], { fmt: (v) => `${nf(v, hm.metric === "clients" && v < 10 ? 1 : 0)}${unit}`, what: hm.metric })
+        : `<div class="chart-empty">Geen historie voor deze band</div>`;
+    };
+    const seg = (id, key, attr) => $(id)?.addEventListener("click", (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      hm[key] = b.dataset[attr];
+      $(id).querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+      draw();
+    });
+    seg("#dr-hm-band", "band", "b"); seg("#dr-hm-metric", "metric", "m");
+    if (!hm.data) hm.data = await api(`/api/patterns/device/${encodeURIComponent(d.mac)}?days=7`).catch(() => null);
+    if (state.drawer?.id === d.mac) draw();
   }
   async function loadDeviceHistory(d) {
     const h = await api(`/api/history/device/${encodeURIComponent(d.mac)}?hours=${state.hours}`);
@@ -910,10 +1176,12 @@
     if (!c.wired) {
       body += `<div class="card"><div class="card-head"><h3>Signaalsterkte</h3>${rangeSeg("dr-range")}</div><div id="dr-ch-sig"></div></div>
         <div class="card"><div class="card-head"><h3>Retries</h3><span class="muted">% opnieuw verstuurde pakketten</span></div><div id="dr-ch-rt"></div></div>
-        <div class="card"><div class="card-head"><h3>Wifi-ervaring</h3></div><div id="dr-ch-sat"></div></div>
-        <div class="card"><h3 style="margin-bottom:8px">Roaming en verbindingen</h3><div class="events" id="dr-events"></div></div>`;
+        <div class="card"><div class="card-head"><h3>Wifi-ervaring</h3></div><div id="dr-ch-sat"></div></div>`;
     }
+    body += `<div class="card"><div class="card-head"><h3>Patroon</h3><span class="muted">afgelopen 7 dagen</span></div><div id="dr-pattern"><div class="chart-empty">Laden…</div></div></div>`;
+    if (!c.wired) body += `<div class="card"><h3 style="margin-bottom:8px">Roaming en verbindingen</h3><div class="events" id="dr-events"></div></div>`;
     $("#drawer-body").innerHTML = body;
+    loadClientPattern(c);
     if (!c.wired) { bindRange("dr-range", () => loadClientHistory(c)); await loadClientHistory(c); }
   }
   async function loadClientHistory(c) {

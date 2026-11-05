@@ -10,7 +10,8 @@ from . import rules
 from .config import Settings
 from .db import DB
 from .mock import MockNetwork
-from .unifi_client import UnifiClient, normalize_ips, normalize_legacy
+from .notify import Notifier
+from .unifi_client import UnifiClient, normalize_config, normalize_ips, normalize_legacy
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,12 @@ class Collector:
         self.last_ok: int | None = None
         self.ips_available: bool | None = True if self.mock else None
         self._ips_checked = 0
+        self.config: dict | None = None          # wifi-instellingen, UPnP, port forwards
+        self._cfg_checked = 0
+        self.sysinfo: dict = {"network_version": "demo"} if self.mock else {}
+        self._sys_checked = 0
+        self.optional: dict[str, str | None] = {}   # optionele bronnen → None (ok) of foutmelding
+        self.notifier = Notifier(settings, db)
 
     async def _fetch(self, dt: float) -> dict:
         if self.mock:
@@ -71,6 +78,8 @@ class Collector:
                     ev("device_online", "device", d["mac"], f"{d['name']} is weer online")
                 if d["uptime"] and p["uptime"] and d["uptime"] + 120 < p["uptime"]:
                     ev("device_reboot", "device", d["mac"], f"{d['name']} is herstart")
+                if p.get("version") and d.get("version") and p["version"] != d["version"]:
+                    ev("device_upgrade", "device", d["mac"], f"{d['name']} bijgewerkt naar {d['version']}")
             prad = {r["radio"]: r for r in (p or {}).get("radios", [])}
             for r in d["radios"]:
                 if r.get("retry_pct") is None:
@@ -134,12 +143,37 @@ class Collector:
             rows = await self.client.fetch_ips(since * 1000, ts * 1000)
         except Exception as e:  # noqa: BLE001 – IPS is bijzaak, poll mag doorgaan
             log.warning("IPS-flows: %s", e)
+            self.optional["ips"] = str(e)
             return
         self.ips_available = rows is not None
+        self.optional["ips"] = None if rows is not None else "alleen via de uitgebreide API"
         if rows:
             n = self.db.store_ips(rows)
             if n:
                 log.info("IPS: %s nieuwe blokkades", n)
+
+    async def _collect_config(self, ts: int) -> None:
+        """Instellingen veranderen zelden: live elke 15 minuten, demo altijd."""
+        if self.mock:
+            self.config = normalize_config(*self.mock.config())
+            return
+        if ts - self._cfg_checked < 900:
+            return
+        self._cfg_checked = ts
+        try:
+            cfg = await self.client.fetch_config()
+            if cfg is not None:
+                self.config = cfg
+            self.optional["config"] = None if cfg is not None else "alleen via de uitgebreide API"
+        except Exception as e:  # noqa: BLE001 – optioneel
+            log.warning("Instellingen ophalen: %s", e)
+            self.optional["config"] = str(e)
+        if ts - self._sys_checked >= 3600:
+            self._sys_checked = ts
+            try:
+                self.sysinfo = await self.client.sysinfo() or self.sysinfo
+            except Exception as e:  # noqa: BLE001
+                self.optional["sysinfo"] = str(e)
 
     # ---------------------------------------------------------------- tick
     async def tick(self, ts: int | None = None, dt: float | None = None) -> dict:
@@ -151,6 +185,8 @@ class Collector:
         events = self._enrich(snap)
         self.db.store(snap, events)
         await self._collect_ips(ts, dt or self.s.poll_seconds)
+        await self._collect_config(ts)
+        snap["config"] = self.config
         issues = rules.evaluate(snap, self.db, self.s.thresholds, ts)
         self.db.sync_issues(issues, ts)
         snap["issues"] = issues
@@ -180,7 +216,8 @@ class Collector:
         step = self.s.poll_seconds
         now = int(time.time())
         start = now - self.s.mock_seed_hours * 3600
-        log.info("Demohistorie aanmaken: %s uur", self.s.mock_seed_hours)
+        log.info("Demohistorie aanmaken: %s uur (en een week grove historie)", self.s.mock_seed_hours)
+        self.mock.backfill(self.db, start - 7 * 86400, start)
         for ts in range(start, now - step, step):
             await self.tick(ts=ts, dt=step)
         # De laatste tick schrijft 'latest' weg zodat het dashboard direct data heeft.
@@ -190,7 +227,7 @@ class Collector:
         last_purge = 0
         while True:
             try:
-                await self.tick()
+                snap = await self.tick()
                 self.db.set_kv("latest", self.latest)
                 if time.time() - last_purge > 3600:
                     self.db.purge(int(time.time()) - self.s.retention_days * 86400)
@@ -198,4 +235,10 @@ class Collector:
             except Exception as e:  # noqa: BLE001 – collector mag niet stoppen
                 self.last_error = str(e)
                 log.exception("Poll mislukt")
+                await self.notifier.collector_error(str(e), time.time())
+            else:
+                try:
+                    await self.notifier.process(snap, snap["ts"])
+                except Exception:  # noqa: BLE001 – meldingen zijn bijzaak
+                    log.exception("Meldingen versturen mislukt")
             await asyncio.sleep(self.s.poll_seconds)

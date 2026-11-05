@@ -18,6 +18,21 @@ GOOD_SIGNAL = -65
 STANDARD_24 = {1, 6, 11}
 
 
+# Tijdelijke toestanden: geen alarm, behalve als het te lang duurt.
+TRANSIENT = {"upgrading": "wordt bijgewerkt", "provisioning": "wordt ingesteld", "adopting": "wordt geadopteerd"}
+TRANSIENT_MAX = 20 * 60
+QUIET_MIN_DEVICES = 3       # "controller hoort niets": minstens zoveel apparaten
+QUIET_FRACTION = 0.6        # ... en dit deel van alle apparaten tegelijk weg
+
+
+def ips_ignored(e: dict, ignores: list[dict]) -> bool:
+    """Valt een IPS-blokkade onder een negeerregel (adres, regel of de combinatie)?"""
+    for r in ignores:
+        if (r["ip"] is None or r["ip"] == e.get("src_ip")) and (r["sid"] is None or r["sid"] == e.get("sid")):
+            return True
+    return False
+
+
 def signal_limits(th: Thresholds, band: str | None) -> tuple[float, float]:
     if band == "2.4":
         return th.client_signal_warn_24, th.client_signal_crit_24
@@ -74,6 +89,9 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                    "Verplaats het apparaat of de AP, of plaats een extra AP dichterbij.")
             if band == "2.4":
                 adv += " Bij IoT-apparaten op 2.4 GHz helpt een AP in dezelfde ruimte vaak het meest."
+            if c.get("fixed_ap") and c["fixed_ap"] == c["ap_mac"]:
+                adv = (f"Dit apparaat staat in UniFi vastgezet aan {ap}. Controleer of dat de dichtstbijzijnde AP is; "
+                       "zo niet, zet het vast aan de goede AP of haal de vergrendeling weg.")
             out.append(_issue(f"client_signal:{c['mac']}", sev, "wifi", "client", c["mac"],
                               f"{c['name']}: zwak signaal",
                               f"Gemiddeld {sig:.0f} dBm op {where} (drempel {sig_warn:.0f} dBm).",
@@ -125,8 +143,20 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
 
     # ------------------------------------------------------------ devices
     aps = [d for d in snap["devices"] if d["type"] == "ap" and d["state"] == "online"]
+    upgrades = db.event_counts(ts - 24 * HOUR, "device_upgrade")
     for d in snap["devices"]:
         mac, dn = d["mac"], d["name"]
+        if d["state"] in TRANSIENT:
+            since = db.last_state_ts(mac) or ts
+            long = ts - since > TRANSIENT_MAX
+            out.append(_issue(f"dev_state:{mac}", "warning" if long else "info", "device", "device", mac,
+                              f"{dn} {TRANSIENT[d['state']]}" + (" en blijft hangen" if long else ""),
+                              f"{d['model']} is al {round((ts - since) / 60)} minuten bezig." if long
+                              else f"{d['model']} is tijdelijk niet beschikbaar; dit duurt meestal een paar minuten.",
+                              "Duurt het langer dan een half uur, herstart het apparaat dan via UniFi of door de stroom/PoE "
+                              "even los te halen." if long else "Niets doen: het apparaat komt vanzelf terug.",
+                              device_mac=mac))
+            continue
         if d["state"] != "online":
             out.append(_issue(f"dev_state:{mac}", "critical", "device", "device", mac, f"{dn} is {d['state']}",
                               f"{d['model']} ({d['ip'] or 'geen IP'}) is niet online.",
@@ -146,7 +176,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                                   f"{label.capitalize()} {val:.0f}{unit} (drempel {lim:.0f}{unit}).",
                                   "Zorg voor ventilatie." if metric == "temp" else "Blijft dit hoog, dan helpt een herstart of firmware-update vaak.",
                                   metric, val, lim, mac))
-        if reboots.get(mac):
+        if reboots.get(mac, 0) > upgrades.get(mac, 0):   # herstarts door een firmware-update tellen niet
             out.append(_issue(f"dev_reboot:{mac}", "warning", "device", "device", mac, f"{dn} is herstart",
                               f"{reboots[mac]}× herstart in de afgelopen 24 uur.",
                               "Gebeurde dit niet door een update? Controleer dan de stroomvoorziening of PoE-budget.",
@@ -266,8 +296,10 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
 
     # ------------------------------------------------------------ IPS (eigen apparaten)
     by_src: dict[str, list[dict]] = {}
+    ignores = db.ips_ignores()
     for e in db.ips_events(ts - 24 * HOUR, "internal"):
-        by_src.setdefault(e["src_ip"], []).append(e)
+        if not ips_ignored(e, ignores):
+            by_src.setdefault(e["src_ip"], []).append(e)
     cli_by_ip = {c["ip"]: c for c in snap["clients"] if c.get("ip")}
     for ip, evs in by_src.items():
         c = cli_by_ip.get(ip)
@@ -291,8 +323,15 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                           "een uitzondering voor deze regel en dit adres, of negeer de melding hier.",
                           "ips_blocks", len(evs), 1, None, c["mac"] if c else None))
 
+    cfg = snap.get("config") or {}
     _sticky_after_restart(out, snap, db, th, ts, name)
+    _sticky_general(out, snap, db, th, ts, name)
     _group_coverage(out, snap, name)
+    _controller_quiet(out, snap)
+    if cfg.get("wlans") is not None:
+        _config_checks(out, snap, cfg, name)
+    if cfg.get("forwards") is not None:
+        _exposure_checks(out, snap, cfg, db, ts, ignores)
     out.sort(key=lambda i: (SEVERITY_ORDER[i["severity"]], i["category"], i["title"]))
     return out
 
@@ -377,7 +416,8 @@ def _group_coverage(out: list[dict], snap: dict, name) -> None:
     clients = {c["mac"]: c for c in snap["clients"]}
     groups: dict[tuple, list[dict]] = {}
     for i in out:
-        if i["entity_type"] == "client" and i["metric"] in ("signal", "retry_pct", "satisfaction") and not i.get("group"):
+        if (i["entity_type"] == "client" and i["metric"] in ("signal", "retry_pct", "satisfaction") and not i.get("group")
+                and not i["key"].startswith("sticky:")):   # "blijft hangen" is een eigen oorzaak
             c = clients.get(i["client_mac"], {})
             groups.setdefault((c.get("ap_mac"), c.get("band")), []).append(i)
     for (ap, band), members in groups.items():
@@ -405,6 +445,261 @@ def _group_coverage(out: list[dict], snap: dict, name) -> None:
                           f"{len(macs)} apparaten met problemen: {', '.join(names[:6])}{'…' if len(names) > 6 else ''}.",
                           adv, "clients", len(macs), 3, ap))
         out[-1]["members"] = sorted(macs)
+
+
+def _dur(sec: float) -> str:
+    h, m = int(sec // 3600), int(sec % 3600 // 60)
+    if h >= 48:
+        return f"{h // 24} dagen"
+    return f"{h} u {m} m" if h else f"{m} minuten"
+
+
+def _join(names: list[str]) -> str:
+    names = list(names)
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " en " + names[-1]
+
+
+STICKY_MIN_STAY = HOUR          # pas na een uur op de verre AP spreken we van "blijft hangen"
+STICKY_MAX_SWITCHES = 6         # meer AP-wissels per week = mobiel apparaat dat gewoon rondloopt
+STICKY_MIN_OTHER = 30 * 60      # minstens een half uur bewijs op de betere AP
+
+
+def _sticky_general(out: list[dict], snap: dict, db, th: Thresholds, ts: int, name) -> None:
+    """Vaste wifi-apparaten die al lang met zwak signaal op een AP zitten, terwijl ze de afgelopen week
+    op een andere AP duidelijk beter zaten (ook zonder herstart)."""
+    flagged = {i["client_mac"] for i in out if i["key"].startswith("sticky:")}
+    online_aps = {d["mac"] for d in snap["devices"] if d["type"] == "ap" and d["state"] == "online"}
+    cwin = db.client_window(ts - WINDOW)
+    for c in snap["clients"]:
+        mac = c["mac"]
+        if c["wired"] or not c.get("ap_mac") or mac in flagged or c.get("fixed_ap"):
+            continue
+        sig = _avg(cwin.get(mac, {}), "sig", c["signal"])
+        warn, _ = signal_limits(th, c["band"])
+        a = c.get("assoc_ts")
+        if sig is None or sig > warn or not a or ts - a < STICKY_MIN_STAY:
+            continue
+        st = db.client_ap_stats(mac, ts - 7 * 24 * HOUR)
+        if st["switches"] > STICKY_MAX_SWITCHES:
+            continue
+        better = [x for x in st["aps"] if x["ap_mac"] != c["ap_mac"] and x["ap_mac"] in online_aps
+                  and x["seconds"] >= STICKY_MIN_OTHER and x["signal"] is not None and x["signal"] - sig >= STICKY_GAIN_DB]
+        if not better:
+            continue
+        best = max(better, key=lambda x: x["signal"])
+        usual = st["aps"][0]["ap_mac"] == best["ap_mac"]
+        key = f"sticky:{mac}"
+        here, there = name(c["ap_mac"]), name(best["ap_mac"])
+        out.append(_issue(key, "warning" if usual else "info", "wifi", "client", mac,
+                          f"{c['name']}: zit op een verre AP ({here})",
+                          f"Al {_dur(ts - a)} op {here} met {sig:.0f} dBm. Op {there} had het de afgelopen week gemiddeld "
+                          f"{best['signal']:.0f} dBm" + (", en daar zit het normaal ook." if usual else "."),
+                          "Vaste apparaten wisselen vaak niet uit zichzelf terug naar een betere AP als ze eenmaal (bijvoorbeeld "
+                          "na een storing) op een verdere AP zitten. 'Opnieuw verbinden' laat het apparaat opnieuw kiezen. "
+                          f"Gebeurt dit vaker, zet het dan in UniFi vast aan {there} of stel op {here} een minimum-RSSI in.",
+                          "signal", sig, warn, c["ap_mac"], mac))
+        out[-1]["reconnect"] = True
+        for i in out:   # het zwakke signaal en de retries zijn hetzelfde verhaal
+            if i["key"] in (f"client_signal:{mac}", f"client_retry:{mac}"):
+                i["group"] = key
+
+
+def _controller_quiet(out: list[dict], snap: dict) -> None:
+    """Valt (bijna) alles tegelijk weg, dan ligt het aan de controller of het netwerk ernaartoe."""
+    devs = snap["devices"]
+    gone = [d for d in devs if d["state"] != "online" and d["state"] not in TRANSIENT]
+    if len(gone) < QUIET_MIN_DEVICES or len(gone) < QUIET_FRACTION * len(devs):
+        return
+    key = "controller_quiet"
+    macs = {d["mac"] for d in gone}
+    for i in out:
+        if i["key"].startswith("dev_state:") and i["device_mac"] in macs:
+            i["group"] = key
+    out.append(_issue(key, "critical", "device", "controller", key,
+                      f"UniFi hoort {len(gone)} van de {len(devs)} apparaten niet meer",
+                      f"{_join([d['name'] for d in gone[:6]])}{'…' if len(gone) > 6 else ''} zijn tegelijk weggevallen.",
+                      "Als bijna alles tegelijk wegvalt, ligt het meestal niet aan de apparaten zelf. Controleer of de "
+                      "UniFi-controller (UniFi OS) draait en of de gateway en de centrale switch stroom hebben. Na een "
+                      "herstart van de controller duurt het een paar minuten voordat alle apparaten zich weer melden.",
+                      "devices", len(gone), QUIET_MIN_DEVICES))
+    out[-1]["members"] = sorted(macs)
+
+
+def _blocks5(ch, width) -> set[int]:
+    """Welke 20 MHz-kanalen bezet een 5 GHz-radio op dit kanaal en deze breedte?"""
+    try:
+        ch = int(ch)
+    except (TypeError, ValueError):
+        return set()
+    n = max(1, int((width or 20) // 20))
+    base = 149 if ch >= 149 else 100 if ch >= 100 else 36
+    size = 4 * n
+    start = base + (ch - base) // size * size
+    return set(range(start, start + size, 4))
+
+
+def _config_checks(out: list[dict], snap: dict, cfg: dict, name) -> None:
+    """Wifi-instellingen die vaak tot problemen leiden. Alleen advies: Sonar verandert zelf niets."""
+    aps = [d for d in snap["devices"] if d["type"] == "ap" and d["state"] == "online" and d["radios"]]
+    wlans = [w for w in cfg["wlans"] if w["enabled"]]
+    main = [w for w in wlans if not w["guest"] and not w["iot"] and "2.4" in w["bands"] and "5" in w["bands"]]
+    dev_of = lambda d: d["mac"]  # noqa: E731
+
+    for d in aps:
+        for r in d["radios"]:
+            rid = f"{d['mac']}@{r['radio']}"
+            if r["radio"] == "2.4" and (r.get("width") or 20) > 20:
+                out.append(_issue(f"cfg_width24:{rid}", "warning", "config", "radio", rid,
+                                  f"{d['name']}: 2.4 GHz op {int(r['width'])} MHz",
+                                  "Op 2.4 GHz past maar één niet-overlappend kanaal van 40 MHz; je stoort buren en je eigen AP's.",
+                                  "Zet de kanaalbreedte op 2.4 GHz op 20 MHz (UniFi: Apparaat → Radio's).", device_mac=dev_of(d)))
+            if r.get("min_rssi") is not None and r["min_rssi"] > -70:
+                out.append(_issue(f"cfg_minrssi:{rid}", "warning", "config", "radio", rid,
+                                  f"{d['name']}: minimum-RSSI erg streng ({r['min_rssi']:.0f} dBm)",
+                                  f"Apparaten met een zwakker signaal dan {r['min_rssi']:.0f} dBm worden op {r['radio']} GHz losgekoppeld.",
+                                  "Een minimum-RSSI strenger dan −70 dBm kan apparaten laten blijven loskoppelen als er geen betere "
+                                  "AP is. Begin bij −75 tot −80 dBm.", device_mac=dev_of(d)))
+
+    # 5 GHz: eigen AP's in hetzelfde kanaalblok
+    r5 = [(d, r, _blocks5(r["channel"], r.get("width"))) for d in aps for r in d["radios"] if r["radio"] == "5"]
+    groups: list[list] = []
+    for item in r5:
+        hit = [g for g in groups if any(item[2] & o[2] for o in g)]
+        merged = [item] + [x for g in hit for x in g]
+        groups = [g for g in groups if g not in hit] + [merged]
+    for g in groups:
+        if len(g) < 2:
+            continue
+        g.sort(key=lambda x: x[0]["name"])
+        key = "cfg_cochannel5:" + ",".join(x[0]["mac"] for x in g)
+        chans = sorted(set().union(*(x[2] for x in g)))
+        auto = all(x[1].get("channel_auto") for x in g)
+        out.append(_issue(key, "info", "config", "radio", key,
+                          f"{_join([x[0]['name'] for x in g])} delen hetzelfde 5 GHz-kanaal",
+                          "; ".join(f"{x[0]['name']} op {x[1]['channel']} ({int(x[1].get('width') or 20)} MHz)" for x in g)
+                          + f". Samen bezetten ze kanaal {chans[0]}–{chans[-1]}, dus ze moeten op elkaar wachten.",
+                          "Geef elke AP een eigen kanaalblok (bijvoorbeeld 36, 52, 100 en 149), of kies 40 MHz breedte zodat "
+                          "er meer blokken zijn. Staan de AP's ver uit elkaar of in een ander gebouw, dan merk je hier weinig van."
+                          + (" De kanalen staan nu op automatisch; zet ze handmatig of draai de kanaaloptimalisatie opnieuw." if auto else ""),
+                          "aps", len(g), 1, g[0][0]["mac"]))
+
+    # 2.4 GHz: een vrij standaardkanaal terwijl een ander dubbel gebruikt wordt
+    use: dict[int, list[str]] = {1: [], 6: [], 11: []}
+    for d in aps:
+        for r in d["radios"]:
+            if r["radio"] == "2.4" and r["channel"] in use:
+                use[r["channel"]].append(d["name"])
+    free = [c for c, n in use.items() if not n]
+    busy = [c for c, n in use.items() if len(n) >= 2]
+    if free and busy:
+        out.append(_issue("cfg_ch24", "info", "config", "site", "wifi24",
+                          f"2.4 GHz: kanaal {_join([str(c) for c in free])} wordt niet gebruikt",
+                          " · ".join(f"kanaal {c}: {_join(n)}" for c, n in use.items() if n) + ".",
+                          f"Verdeel de AP's over de kanalen 1, 6 en 11: zet een van de AP's op kanaal {busy[0]} over naar "
+                          f"kanaal {free[0]}, bij voorkeur de AP die het dichtst bij een andere AP op kanaal {busy[0]} staat."))
+
+    if main and len(aps) >= 2:
+        # band steering
+        known = [d for d in aps if d.get("bandsteering") is not None and any(r["radio"] == "5" for r in d["radios"])]
+        off = [d for d in known if d["bandsteering"] == "off"]
+        if off:
+            on = [d for d in known if d["bandsteering"] != "off"]
+            out.append(_issue("cfg_bandsteer", "info", "config", "site", "bandsteer",
+                              "Band steering staat " + ("niet overal aan" if on else "uit"),
+                              f"Uit op {_join([d['name'] for d in off])}" + (f"; aan op {_join([d['name'] for d in on])}." if on else "."),
+                              "Met band steering worden apparaten die 5 GHz kunnen daarheen gestuurd, waar meer ruimte is. "
+                              "Zet het op 'Prefer 5G' (UniFi: Apparaat → Radio's → Band Steering). Zuinige IoT-apparaten op "
+                              "2.4 GHz hebben er geen last van.", device_mac=off[0]["mac"]))
+        for w in main:
+            if not w["fast_roaming"]:
+                out.append(_issue(f"cfg_ft:{w['name']}", "info", "config", "wlan", w["name"],
+                                  f"Wifi '{w['name']}': Fast Roaming staat uit",
+                                  "Zonder 802.11r duurt overstappen naar een andere AP langer"
+                                  + ("; BSS Transition (802.11v) staat wel aan." if w["bss_transition"]
+                                     else ", en ook BSS Transition (802.11v) staat uit."),
+                                  "Zet Fast Roaming aan bij dit wifi-netwerk (UniFi: WiFi → netwerk → Advanced) zodat telefoons "
+                                  "en laptops soepel van AP wisselen. Werkt een ouder apparaat daarna niet meer, zet het dan op "
+                                  "een apart IoT-netwerk zonder Fast Roaming."))
+    for w in main:
+        if w["minrate_24"] < 5500 and any(r["radio"] == "2.4" for d in aps for r in d["radios"]):
+            rate = f"{w['minrate_24'] / 1000:g} Mbit/s" if w["minrate_24"] else "niet ingesteld"
+            out.append(_issue(f"cfg_minrate:{w['name']}", "info", "config", "wlan", w["name"],
+                              f"Wifi '{w['name']}': trage 2.4 GHz-snelheden toegestaan",
+                              f"De minimale datasnelheid op 2.4 GHz is {rate}. Apparaten die op 1 of 2 Mbit/s praten, "
+                              "houden het kanaal lang bezet en blijven langer aan een verre AP hangen.",
+                              "Zet de minimale datasnelheid op 2.4 GHz op 6 Mbit/s (UniFi: WiFi → netwerk → Advanced → "
+                              "Minimum Data Rate). Laat een apart IoT-netwerk met verre apparaten zoals het is."))
+    high = [d["name"] for d in aps for r in d["radios"] if r["radio"] == "2.4" and r.get("tx_power_mode") == "high"]
+    if len(high) >= 2:
+        out.append(_issue("cfg_txpow24", "info", "config", "site", "txpow24",
+                          "Hoog zendvermogen op 2.4 GHz", f"{_join(high)} zenden op 2.4 GHz op 'High'.",
+                          "Bij meerdere AP's zorgt hoog 2.4 GHz-vermogen dat apparaten aan een verre AP blijven hangen en "
+                          "dat AP's elkaar storen. Zet 2.4 GHz op 'Medium' of 'Low' en laat 5 GHz op 'Auto'."))
+
+
+RISKY_PORTS = {21: "FTP", 22: "SSH", 23: "Telnet", 139: "NetBIOS", 445: "SMB", 1433: "SQL Server", 3306: "MySQL",
+               3389: "Remote Desktop", 5432: "PostgreSQL", 5900: "VNC", 6379: "Redis", 9200: "Elasticsearch",
+               27017: "MongoDB"}
+ATTACKED_MIN = 10   # zoveel IPS-blokkades per dag op een doorgezette poort = gericht doelwit
+
+
+def _ports(spec: str) -> set[int]:
+    out: set[int] = set()
+    for part in str(spec or "").split(","):
+        a, _, b = part.strip().partition("-")
+        try:
+            lo, hi = int(a), int(b or a)
+        except ValueError:
+            continue
+        out.update(range(lo, min(hi, lo + 2000) + 1))
+    return out
+
+
+def _exposure_checks(out: list[dict], snap: dict, cfg: dict, db, ts: int, ignores: list[dict]) -> None:
+    """Wat staat er open naar internet: UPnP en port forwards, gekoppeld aan wat de IPS ziet."""
+    who = {c["ip"]: c["name"] for c in snap["clients"] if c.get("ip")}
+    fw = cfg["forwards"]
+    upnp = [f for f in fw if f["upnp"]]
+    target = lambda f: f"{who.get(f['fwd_ip'], f['fwd_ip'])}:{f['fwd_port'] or f['port']}"  # noqa: E731
+    if cfg.get("upnp_enabled"):
+        out.append(_issue("upnp_on", "info", "security", "site", "upnp", "UPnP staat aan",
+                          f"Apparaten in je netwerk kunnen zelf poorten openzetten naar internet. Nu actief: {len(upnp)}"
+                          + (f" ({', '.join(f['port'] + ' → ' + target(f) for f in upnp[:4])}{'…' if len(upnp) > 4 else ''})." if upnp else "."),
+                          "Gebruik je het alleen voor een spelcomputer, laat het dan aan met 'Secure mode'. Heb je het niet "
+                          "nodig, zet het uit (UniFi: Instellingen → Internet → UPnP)."))
+    for f in upnp:
+        ports = _ports(f["port"])
+        if ports and min(ports) < 1024:
+            out.append(_issue(f"upnp_priv:{f['fwd_ip']}:{f['port']}", "warning", "security", "ip", f["fwd_ip"],
+                              f"UPnP opent poort {f['port']} naar {who.get(f['fwd_ip'], f['fwd_ip'])}",
+                              f"Een apparaat heeft via UPnP poort {f['port']} ({f['proto'] or 'tcp/udp'}) op internet naar "
+                              f"{target(f)} gezet. Poorten onder 1024 zijn standaarddiensten zoals web, mail of bestandsdeling.",
+                              "Controleer of dit apparaat bereikbaar moet zijn vanaf internet. Zo niet, zet UPnP uit of blokkeer "
+                              "het apparaat voor UPnP; werk de firmware van het apparaat bij."))
+    statics = [f for f in fw if not f["upnp"] and f["enabled"]]
+    if not statics:
+        return
+    ext = [e for e in db.ips_events(ts - 24 * HOUR, "external") if not ips_ignored(e, ignores)]
+    for f in statics:
+        ports, fports = _ports(f["port"]), _ports(f["fwd_port"]) or _ports(f["port"])
+        risky = sorted(p for p in ports | fports if p in RISKY_PORTS)
+        if risky and f["src"] in ("any", "", None):
+            p = risky[0]
+            out.append(_issue(f"pf_risky:{f['port']}", "warning", "security", "ip", f["fwd_ip"],
+                              f"{RISKY_PORTS[p]} open naar internet ({f['name']})",
+                              f"Port forward '{f['name']}' zet poort {f['port']} voor iedereen door naar {target(f)}.",
+                              f"{RISKY_PORTS[p]} hoort niet open op internet te staan: dit wordt continu gescand en aangevallen. "
+                              "Gebruik een VPN (WireGuard, Teleport) om er van buitenaf bij te komen, of beperk de forward tot "
+                              "vaste bron-adressen."))
+        hits = sum(1 for e in ext if e.get("dst_port") in ports
+                   or (e.get("dst_ip") == f["fwd_ip"] and e.get("dst_port") in fports))
+        if hits >= ATTACKED_MIN:
+            out.append(_issue(f"pf_attacked:{f['port']}", "info", "security", "ip", f["fwd_ip"],
+                              f"Port forward '{f['name']}' wordt aangevallen",
+                              f"De IPS hield in 24 uur {hits} pogingen tegen op poort {f['port']} (→ {target(f)}).",
+                              "De IPS houdt bekende aanvallen tegen, maar dit is je meest bekeken deur. Houd de software achter "
+                              "deze poort bijgewerkt, gebruik sterke wachtwoorden en overweeg de forward te beperken tot "
+                              "bekende bron-adressen of een VPN.", "ips_blocks", hits, ATTACKED_MIN))
 
 
 def score(issues: list[dict]) -> int:
