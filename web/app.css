@@ -493,3 +493,18 @@ pre.debug { background: var(--me-bg); border: 1px solid var(--me-border); border
 .zoom-ctl button:disabled { opacity: 0.4; cursor: default; }
 .zoom-ctl .icon { width: 16px; height: 16px; }
 .w-row { cursor: pointer; }
+
+/* klikbare KPI-tegels en verbindingenlijst */
+button.kpi-link { font: inherit; color: inherit; text-align: left; width: 100%; cursor: pointer;
+  transition: background var(--me-transition-fast), border-color var(--me-transition-fast); }
+button.kpi-link:hover { background: var(--me-surface-hover); border-color: var(--me-border-strong); }
+button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-border); box-shadow: var(--me-glow-subtle); }
+.kpi-link .kpi-go { margin-left: auto; width: 14px; height: 14px; transform: rotate(-90deg); opacity: 0; transition: opacity var(--me-transition-fast); }
+.kpi-link:hover .kpi-go, .kpi-link:focus-visible .kpi-go { opacity: 0.8; }
+.conn-table td { vertical-align: middle; }
+.conn-table .rank-name { font-weight: 500; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn-table .dir { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+#w-conn .search .input { width: 280px; }
+#w-conn-cc .chip .icon { width: 14px; height: 14px; }
+#w-conn, #w-cty { scroll-margin-top: 84px; }
+.card:has(> #w-cty) { scroll-margin-top: 84px; }

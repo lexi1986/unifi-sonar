@@ -1371,7 +1371,8 @@
 
   // ------------------------------------------------------------------ wereld
   const world = { hours: store.get("world.hours", 6), show: store.get("world.show", { out: true, in: true, blocked: true }),
-                  data: null, after: 0, timer: null, seen: new Set(), focus: null };
+                  data: null, after: 0, timer: null, seen: new Set(), focus: null,
+                  conn: { dir: "all", sort: "last", q: "", cc: null, limit: 50 } };
   const DIR = { out: ["Uitgaand", C.cyan, "arrow-up-right"], in: ["Inkomend", C.violet, "arrow-down-left"], blocked: ["Geblokkeerd", C.rose, "octagon"] };
   const ccName = (() => {
     let dn = null;
@@ -1423,6 +1424,17 @@
         <div class="card"><div class="card-head"><h2 style="margin:0">Landen</h2><span class="muted" id="w-cty-sub"></span></div><div class="rank w-rank" id="w-cty"></div></div>
         <div class="card"><div class="card-head"><h2 style="margin:0">Live</h2><span class="muted">nieuwste eerst</span></div><ol class="ticker" id="w-ticker" aria-live="off"></ol></div>
       </section>
+      <section class="card" id="w-conn" style="margin-top:16px">
+        <div class="card-head"><h2 style="margin:0">Verbindingen</h2><span class="muted" id="w-conn-sub"></span></div>
+        <div class="toolbar">
+          <div class="chips" role="group" aria-label="Richting" id="w-conn-dir">${[["all", "Alles", null], ["out", "Uitgaand", C.cyan], ["in", "Inkomend", C.violet], ["blocked", "Geblokkeerd", C.rose]].map(([k, l, col]) => `<button class="chip" data-d="${k}" aria-pressed="${world.conn.dir === k}">${col ? `<i class="sw" style="background:${col}"></i>` : ""}${l}</button>`).join("")}</div>
+          <span id="w-conn-cc"></span>
+          <div class="seg" role="group" aria-label="Sorteren" id="w-conn-sort">${[["last", "Laatst"], ["bytes", "Meeste data"], ["count", "Vaakst"]].map(([k, l]) => `<button data-s="${k}" aria-pressed="${world.conn.sort === k}">${l}</button>`).join("")}</div>
+          <label class="search"><span class="sr-only">Zoeken in verbindingen</span>${icon("search")}<input class="input" id="w-conn-q" type="search" placeholder="Apparaat, domein, land of poort" value="${esc(world.conn.q)}"></label>
+        </div>
+        <div class="table-wrap" id="w-conn-table"></div>
+        <div class="wiz-actions" style="margin-top:12px;justify-content:center" id="w-conn-more"></div>
+      </section>
       <section class="grid cols-2" style="margin-top:16px">
         <div class="card"><div class="card-head"><h2 style="margin:0">Apparaten</h2><span class="muted">meeste internetverkeer</span></div><div class="rank w-rank" id="w-cli"></div></div>
         <div class="card"><div class="card-head"><h2 style="margin:0">Bestemmingen</h2><span class="muted">meeste data</span></div><div class="rank w-rank" id="w-dom"></div></div>
@@ -1456,9 +1468,22 @@
     $("#w-cty").addEventListener("mouseover", (e) => setFocus(e.target.closest("[data-cc]")?.dataset.cc || null));
     $("#w-cty").addEventListener("focusin", (e) => setFocus(e.target.closest("[data-cc]")?.dataset.cc || null));
     $("#w-cty").addEventListener("mouseleave", () => setFocus(null));
-    $("#w-cty").addEventListener("click", (e) => { const r = e.target.closest("[data-cc]"); if (r) zoomTo(r.dataset.cc); });
+    $("#w-cty").addEventListener("click", (e) => { const r = e.target.closest("[data-cc]"); if (r) { zoomTo(r.dataset.cc); setConn({ cc: r.dataset.cc }); } });
+    $("#w-kpis").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-kpi]"); if (!b) return;
+      const k = b.dataset.kpi;
+      if (k === "countries") { $("#w-cty").closest(".card").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" }); return; }
+      setConn(k === "bytes" ? { dir: "all", sort: "bytes", cc: null } : { dir: k, sort: "last", cc: null }, true);
+    });
+    $("#w-conn-dir").addEventListener("click", (e) => { const b = e.target.closest("[data-d]"); if (b) setConn({ dir: b.dataset.d }); });
+    $("#w-conn-sort").addEventListener("click", (e) => { const b = e.target.closest("[data-s]"); if (b) setConn({ sort: b.dataset.s }); });
+    $("#w-conn-cc").addEventListener("click", (e) => { if (e.target.closest("[data-clear-cc]")) setConn({ cc: null }); });
+    $("#w-conn-more").addEventListener("click", (e) => { if (e.target.closest("button")) { world.conn.limit += 100; loadConn(); } });
+    let qt;
+    $("#w-conn-q").addEventListener("input", (e) => { clearTimeout(qt); qt = setTimeout(() => setConn({ q: e.target.value.trim() }), 250); });
     $("#w-cty").addEventListener("keydown", (e) => { const r = e.target.closest("[data-cc]"); if (r && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); zoomTo(r.dataset.cc); } });
     initZoom();
+    $("#w-conn-table").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("client", n.dataset.id, n); });
     $("#w-cli").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("client", n.dataset.id, n); });
     world.after = 0; world.seen = new Set();
     loadWorld(); worldLoop();
@@ -1606,14 +1631,14 @@
     $("#w-banner").innerHTML = d.available === false ? `<div class="banner err">${icon("info")}<span>Verbindingen zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).</span></div>`
       : d.error ? `<div class="banner err">${icon("info")}<span>Verbindingen ophalen lukte niet: ${esc(d.error)}</span></div>` : "";
     const t = d.totals, per = world.hours === 1 ? "het afgelopen uur" : `de afgelopen ${world.hours} uur`;
-    const kpi = (ic, label, v, sub) => `<div class="card compact kpi"><div class="label">${icon(ic)}${label}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`;
+    const kpi = (k, ic, label, v, sub, hint) => `<button class="card compact kpi kpi-link" data-kpi="${k}" title="${hint}"><div class="label">${icon(ic)}${label}${icon("chevron", "kpi-go")}</div><div class="value">${v}</div><div class="sub">${sub}</div></button>`;
     $("#w-kpis").innerHTML =
-      kpi("globe", "Landen", nf(t.countries), per) +
-      kpi("arrow-up-right", "Uitgaand", nf(t.out_n), "verbindingen") +
-      kpi("arrow-down-left", "Inkomend", nf(t.in_n), "van internet naar binnen") +
-      kpi("activity", "Data", bytes(t.bytes), "op en neer") +
-      kpi("octagon", "Geblokkeerd", nf(t.blocked_n), "door IPS en firewall");
-    renderWorld(); renderWorldLists();
+      kpi("countries", "globe", "Landen", nf(t.countries), per, "Naar de landenlijst") +
+      kpi("out", "arrow-up-right", "Uitgaand", nf(t.out_n), "verbindingen", "Toon de uitgaande verbindingen") +
+      kpi("in", "arrow-down-left", "Inkomend", nf(t.in_n), "van internet naar binnen", "Toon de inkomende verbindingen") +
+      kpi("bytes", "activity", "Data", bytes(t.bytes), "op en neer", "Toon de verbindingen met de meeste data") +
+      kpi("blocked", "octagon", "Geblokkeerd", nf(t.blocked_n), "door IPS en firewall", "Toon wat er geblokkeerd is");
+    renderWorld(); renderWorldLists(); loadConn();
   }
   function renderWorld() {
     const d = world.data, W = window.WORLD;
@@ -1672,6 +1697,44 @@
     $("#w-dom").innerHTML = d.domains.length ? d.domains.map((x) => `
       <div class="rank-row"><div class="rank-main"><div class="rank-name">${esc(x.name)}</div><div class="cell-sub">${x.cc ? `<span class="cc">${esc(x.cc)}</span>${esc(ccName(x.cc))} · ` : ""}${nf(x.n)} verbindingen</div></div>
         <div class="rank-bar">${meter(100 * x.bytes / dmax)}</div><span class="num rank-n">${bytes(x.bytes)}</span></div>`).join("") : `<div class="empty">Geen gegevens</div>`;
+  }
+  function setConn(patch, scroll) {
+    Object.assign(world.conn, patch, { limit: 50 });
+    const c = world.conn;
+    $("#w-conn-dir")?.querySelectorAll("[data-d]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.d === c.dir));
+    $("#w-conn-sort")?.querySelectorAll("[data-s]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.s === c.sort));
+    if (scroll) $("#w-conn").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
+    loadConn();
+  }
+  async function loadConn() {
+    const c = world.conn;
+    if (!$("#w-conn-table")) return;
+    const qs = new URLSearchParams({ hours: world.hours, dir: c.dir, sort: c.sort, limit: c.limit });
+    if (c.cc) qs.set("cc", c.cc);
+    if (c.q) qs.set("q", c.q);
+    let d;
+    try { d = await api(`/api/world/connections?${qs}`); } catch (e) { return; }
+    if (current !== "wereld") return;
+    $("#w-conn-cc").innerHTML = c.cc ? `<button class="chip" aria-pressed="true" data-clear-cc title="Filter op land weghalen"><span class="cc">${esc(c.cc)}</span>${esc(ccName(c.cc))} ${icon("x")}</button>` : "";
+    hydrateIcons($("#w-conn-cc"));
+    const per = world.hours === 1 ? "afgelopen uur" : `afgelopen ${world.hours} uur`;
+    $("#w-conn-sub").textContent = `${nf(d.total)} ${d.total === 1 ? "groep" : "groepen"} · ${per} · gelijke verbindingen samengevoegd`;
+    const svc = (r) => {
+      const s = r.service && !/^(OTHER)$/i.test(r.service) ? r.service.replace(/_/g, " ") : null;
+      return s && r.port ? `${s} · ${r.port}` : s || (r.port ? `poort ${r.port}` : "–");
+    };
+    const other = (r) => r.dir === "out"
+      ? `<div class="rank-name">${esc(r.dest || "–")}</div><div class="cell-sub">${r.cc ? `<span class="cc">${esc(r.cc)}</span>${esc(ccName(r.cc))}` : "land onbekend"}</div>`
+      : `<div class="rank-name">${r.cc ? `<span class="cc">${esc(r.cc)}</span>${esc(ccName(r.cc))}` : "onbekend"}</div><div class="cell-sub">${plural(r.remotes || 0, "adres", "adressen")}</div>`;
+    const dirTxt = (r) => r.dir === "blocked" ? `<span class="t-critical">${esc(r.by || "Geblokkeerd")}</span>` : DIR[r.dir][0];
+    $("#w-conn-table").innerHTML = d.rows.length ? `<table class="conn-table"><thead><tr><th>Laatst</th><th>Richting</th><th>Eigen apparaat</th><th>Andere kant</th><th>Dienst</th><th class="r">Aantal</th><th class="r">Data</th></tr></thead><tbody>
+      ${d.rows.map((r) => `<tr style="cursor:default"><td class="num" title="${esc(fullStamp(r.last))}">${stamp(r.last)}</td>
+        <td><span class="dir"><i class="sw" style="background:${DIR[r.dir][1]}"></i>${dirTxt(r)}</span></td>
+        <td>${r.client_mac && cliByMac()[r.client_mac] ? `<button class="linkbtn plain" data-open="client" data-id="${esc(r.client_mac)}">${esc(r.client || "–")}</button>` : esc(r.client || "–")}</td>
+        <td>${other(r)}</td><td class="muted">${esc(svc(r))}</td>
+        <td class="r num">${nf(r.n)}</td><td class="r num">${r.bytes ? bytes(r.bytes) : "–"}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">Geen verbindingen gevonden${c.q || c.cc ? " met dit filter" : " in deze periode"}.</div>`;
+    $("#w-conn-more").innerHTML = d.rows.length < d.total ? `<button class="btn">Toon meer (${nf(d.total - d.rows.length)} over)</button>` : "";
   }
   function renderTicker() {
     const el = $("#w-ticker");

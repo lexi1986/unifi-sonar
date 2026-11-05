@@ -70,5 +70,13 @@ def test_demo_world_api(tmp_path, monkeypatch):
     blk = [x for x in w["countries"] if x.get("blocked")]
     assert blk and all({"what", "target", "n", "sources", "by"} <= set(b) for x in blk for b in x["blocked"])
     assert any(b["by"] == "Regioblokkade" and b["target"] == "je gateway (WAN)" for x in blk for b in x["blocked"])
+    out = c.get("/api/world/connections?hours=24&dir=out&sort=bytes&limit=10").json()
+    assert out["total"] >= len(out["rows"]) > 0 and all(r["dir"] == "out" for r in out["rows"])
+    assert out["rows"][0]["bytes"] >= out["rows"][-1]["bytes"]
+    blk = c.get("/api/world/connections?hours=24&dir=blocked").json()["rows"]
+    assert {r["by"] for r in blk} >= {"IPS", "Regioblokkade"}
+    se = c.get("/api/world/connections?hours=24&q=spotify").json()["rows"]
+    assert se and all("spotify" in (r["dest"] or "") for r in se)
+    assert all(r["cc"] == "US" for r in c.get("/api/world/connections?hours=24&cc=us").json()["rows"])
     live = c.get("/api/world/live?limit=20").json()["flows"]
     assert live and all("remote_ip" not in f for f in live)

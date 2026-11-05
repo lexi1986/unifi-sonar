@@ -620,8 +620,8 @@ def _flow_names(collector) -> dict:
     return {c["mac"]: c["name"] for c in snap.get("clients", []) if c.get("name") and c["name"] != c["mac"]}
 
 
-def _blocked_details(collector, db, since: int) -> dict[str, list[dict]]:
-    """Per land: wat er tegengehouden werd, gericht op welk apparaat en welke poort, vanaf hoeveel adressen."""
+def _namer(collector):
+    """Naam voor een eigen adres: apparaatnaam, anders het IP, en een publiek adres is je gateway (WAN)."""
     from .unifi_client import _is_local_ip, _name
     snap = collector.latest or {}
     by_ip = {c["ip"]: c["name"] for c in snap.get("clients", []) if c.get("ip") and c["name"] != c["mac"]}
@@ -634,6 +634,12 @@ def _blocked_details(collector, db, since: int) -> dict[str, list[dict]]:
         if ip and ip in by_ip:
             return by_ip[ip]
         return ip if ip and _is_local_ip(ip) else "je gateway (WAN)"
+    return target
+
+
+def _blocked_details(collector, db, since: int) -> dict[str, list[dict]]:
+    """Per land: wat er tegengehouden werd, gericht op welk apparaat en welke poort, vanaf hoeveel adressen."""
+    target = _namer(collector)
 
     rows = [{"cc": f["cc"], "by": f["reason"] or "Geblokkeerd", "what": f["service"] or "Onbekend", "port": f["port"],
              "target": target(f["client_name"], f["client_ip"]), "src": f["remote_ip"], "ts": f["ts"]}
@@ -683,6 +689,49 @@ def world(hours: float = Query(1, gt=0, le=48)):
     return {"hours": hours, "home": (rt.settings.home_country or "NL").upper(), "available": collector.flows_available,
             "error": collector.optional.get("flows"), "countries": list(w["countries"].values()),
             "totals": w["totals"], "clients": w["clients"], "domains": w["domains"]}
+
+
+@app.get("/api/world/connections")
+def world_connections(hours: float = Query(1, gt=0, le=48), dir: str = Query("all", pattern="^(all|out|in|blocked)$"),
+                      cc: str | None = Query(None, pattern="^[A-Za-z]{2}$"), q: str | None = Query(None, max_length=60),
+                      sort: str = Query("last", pattern="^(last|bytes|count)$"), limit: int = Query(50, ge=1, le=500)):
+    """Verbindingen samengevoegd per apparaat en bestemming; geblokkeerd bevat ook de IPS."""
+    collector, db = _need()
+    since = int(time.time() - hours * 3600)
+    dirs = ("out", "in", "blocked") if dir == "all" else (dir,)
+    cc = cc.upper() if cc else None
+    q = (q or "").strip() or None
+    rows, total = db.connections(since, dirs, cc, q, sort, limit)
+    target, names = _namer(collector), _flow_names(collector)
+    for r in rows:
+        r["by"] = (r.pop("reason") or "Geblokkeerd") if r["dir"] == "blocked" else None
+        r["client"] = names.get(r["client_mac"], r["client"]) if r["client_mac"] else r["client"]
+        if r["dir"] in ("in", "blocked"):
+            r["client"] = target(r["client"], r["client_ip"])
+        r.pop("client_ip", None)
+    if "blocked" in dirs:   # IPS-blokkades staan in een eigen tabel: op dezelfde manier samenvoegen
+        groups: dict[tuple, dict] = {}
+        for e in db.ips_events(since, "external"):
+            if cc and e.get("src_country") != cc:
+                continue
+            g = groups.setdefault((e.get("src_country"), e.get("signature"), e.get("dst_port"), e.get("dst_ip")), {
+                "dir": "blocked", "cc": e.get("src_country"), "client_mac": None,
+                "client": target(e.get("dst_name"), e.get("dst_ip")), "dest": None, "port": e.get("dst_port"),
+                "service": e.get("signature"), "by": "IPS", "n": 0, "up": 0, "down": 0, "bytes": 0,
+                "first": e["ts"], "last": e["ts"], "remotes": set()})
+            g["n"] += 1
+            g["first"], g["last"] = min(g["first"], e["ts"]), max(g["last"], e["ts"])
+            g["remotes"].add(e.get("src_ip"))
+        ips = []
+        for g in groups.values():
+            g["remotes"] = len(g["remotes"])
+            hay = " ".join(str(x) for x in (g["client"], g["service"], g["cc"], g["port"])).lower()
+            if not q or q.lower() in hay:
+                ips.append(g)
+        total += len(ips)
+        key = {"bytes": lambda r: -(r["bytes"] or 0), "count": lambda r: -r["n"]}.get(sort, lambda r: -r["last"])
+        rows = sorted(rows + ips, key=key)[:limit]
+    return {"hours": hours, "rows": rows, "total": total}
 
 
 @app.get("/api/world/live")

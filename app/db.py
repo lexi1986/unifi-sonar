@@ -208,6 +208,29 @@ class DB:
             "SELECT ts, cc, reason, service, port, client_name, client_ip, remote_ip FROM flows "
             "WHERE ts>=? AND dir='blocked' ORDER BY ts DESC LIMIT 5000", (since,))]
 
+    def connections(self, since: int, dirs: tuple[str, ...], cc: str | None = None, q: str | None = None,
+                    sort: str = "last", limit: int = 100) -> tuple[list[dict], int]:
+        """Verbindingen samengevoegd per richting, apparaat, bestemming en poort. Geeft (groepen, totaal aantal groepen)."""
+        where, args = ["ts>=?", f"dir IN ({','.join('?' * len(dirs))})"], [since, *dirs]
+        if cc:
+            where.append("cc=?")
+            args.append(cc)
+        if q:
+            like = f"%{q.lower()}%"
+            where.append("(LOWER(COALESCE(client_name,'')) LIKE ? OR LOWER(COALESCE(domain,'')) LIKE ? OR "
+                         "COALESCE(remote_ip,'') LIKE ? OR LOWER(COALESCE(cc,'')) = ? OR CAST(port AS TEXT) = ? OR "
+                         "LOWER(COALESCE(service,'')) LIKE ?)")
+            args += [like, like, like, q.lower(), q, like]
+        order = "bytes DESC" if sort == "bytes" else "n DESC" if sort == "count" else "last DESC"
+        base = (f"SELECT dir, cc, client_mac, COALESCE(client_name, client_ip) client, client_ip, "
+                f"COALESCE(domain, CASE WHEN dir='out' THEN remote_ip END) dest, port, service, MAX(reason) reason, "
+                f"COUNT(*) n, SUM(up) up, SUM(down) down, SUM(up+down) bytes, MIN(ts) first, MAX(ts) last, "
+                f"COUNT(DISTINCT remote_ip) remotes FROM flows WHERE {' AND '.join(where)} "
+                f"GROUP BY dir, cc, client, dest, port")
+        total = self.q(f"SELECT COUNT(*) n FROM ({base})", tuple(args))[0]["n"]
+        rows = [dict(r) for r in self.q(f"{base} ORDER BY {order} LIMIT ?", (*args, limit))]
+        return rows, total
+
     def flows_recent(self, after: int, limit: int = 40, include_local: bool = False) -> list[dict]:
         cond = "" if include_local else "AND dir!='local'"
         return [dict(r) for r in self.q(f"SELECT * FROM flows WHERE ts>? {cond} ORDER BY ts DESC LIMIT ?", (after, limit))]
