@@ -40,12 +40,13 @@ def signal_limits(th: Thresholds, band: str | None) -> tuple[float, float]:
 
 
 def _issue(key, severity, category, entity_type, entity_id, title, detail, advice,
-           metric=None, value=None, threshold=None, device_mac=None, client_mac=None) -> dict:
+           metric=None, value=None, threshold=None, device_mac=None, client_mac=None, last_ts=None) -> dict:
+    """last_ts: wanneer het onderliggende voorval (herstart, blokkade, linkverlies…) het laatst gebeurde."""
     return {
         "key": key, "severity": severity, "category": category, "entity_type": entity_type,
         "entity_id": entity_id, "title": title, "detail": detail, "advice": advice,
         "metric": metric, "value": None if value is None else round(value, 1),
-        "threshold": threshold, "device_mac": device_mac, "client_mac": client_mac,
+        "threshold": threshold, "device_mac": device_mac, "client_mac": client_mac, "last_ts": last_ts,
     }
 
 
@@ -68,6 +69,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
     wwin = db.wan_window(ts - WINDOW)
     whour = db.wan_window(ts - HOUR)
     reboots = db.event_counts(ts - 24 * HOUR, "device_reboot")
+    reboot_ts = db.event_last(ts - 24 * HOUR, "device_reboot")
 
     # ------------------------------------------------------------ clients
     for c in snap["clients"]:
@@ -112,7 +114,8 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                               adv, "retry_pct", rt, th.client_retry_warn, c["ap_mac"], c["mac"]))
             flagged = True
 
-        n_roam = roams.get(c["mac"], 0)
+        roam = roams.get(c["mac"]) or {}
+        n_roam = roam.get("n", 0)
         if n_roam >= th.client_roams_per_hour:
             out.append(_issue(f"client_roam:{c['mac']}", "warning", "wifi", "client", c["mac"],
                               f"{c['name']}: wisselt steeds van access point",
@@ -120,7 +123,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                               "Het apparaat ziet twee AP's met ongeveer even sterk signaal. Verlaag het zendvermogen "
                               "van één van beide, of stel een minimum-RSSI in. Statische apparaten (speakers, TV) "
                               "kun je ook aan één AP vastzetten.",
-                              "roams", n_roam, th.client_roams_per_hour, c["ap_mac"], c["mac"]))
+                              "roams", n_roam, th.client_roams_per_hour, c["ap_mac"], c["mac"], roam.get("last")))
             flagged = True
 
         if (rate is not None and sig is not None and band in ("5", "6")
@@ -180,7 +183,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
             out.append(_issue(f"dev_reboot:{mac}", "warning", "device", "device", mac, f"{dn} is herstart",
                               f"{reboots[mac]}× herstart in de afgelopen 24 uur.",
                               "Gebeurde dit niet door een update? Controleer dan de stroomvoorziening of PoE-budget.",
-                              device_mac=mac))
+                              device_mac=mac, last_ts=reboot_ts.get(mac)))
         if d["poe_budget_w"] and d["poe_used_w"] is not None:
             pct = 100 * d["poe_used_w"] / d["poe_budget_w"]
             if pct >= th.poe_budget_warn:
@@ -239,7 +242,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                 out.append(_issue(f"port_flap:{pid}", "warning", "switch", "port", pid, f"{where}: link valt steeds weg",
                                   f"{flaps}× link-down in het afgelopen uur.",
                                   "Controleer kabel, connector en of het aangesloten apparaat herstart (stroom/PoE).",
-                                  "flaps", flaps, th.port_flaps_per_hour, mac))
+                                  "flaps", flaps, th.port_flaps_per_hour, mac, last_ts=w.get("flap_ts")))
             if p["up"] and p["media"] in ("GE", "2P5GE", "2.5GE", "5GE", "10GE") and 0 < p["speed"] < 1000:
                 # Stabiele 100 Mbit-link is vaak gewoon een simpel apparaat; met fouten erbij is het een kabelprobleem.
                 bad = err_h >= th.port_errors_per_hour or flaps >= th.port_flaps_per_hour
@@ -280,13 +283,14 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                           "Kijk of er een grote download/back-up loopt; anders ligt het waarschijnlijk bij de provider.",
                           "latency_ms", lat, th.wan_latency_warn, gw))
     elif whour.get("lat_max") and whour["lat_max"] >= th.wan_latency_crit:
-        spikes = db.q("SELECT COUNT(*) n FROM wan_samples WHERE ts>=? AND latency_ms>=?",
-                      (ts - HOUR, th.wan_latency_crit))[0]["n"]
+        sp = db.q("SELECT COUNT(*) n, MAX(ts) t FROM wan_samples WHERE ts>=? AND latency_ms>=?",
+                  (ts - HOUR, th.wan_latency_crit))[0]
+        spikes = sp["n"]
         if spikes >= 2:
             out.append(_issue("wan_spikes", "info", "wan", "wan", "wan", "Af en toe latency-pieken",
                               f"{spikes} metingen boven {th.wan_latency_crit:.0f} ms in het afgelopen uur (max {whour['lat_max']:.0f} ms).",
                               "Merkbaar bij videobellen en gamen. Houd het in de gaten; blijft het, meld het bij de provider.",
-                              "latency_max", whour["lat_max"], th.wan_latency_crit, gw))
+                              "latency_max", whour["lat_max"], th.wan_latency_crit, gw, last_ts=sp.get("t")))
     loss = _avg(wwin, "loss", wan["loss_pct"])
     if loss is not None and loss >= th.wan_drops_warn:
         out.append(_issue("wan_loss", "warning", "wan", "wan", "wan", "Pakketverlies op internet",
@@ -321,7 +325,8 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                           "alarm (bijvoorbeeld 'GPL WEB_SERVER DELETE attempt' bij een gewone web-API, of een SSH-scanregel "
                           "door veel verbindingen). Controleer wat het apparaat deed; is het onschuldig, maak in UniFi dan "
                           "een uitzondering voor deze regel en dit adres, of negeer de melding hier.",
-                          "ips_blocks", len(evs), 1, None, c["mac"] if c else None))
+                          "ips_blocks", len(evs), 1, None, c["mac"] if c else None,
+                          max(e["ts"] for e in evs)))
 
     _speedtest_check(out, db, ts, gw)
     cfg = snap.get("config") or {}
@@ -469,7 +474,7 @@ def _speedtest_check(out: list[dict], db, ts: int, gw) -> None:
                               f"Laatste speedtest ({when}): {last[key]:.0f} Mbit/s {label}, normaal rond {med:.0f} Mbit/s.",
                               "Draai de test nog eens op een rustig moment (op de pagina Internet). Blijft het laag, kijk dan of "
                               "het modem/de ONT goed is aangesloten en meld het bij je provider; de historie laat zien sinds wanneer.",
-                              f"speed_{key}", last[key], round(SPEED_DROP * med), gw))
+                              f"speed_{key}", last[key], round(SPEED_DROP * med), gw, last_ts=last["ts"]))
             return   # één melding is genoeg
 
 
@@ -717,15 +722,16 @@ def _exposure_checks(out: list[dict], snap: dict, cfg: dict, db, ts: int, ignore
                               f"{RISKY_PORTS[p]} hoort niet open op internet te staan: dit wordt continu gescand en aangevallen. "
                               "Gebruik een VPN (WireGuard, Teleport) om er van buitenaf bij te komen, of beperk de forward tot "
                               "vaste bron-adressen."))
-        hits = sum(1 for e in ext if e.get("dst_port") in ports
-                   or (e.get("dst_ip") == f["fwd_ip"] and e.get("dst_port") in fports))
+        hit_ts = [e["ts"] for e in ext if e.get("dst_port") in ports
+                  or (e.get("dst_ip") == f["fwd_ip"] and e.get("dst_port") in fports)]
+        hits = len(hit_ts)
         if hits >= ATTACKED_MIN:
             out.append(_issue(f"pf_attacked:{f['port']}", "info", "security", "ip", f["fwd_ip"],
                               f"Port forward '{f['name']}' wordt aangevallen",
                               f"De IPS hield in 24 uur {hits} pogingen tegen op poort {f['port']} (→ {target(f)}).",
                               "De IPS houdt bekende aanvallen tegen, maar dit is je meest bekeken deur. Houd de software achter "
                               "deze poort bijgewerkt, gebruik sterke wachtwoorden en overweeg de forward te beperken tot "
-                              "bekende bron-adressen of een VPN.", "ips_blocks", hits, ATTACKED_MIN))
+                              "bekende bron-adressen of een VPN.", "ips_blocks", hits, ATTACKED_MIN, last_ts=max(hit_ts)))
 
 
 def score(issues: list[dict]) -> int:

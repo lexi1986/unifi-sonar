@@ -300,15 +300,18 @@ class DB:
                       (mac, t0, t1))
         return dict(rows[0]) if rows and rows[0]["n"] >= 3 else None
 
-    def client_roams(self, since: int) -> dict[str, int]:
-        rows = self.q("SELECT mac, ap_mac FROM client_samples WHERE ts>=? AND ap_mac IS NOT NULL ORDER BY mac, ts", (since,))
-        roams: dict[str, int] = defaultdict(int)
+    def client_roams(self, since: int) -> dict[str, dict]:
+        """Per client: aantal AP-wissels (n) en het tijdstip van de laatste (last)."""
+        rows = self.q("SELECT mac, ts, ap_mac FROM client_samples WHERE ts>=? AND ap_mac IS NOT NULL ORDER BY mac, ts", (since,))
+        roams: dict[str, dict] = {}
         prev: dict[str, str] = {}
         for r in rows:
             if r["mac"] in prev and prev[r["mac"]] != r["ap_mac"]:
-                roams[r["mac"]] += 1
+                d = roams.setdefault(r["mac"], {"n": 0, "last": None})
+                d["n"] += 1
+                d["last"] = r["ts"]
             prev[r["mac"]] = r["ap_mac"]
-        return dict(roams)
+        return roams
 
     def radio_window(self, since: int) -> dict[tuple, dict]:
         rows = self.q("SELECT mac, radio, AVG(cu_total) cu, AVG(interference) intf, AVG(retry_pct) rt, "
@@ -319,16 +322,21 @@ class DB:
         rows = self.q("SELECT mac, idx, SUM(errors) err, SUM(drops) drp, MIN(ts) t0, MAX(ts) t1 "
                       "FROM port_samples WHERE ts>=? GROUP BY mac, idx", (since,))
         out = {(r["mac"], r["idx"]): dict(r) for r in rows}
-        flaps = self.q("SELECT entity_id, COUNT(*) n FROM events WHERE ts>=? AND kind='port_down' GROUP BY entity_id", (since,))
+        flaps = self.q("SELECT entity_id, COUNT(*) n, MAX(ts) t FROM events WHERE ts>=? AND kind='port_down' "
+                       "GROUP BY entity_id", (since,))
         for f in flaps:
             mac, _, idx = f["entity_id"].rpartition("#")
-            out.setdefault((mac, int(idx)), {})["flaps"] = f["n"]
+            out.setdefault((mac, int(idx)), {}).update(flaps=f["n"], flap_ts=f["t"])
         return out
 
     def wan_window(self, since: int) -> dict:
         r = self.q("SELECT AVG(latency_ms) lat, MAX(latency_ms) lat_max, AVG(loss_pct) loss, "
                    "SUM(CASE WHEN up=0 THEN 1 ELSE 0 END) down, COUNT(*) n FROM wan_samples WHERE ts>=?", (since,))
         return dict(r[0]) if r else {}
+
+    def event_last(self, since: int, kind: str) -> dict[str, int]:
+        rows = self.q("SELECT entity_id, MAX(ts) t FROM events WHERE ts>=? AND kind=? GROUP BY entity_id", (since, kind))
+        return {r["entity_id"]: r["t"] for r in rows}
 
     def event_counts(self, since: int, kind: str) -> dict[str, int]:
         rows = self.q("SELECT entity_id, COUNT(*) n FROM events WHERE ts>=? AND kind=? GROUP BY entity_id", (since, kind))

@@ -16,6 +16,7 @@ class EmptyDB:
     def port_window(self, since): return {}
     def wan_window(self, since): return {}
     def event_counts(self, since, kind): return getattr(self, "events", {}).get(kind, {})
+    def event_last(self, since, kind): return {}
     def ips_events(self, since, scope="all", limit=5000):
         return [e for e in getattr(self, "ips", []) if scope == "all" or e["internal"] == (scope == "internal")]
     def client_before(self, mac, t0, t1): return None
@@ -106,6 +107,9 @@ def test_mock_end_to_end(tmp_path):
     assert {"coverage", "client_roam", "port_err", "port_speed", "dev_poe", "port_flap", "dev_fw", "ips_internal",
             "cfg_cochannel5", "cfg_ch24", "cfg_bandsteer", "cfg_ft", "upnp_on", "upnp_priv", "pf_risky"} <= keys
     assert "Ring Deurbel" in titles and "Sonos Keuken" in titles
+    by = {i["key"].split(":")[0]: i for i in seen}
+    for k in ("client_roam", "port_flap", "ips_internal"):   # voorvallen krijgen een 'laatst'-tijdstip
+        assert by[k]["last_ts"] and by[k]["last_ts"] <= by[k]["last_seen"]
 
 
 def test_signal_limits_depend_on_band():
@@ -165,6 +169,7 @@ def test_internal_ips_block_becomes_issue():
     out = {i["key"]: i for i in rules.evaluate(snap([ap()], []), db, Thresholds(), TS)}
     i = out["ips_internal:192.168.20.5"]
     assert i["category"] == "security" and "DELETE" in i["detail"] and "VPN-Thuis" in i["detail"]
+    assert i["last_ts"] == TS                       # tijdstip van de laatste blokkade
     assert not any(k.startswith("ips_internal:198.") for k in out)
 
 

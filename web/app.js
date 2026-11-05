@@ -56,6 +56,14 @@
   }
   const ago = (ts) => (ts ? dur(Date.now() / 1000 - ts) : "–");
   const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+  // "14:32", "gisteren 14:32" of "ma 3 nov 14:32"
+  const stamp = (ts) => {
+    const d = new Date(ts * 1000), day = (x) => new Date(x).setHours(0, 0, 0, 0);
+    const diff = Math.round((day(Date.now()) - day(d)) / 86400000);
+    const pre = diff === 0 ? "" : diff === 1 ? "gisteren " : d.toLocaleDateString("nl-NL", { weekday: "short", day: "numeric", month: "short" }) + " ";
+    return pre + hhmm(ts);
+  };
+  const fullStamp = (ts) => new Date(ts * 1000).toLocaleString("nl-NL", { dateStyle: "full", timeStyle: "short" });
   function bps(v) {
     if (v == null) return "–";
     const u = ["bit/s", "kbit/s", "Mbit/s", "Gbit/s"];
@@ -227,6 +235,18 @@
     if (i.device_mac) return `<button class="linkbtn" data-open="device" data-id="${esc(i.device_mac)}">Bekijk ${esc(devName(i.device_mac))}</button>`;
     return "";
   }
+  // Wanneer kwam dit het laatst voor? Bij een voorval (herstart, blokkade, linkverlies) het tijdstip daarvan;
+  // bij een toestand (zwak signaal, hoge CPU) de laatste meting waarin het nog zo was.
+  function issueWhen(i) {
+    const last = i.last_ts || (i.resolved_at ? i.last_seen : null);
+    const at = (ts) => `<time datetime="${new Date(ts * 1000).toISOString()}" title="${esc(fullStamp(ts))}">${stamp(ts)}</time>`;
+    const parts = [];
+    if (last) parts.push(`Laatst ${at(last)}${i.resolved_at ? "" : ` · ${ago(last)} geleden`}`);
+    else if (i.last_seen) parts.push(Date.now() / 1000 - i.last_seen < 180 ? "Speelt nu" : `Laatst gezien ${at(i.last_seen)}`);
+    if (i.resolved_at) parts.push(`opgelost ${at(i.resolved_at)}`);
+    else if (i.first_seen) parts.push(`melding sinds ${ago(i.first_seen)}`);
+    return parts.map((p) => `<span>${p}</span>`).join("");
+  }
   function issueHTML(i, all, flat) {
     const members = all.filter((m) => m.group === i.key);
     const open = state.expanded.has(i.key);
@@ -235,7 +255,7 @@
     const memberHTML = members.length ? `
       <button class="toggle" aria-expanded="${open}" data-expand="${esc(i.key)}">${icon("chevron")}${open ? "Verberg" : "Toon"} onderliggende meldingen (${members.length})</button>
       ${open ? `<div class="members">${Object.values(byClient).map((ms) => `<div class="m">${sevBadge(ms[0].severity)}<div><b>${esc(ms[0].title.split(":")[0])}</b><span>${esc(ms.map((m) => m.detail.split(" op ")[0]).join(" · "))}</span></div><span class="m-act">${ms[0].reconnect ? reconnectBtn(ms[0].client_mac) : ""}${ms[0].client_mac ? `<button class="linkbtn" data-open="client" data-id="${esc(ms[0].client_mac)}">details</button>` : ""}</span></div>`).join("")}</div>` : ""}` : "";
-    const when = i.resolved_at ? `opgelost ${hhmm(i.resolved_at)}` : i.first_seen ? `sinds ${ago(i.first_seen)}` : "";
+    const when = issueWhen(i);
     const k = esc(i.key);
     const muteCtl = flat || i.resolved_at || i.group ? "" : i.muted
       ? `<button class="mutebtn" data-unmute="${k}">Niet meer negeren</button>`
@@ -250,7 +270,7 @@
         ${flat ? "" : `<div class="advice">${icon("bulb")}<span>${esc(i.advice)}</span></div>`}
         ${memberHTML}
       </div>
-      <div class="meta">${i.resolved_at ? badge("ok", "Opgelost", "check") : sevBadge(i.severity)}${mutedBadge}<span>${when}</span>${entityAction(i)}${muteCtl}</div>
+      <div class="meta">${i.resolved_at ? badge("ok", "Opgelost", "check") : sevBadge(i.severity)}${mutedBadge}${when}${entityAction(i)}${muteCtl}</div>
     </article>`;
   }
   async function muteAction(e) {
