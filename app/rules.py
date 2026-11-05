@@ -328,6 +328,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                           "ips_blocks", len(evs), 1, None, c["mac"] if c else None,
                           max(e["ts"] for e in evs)))
 
+    _new_devices(out, snap, db, ts, name)
     _speedtest_check(out, db, ts, gw)
     cfg = snap.get("config") or {}
     _sticky_after_restart(out, snap, db, th, ts, name)
@@ -455,6 +456,42 @@ def _group_coverage(out: list[dict], snap: dict, name) -> None:
 
 SPEED_DROP = 0.6        # laatste test onder 60% van wat normaal is
 SPEED_RECENT = 3 * 24 * HOUR
+
+
+NEW_DEVICE_DAYS = 7
+
+
+def _new_devices(out: list[dict], snap: dict, db, ts: int, name) -> None:
+    """Apparaten die voor het eerst in het netwerk verschijnen, en apparaten met een wisselend privé-adres."""
+    clients = {c["mac"]: c for c in snap["clients"]}
+    since = ts - NEW_DEVICE_DAYS * 86400
+    for r in db.pending_new(since):
+        c = clients.get(r["mac"]) or {}
+        label = c.get("name") or r["name"] or r["hostname"] or r["mac"]
+        up = c.get("ap_mac") or c.get("sw_mac")
+        where = ((f"via {name(up)}" + (f" poort {c['sw_port']}" if c.get("sw_port") else "")) if up else "nu niet verbonden")
+        parts = [c.get("vendor") or None, c.get("ssid") or c.get("network") or None, where, c.get("ip") or None,
+                 "privé-wifiadres" if r["private"] else None]
+        when = time.strftime("%d-%m %H:%M", time.localtime(r["first_seen"]))
+        i = _issue(f"new_device:{r['mac']}", "info", "new", "client", r["mac"], f"Nieuw apparaat: {label}",
+                   f"Voor het eerst gezien op {when}: " + " · ".join(p for p in parts if p) + ".",
+                   "Herken je het? Klik dan op 'Ken ik'. Herken je het niet, blokkeer het dan in UniFi (Clients → het "
+                   "apparaat → Blokkeren) en verander voor de zekerheid je wifi-wachtwoord.",
+                   device_mac=up, client_mac=r["mac"] if c else None)
+        i.update(notify=True, quiet_resolve=True, approve=r["mac"])
+        out.append(i)
+    for r in db.rotations(since):
+        c = clients.get(r["mac"]) or {}
+        label = c.get("name") or r["name"] or r["hostname"]
+        out.append(_issue(f"mac_rotate:{r['hostname']}", "info", "wifi", "client", r["mac"],
+                          f"{label} wisselt van wifi-adres",
+                          f"Dit apparaat kwam terug met een ander privé-wifiadres (eerst …{r['rotated_from'][-8:]}, nu "
+                          f"…{r['mac'][-8:]}). Sonar en UniFi zien het daardoor als nieuw apparaat: de historie begint opnieuw "
+                          "en instellingen zoals een vaste AP of IP-adres werken niet meer.",
+                          "Zet het privé-adres voor je eigen netwerk op 'vast'. iPhone/iPad: Instellingen → Wifi → (i) bij je "
+                          "netwerk → Privé-wifiadres → Vast. Mac: Systeeminstellingen → Wifi → Details → Privé-wifiadres → Vast. "
+                          "Android: Wifi → je netwerk → Privacy → 'Willekeurig MAC-adres per netwerk' (niet 'per verbinding').",
+                          client_mac=r["mac"] if c else None))
 
 
 def _speedtest_check(out: list[dict], db, ts: int, gw) -> None:
@@ -761,7 +798,7 @@ def attach_scores(snap: dict, issues: list[dict]) -> None:
     # gegroepeerde client-issues via hun groep, niet dubbel.
     worst: dict[str, str] = {}
     for i in issues:
-        if i.get("group"):
+        if i.get("group") or i.get("category") == "new":   # een nieuw apparaat is geen gezondheidsprobleem
             continue
         k = f"client:{i['client_mac']}" if i.get("client_mac") else i["key"]
         if k not in worst or SEVERITY_ORDER[i["severity"]] < SEVERITY_ORDER[worst[k]]:

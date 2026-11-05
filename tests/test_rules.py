@@ -17,6 +17,8 @@ class EmptyDB:
     def wan_window(self, since): return {}
     def event_counts(self, since, kind): return getattr(self, "events", {}).get(kind, {})
     def event_last(self, since, kind): return {}
+    def pending_new(self, since): return getattr(self, "new", [])
+    def rotations(self, since): return getattr(self, "rot", [])
     def ips_events(self, since, scope="all", limit=5000):
         return [e for e in getattr(self, "ips", []) if scope == "all" or e["internal"] == (scope == "internal")]
     def client_before(self, mac, t0, t1): return None

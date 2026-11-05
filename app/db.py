@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS flows (id TEXT PRIMARY KEY, ts INT, dir TEXT, action 
     up INT, down INT, risk TEXT, reason TEXT);
 CREATE INDEX IF NOT EXISTS ix_flows ON flows(ts);
 CREATE TABLE IF NOT EXISTS usage (period TEXT, ts INT, rx REAL, tx REAL, PRIMARY KEY (period, ts));
+CREATE TABLE IF NOT EXISTS known_clients (mac TEXT PRIMARY KEY, first_seen INT, name TEXT, hostname TEXT,
+    private INT, approved INT, rotated_from TEXT);
 CREATE INDEX IF NOT EXISTS ix_ips ON ips_events(ts);
 CREATE INDEX IF NOT EXISTS ix_dev ON device_samples(mac, ts);
 CREATE INDEX IF NOT EXISTS ix_radio ON radio_samples(mac, ts);
@@ -203,6 +205,55 @@ class DB:
             "AND domain IS NOT NULL GROUP BY domain ORDER BY bytes DESC LIMIT 8", (since,))]
         return {"countries": countries, "totals": {k: tot[k] or 0 for k in tot.keys()},
                 "clients": clients, "domains": domains}
+
+    # ------------------------------------------------------------- nieuwe apparaten
+    @staticmethod
+    def private_mac(mac: str) -> bool:
+        """Lokaal beheerd adres (tweede bit van het eerste byte): een privé/willekeurig wifi-adres."""
+        try:
+            return bool(int(mac.split(":")[0], 16) & 2)
+        except (ValueError, IndexError):
+            return False
+
+    def register_clients(self, clients: list[dict], ts: int) -> list[str]:
+        """Onthoud welke apparaten we kennen. De eerste keer worden alle huidige (en eerder gemeten) apparaten
+        stil goedgekeurd. Daarna: nieuw adres met dezelfde hostnaam als een bekend privé-adres = hetzelfde
+        apparaat met een wisselend adres; anders een nieuw apparaat (gasten tellen niet). Geeft nieuwe MACs terug."""
+        with self.lock, self.conn:
+            c = self.conn
+            baseline = c.execute("SELECT COUNT(*) FROM known_clients").fetchone()[0] == 0
+            known = {r["mac"]: dict(r) for r in c.execute("SELECT * FROM known_clients")}
+            if baseline:
+                hist = [r[0] for r in c.execute("SELECT DISTINCT mac FROM client_samples")]
+                c.executemany("INSERT OR IGNORE INTO known_clients VALUES (?,?,?,?,?,1,NULL)",
+                              [(m, ts, None, None, int(self.private_mac(m))) for m in hist])
+            new = []
+            for cl in clients:
+                mac, host = cl["mac"], (cl.get("hostname") or "").strip().lower() or None
+                if mac in known:
+                    continue
+                priv = self.private_mac(mac)
+                rotated = None
+                if priv and host and not baseline:
+                    rotated = next((m for m, r in known.items() if r["private"] and r["hostname"] == host and m != mac), None)
+                approved = 1 if baseline or rotated or cl.get("guest") else 0
+                c.execute("INSERT OR REPLACE INTO known_clients VALUES (?,?,?,?,?,?,?)",
+                          (mac, ts, cl.get("name"), host, int(priv), approved, rotated))
+                known[mac] = {"mac": mac, "private": int(priv), "hostname": host}
+                if not baseline:
+                    new.append(mac)
+            return new
+
+    def pending_new(self, since: int) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM known_clients WHERE approved=0 AND first_seen>=? ORDER BY first_seen DESC", (since,))]
+
+    def rotations(self, since: int) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM known_clients WHERE rotated_from IS NOT NULL AND first_seen>=? "
+                                        "ORDER BY first_seen DESC", (since,))]
+
+    def approve_client(self, mac: str) -> bool:
+        with self.lock, self.conn:
+            return self.conn.execute("UPDATE known_clients SET approved=1 WHERE mac=?", (mac,)).rowcount > 0
 
     # ------------------------------------------------------------- datagebruik per dag/maand
     def store_usage(self, period: str, rows: list[dict]) -> None:

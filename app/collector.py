@@ -317,6 +317,7 @@ class Collector:
         snap["ts"] = ts
         events = self._enrich(snap)
         self.db.store(snap, events)
+        self.db.register_clients(snap["clients"], ts)
         await self._collect_ips(ts, dt or self.s.poll_seconds)
         await self._collect_flows(ts, dt or self.s.poll_seconds)
         await self._collect_config(ts)

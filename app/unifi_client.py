@@ -149,6 +149,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
         out_clients.append({
             "mac": c.get("mac"),
             "name": c.get("name") or c.get("hostname") or c.get("oui") or c.get("mac"),
+            "hostname": c.get("hostname"),
             "ip": c.get("ip", ""),
             "vendor": c.get("oui", ""),
             "wired": wired,

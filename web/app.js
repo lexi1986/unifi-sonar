@@ -41,7 +41,7 @@
   const devIcon = (t) => ({ gateway: "router", switch: "switch", ap: "ap" }[t] || "router");
   const SOURCE_LABEL = { "legacy-key": "uitgebreide API", "legacy-login": "uitgebreide API (account)", integration: "officiële API (beperkt)", mock: "demodata" };
   const SEV = { critical: ["Kritiek", "octagon"], warning: ["Waarschuwing", "alert"], info: ["Info", "info"] };
-  const CAT = { wifi: "Wifi", switch: "Switch", device: "Apparaat", wan: "Internet", security: "Beveiliging", config: "Configuratie" };
+  const CAT = { wifi: "Wifi", switch: "Switch", device: "Apparaat", wan: "Internet", security: "Beveiliging", config: "Configuratie", new: "Nieuw apparaat" };
   const DAYS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
 
   // ------------------------------------------------------------------ helpers
@@ -259,7 +259,8 @@
       ${open ? `<div class="members">${Object.values(byClient).map((ms) => `<div class="m">${sevBadge(ms[0].severity)}<div><b>${esc(ms[0].title.split(":")[0])}</b><span>${esc(ms.map((m) => m.detail.split(" op ")[0]).join(" · "))}</span></div><span class="m-act">${ms[0].reconnect ? reconnectBtn(ms[0].client_mac) : ""}${ms[0].client_mac ? `<button class="linkbtn" data-open="client" data-id="${esc(ms[0].client_mac)}">details</button>` : ""}</span></div>`).join("")}</div>` : ""}` : "";
     const when = issueWhen(i);
     const k = esc(i.key);
-    const muteCtl = flat || i.resolved_at || i.group ? "" : i.muted
+    const approveBtn = i.approve && !i.resolved_at ? `<button class="btn small" data-approve="${esc(i.approve)}">${icon("check")}Ken ik</button>` : "";
+    const muteCtl = flat || i.resolved_at || i.group || i.approve ? "" : i.muted
       ? `<button class="mutebtn" data-unmute="${k}">Niet meer negeren</button>`
       : `<details class="mute"><summary class="mutebtn">Negeren</summary><div class="mute-menu" role="group" aria-label="Negeren voor">
            ${[[1, "1 dag"], [7, "1 week"], [30, "30 dagen"], ["", "Altijd"]].map(([d, l]) => `<button data-mute="${k}" data-days="${d}">${l}</button>`).join("")}</div></details>`;
@@ -272,7 +273,7 @@
         ${flat ? "" : `<div class="advice">${icon("bulb")}<span>${esc(i.advice)}</span></div>`}
         ${memberHTML}
       </div>
-      <div class="meta">${i.resolved_at ? badge("ok", "Opgelost", "check") : sevBadge(i.severity)}${mutedBadge}${when}${entityAction(i)}${muteCtl}</div>
+      <div class="meta">${i.resolved_at ? badge("ok", "Opgelost", "check") : sevBadge(i.severity)}${mutedBadge}${when}${approveBtn}${entityAction(i)}${muteCtl}</div>
     </article>`;
   }
   async function muteAction(e) {
@@ -290,8 +291,18 @@
     }
     return true;
   }
+  async function approveAction(e) {
+    const b = e.target.closest("[data-approve]");
+    if (!b) return false;
+    e.preventDefault();
+    b.disabled = true;
+    try { await post(`/api/clients/${encodeURIComponent(b.dataset.approve)}/approve`, {}); await refresh(); if (state.drawer) renderDrawer(); }
+    catch (err) { b.disabled = false; alert(err.message); }
+    return true;
+  }
   function bindIssueActions(root, rerender) {
     root.addEventListener("click", async (e) => {
+      if (await approveAction(e)) return;
       if (await reconnectAction(e)) return;
       if (await muteAction(e)) return;
       const x = e.target.closest("[data-expand]");
@@ -1945,6 +1956,7 @@
   $("#drawer-close").onclick = closeDrawer;
   $("#scrim").onclick = closeDrawer;
   $("#drawer-body").addEventListener("click", async (e) => {
+    if (await approveAction(e)) return;
     if (await reconnectAction(e)) return;
     if (await muteAction(e)) return;
     const x = e.target.closest("[data-expand]");

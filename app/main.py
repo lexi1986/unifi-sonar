@@ -574,6 +574,21 @@ def mute(req: MuteRequest):
     return {"ok": True}
 
 
+@app.post("/api/clients/{mac}/approve")
+def approve(mac: str):
+    """'Ken ik': een nieuw apparaat goedkeuren. De melding verdwijnt meteen."""
+    collector, db = _need()
+    mac = mac.lower()
+    if not db.approve_client(mac):
+        raise HTTPException(404, "Onbekend apparaat")
+    snap = collector.latest
+    if snap:
+        snap["issues"] = [i for i in snap["issues"] if i["key"] != f"new_device:{mac}"]
+        db.sync_issues(snap["issues"], int(time.time()))
+        collector.apply_mutes(snap)
+    return {"ok": True}
+
+
 @app.post("/api/clients/{mac}/reconnect")
 async def reconnect(mac: str):
     """Laat een wifi-client opnieuw verbinden zodat hij zelf de beste AP kiest (UniFi kick-sta)."""

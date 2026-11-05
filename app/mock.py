@@ -104,6 +104,8 @@ FLOW_IN = [  # (apparaat, poort, dienst, land, grootte)
 ATTACKER_CC = {"198.51.100.7": "RU", "198.51.100.23": "CN", "198.51.100.61": "US", "198.51.100.88": "BR",
                "198.51.100.140": "NL", "203.0.113.9": "IN", "203.0.113.45": "KR", "203.0.113.200": "DE"}
 
+NEWDEV_T = 5 * 3600   # simulatietijd waarop een onbekende tablet opduikt
+ROTATE_T = 4.5 * 3600  # simulatietijd waarop de iPad Keuken een nieuw privé-adres krijgt
 REBOOT_T = 3 * 3600   # simulatietijd waarop AP Boven herstart
 PRINTER_T = 3.5 * 3600  # simulatietijd waarop de printer naar AP Schuur zakt
 CH5 = {AP_WK: 36, AP_BV: 100, AP_KT: 149, AP_SC: 44}   # AP Woonkamer en AP Schuur delen 36–48
@@ -217,8 +219,13 @@ class MockNetwork:
     # --------------------------------------------------------------------- api
     def stat_sta(self, dt: float) -> list[dict]:
         out = []
-        for i, (name, vendor, ap, radio, sig, retry) in enumerate(WIRELESS):
-            mac = _mac(0x100 + i)
+        wireless = list(WIRELESS)
+        if self.t >= NEWDEV_T:
+            wireless.append(("Galaxy-Tab-S9", "Samsung Electronics", AP_WK, "na", -58, 4))
+        for i, (name, vendor, ap, radio, sig, retry) in enumerate(wireless):
+            mac = _mac(0x100 + i) if i < len(WIRELESS) else "a4:6c:f1:3e:90:2b"
+            if name == "iPad Keuken":   # privé-wifiadres dat wisselt
+                mac = "ba:5e:c0:00:01:0a" if self.t < ROTATE_T else "be:12:7a:00:02:0a"
             if name == "Sonos Keuken":
                 ap = self.sonos_ap
             assoc = self.now - int(self.t + 3600 * (i % 7 + 1))

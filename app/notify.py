@@ -177,7 +177,7 @@ class Notifier:
             limit = RANK.get(ch.get("min_severity", "warning"), 1)
             fresh, escalated = [], []
             for k, i in top.items():
-                if RANK[i["severity"]] > limit or ts - first.get(k, ts) < delay:
+                if (RANK[i["severity"]] > limit and not i.get("notify")) or ts - first.get(k, ts) < delay:
                     continue
                 prev = sent.get(k)
                 if prev is None:
@@ -204,9 +204,9 @@ class Notifier:
                 elif not prev["gone_ts"]:
                     self.db.set_notified_gone(ch["id"], k, ts)
                 elif ts - prev["gone_ts"] >= delay:
-                    if ch.get("resolved", True):
-                        old = self.db.issue(k) or {"key": k, "title": k, "detail": "", "advice": "", "category": "",
-                                                   "severity": prev["severity"]}
+                    old = self.db.issue(k) or {"key": k, "title": k, "detail": "", "advice": "", "category": "",
+                                               "severity": prev["severity"]}
+                    if ch.get("resolved", True) and not old.get("quiet_resolve"):   # 'Ken ik' hoeft geen 'opgelost'
                         if not await self._safe_send(ch, self._issue_msg(old, "resolved")):
                             continue
                     self.db.drop_notified(ch["id"], k)
