@@ -16,6 +16,9 @@ M = math.sqrt(3) / 2
 X_MAX = 2 * math.sqrt(3) * math.pi / (3 * A1)
 SCALE = W / (2 * X_MAX)
 NORTH, SOUTH = 84, -57         # Antarctica laten we weg
+# Natural Earth tekent overzeese gebieden als deel van het moederland. UniFi geeft ze een eigen
+# landcode, dus we knippen ze los: (land, nieuwe code, test op lengtegraad, labelpunt).
+OVERSEAS = [("FR", "GF", lambda lon: lon < -20, (-53.1, 4.0))]
 
 
 def raw(lon: float, lat: float) -> tuple[float, float]:
@@ -62,14 +65,21 @@ def main(shapes_file: str, labels_file: str) -> None:
             continue
         g = f["geometry"]
         polys = g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]
-        d = "".join(ring_path(r) for poly in polys for r in poly)
-        if d:
-            countries.setdefault(c, {})["d"] = countries.get(c, {}).get("d", "") + d
+        for poly in polys:
+            target = c
+            for parent, sub, test, _label in OVERSEAS:
+                if c == parent and test(poly[0][0][0]):
+                    target = sub
+            d = "".join(ring_path(r) for r in poly)
+            if d:
+                countries.setdefault(target, {})["d"] = countries.get(target, {}).get("d", "") + d
     for f in json.load(open(labels_file))["features"]:
         p = f["properties"]
         c = code(p)
         if c and c != "AQ" and p.get("LABEL_X") is not None:
             countries.setdefault(c, {})["c"] = list(proj(p["LABEL_X"], p["LABEL_Y"]))
+    for _parent, sub, _test, (lon, lat) in OVERSEAS:
+        countries.setdefault(sub, {})["c"] = list(proj(lon, lat))
     countries = {k: v for k, v in countries.items() if "c" in v}
     out = {"w": W, "h": H, "countries": countries}
     print("// Gegenereerd door tools/make_world.py uit Natural Earth (publiek domein). Niet met de hand bewerken.")
