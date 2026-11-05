@@ -227,7 +227,7 @@ def normalize_config(wlans: list[dict], settings: list[dict], forwards: list[dic
         out_wlans.append({
             "name": w.get("name", "?"),
             "enabled": bool(w.get("enabled", True)),
-            "bands": [{"2g": "2.4", "5g": "5", "6e": "6"}.get(b, b) for b in bands],
+            "bands": [{"2g": "2.4", "5g": "5", "6g": "6", "6e": "6"}.get(b, b) for b in bands],   # UniFi zegt 6g
             "guest": bool(w.get("is_guest")),
             "iot": bool(w.get("enhanced_iot")) or bands == ["2g"],
             "fast_roaming": bool(w.get("fast_roaming_enabled")),

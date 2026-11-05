@@ -287,6 +287,12 @@ def test_config_checks():
     assert out["cfg_minrssi:c@5"]["severity"] == "warning"
 
 
+def test_normalize_config_knows_6ghz():
+    from app.unifi_client import normalize_config
+    cfg = normalize_config([{"name": "x", "wlan_bands": ["2g", "5g", "6g"]}], [], [])
+    assert cfg["wlans"][0]["bands"] == ["2.4", "5", "6"]
+
+
 def test_normalize_config_drops_secrets():
     from app.unifi_client import normalize_config
     cfg = normalize_config([{"name": "x", "x_passphrase": "geheim", "x_iapp_key": "k", "wlan_band": "both"}],

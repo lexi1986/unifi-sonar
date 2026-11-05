@@ -89,10 +89,27 @@ run pct push "$CTID" "$TMP" /root/install-unifi-sonar.sh
 run pct exec "$CTID" -- env PORT="$PORT" bash /root/install-unifi-sonar.sh
 rm -f "$TMP"
 
+# Zoals de Proxmox community-scripts: de console van de container (alleen bereikbaar voor Proxmox-beheerders)
+# logt automatisch in als root. Er is geen root-wachtwoord; zelf instellen kan met: pct exec <id> -- passwd
+say "Console: automatisch inloggen als root"
+GETTY=$(mktemp)
+cat > "$GETTY" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noreset --noclear - ${TERM}
+EOF
+run pct exec "$CTID" -- mkdir -p /etc/systemd/system/container-getty@1.service.d
+run pct push "$CTID" "$GETTY" /etc/systemd/system/container-getty@1.service.d/override.conf
+run pct exec "$CTID" -- systemctl daemon-reload
+run pct exec "$CTID" -- systemctl restart container-getty@1.service
+rm -f "$GETTY"
+
 if [ -z "$DRY" ]; then
   IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
   echo
   say "Klaar! Open http://$IP$([ "$PORT" = 80 ] || echo ":$PORT") en volg de setup-wizard."
+  echo "    Console: open de container in Proxmox en je bent meteen ingelogd (geen wachtwoord nodig)."
   echo "    Bijwerken later: typ 'update' in de console van de container,"
   echo "    of vanaf de host: pct exec $CTID -- update"
+  echo "    Toch een root-wachtwoord? Op de host: pct exec $CTID -- passwd"
 fi

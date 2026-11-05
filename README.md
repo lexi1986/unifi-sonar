@@ -68,6 +68,8 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/lexi1986/unifi-sonar/mai
 
 Het script vraagt een paar dingen, zoals de container-ID, het IP-adres (DHCP of vast) en de opslag. Op alles kun je Enter drukken voor de standaardwaarde. Daarna maakt het een kleine Debian-container aan (1 core, 512 MB, 4 GB), installeert UniFi Sonar erin en toont het adres.
 
+De container heeft **geen root-wachtwoord**. Open je hem in Proxmox via *Console*, dan ben je meteen ingelogd, net als bij de Proxmox community-scripts. Vanaf de host kan het ook met `pct enter <container-id>`. Wil je toch een wachtwoord, bijvoorbeeld voor SSH, stel het dan in met `pct exec <container-id> -- passwd`.
+
 ### Debian, Ubuntu of Raspberry Pi OS
 
 ```bash
