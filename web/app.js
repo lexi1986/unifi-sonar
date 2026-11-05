@@ -1409,7 +1409,7 @@
           <svg viewBox="0 0 ${W.w} ${W.h}" role="img" aria-labelledby="w-map-title" preserveAspectRatio="xMidYMid meet">
             <title id="w-map-title">Wereldkaart met verbindingen per land</title>
             <g class="land">${Object.entries(W.countries).filter(([, c]) => c.d).map(([cc, c]) => `<path data-cc="${cc}" d="${c.d}"/>`).join("")}</g>
-            <g class="arcs" id="w-arcs"></g><g class="pulses" id="w-pulses"></g><g id="w-home"></g><g class="labels" id="w-labels"></g>
+            <g class="arcs" id="w-arcs"></g><g class="pulses" id="w-pulses"></g><g id="w-home"></g><g class="marks" id="w-marks"></g><g class="labels" id="w-labels"></g>
           </svg>
           <div class="zoom-ctl" role="group" aria-label="Zoomen">
             <button data-z="in" aria-label="Inzoomen" title="Inzoomen">+</button>
@@ -1555,6 +1555,11 @@
       const [px, py] = toMap(e);
       zoomAt(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0018)), px, py);
     }, { passive: false });
+    svg.addEventListener("click", (e) => {
+      if (world.drag) return;
+      const cc = e.target.closest("[data-cc]")?.dataset.cc;
+      if (cc && world.byCc?.[cc]) { $("#w-tip").classList.remove("show"); setConn({ cc }, true); }
+    });
     svg.addEventListener("dblclick", (e) => { e.preventDefault(); const [px, py] = toMap(e); zoomAt(2, px, py); });
     // slepen (muis) en knijpen (touch) met pointer events
     const pts = new Map();
@@ -1562,9 +1567,9 @@
     svg.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 && e.pointerType === "mouse") return;
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      svg.setPointerCapture(e.pointerId);
       last = { x: e.clientX, y: e.clientY };
       if (pts.size === 2) {
+        pts.forEach((_, id) => { try { svg.setPointerCapture(id); } catch (err) { /* al los */ } });
         const [a, b] = [...pts.values()];
         pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) };
       }
@@ -1583,6 +1588,7 @@
       }
       const dx = e.clientX - last.x, dy = e.clientY - last.y;
       if (!world.drag && Math.hypot(dx, dy) < 4) return;   // klein beetje bewegen is nog een klik
+      if (!world.drag) { try { svg.setPointerCapture(e.pointerId); } catch (err) { /* al los */ } }
       world.drag = true;
       map.classList.add("dragging");
       $("#w-tip").classList.remove("show");
@@ -1603,7 +1609,7 @@
     if (world.focus === cc) return;
     world.focus = cc;
     $("#w-map")?.classList.toggle("focusing", !!cc);
-    document.querySelectorAll("#w-map [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));
+    document.querySelectorAll("#w-map [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));   // land, boog, stip en naam
     document.querySelectorAll("#w-cty [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));
   }
   const blockWhat = (b) => {   // "Telnet (poort 23)" of de naam van de IPS-regel
@@ -1620,7 +1626,8 @@
         <div>${esc(blockWhat(b))} → ${esc(b.target)}</div>
         <div class="muted">${nf(b.n)}× · ${esc(b.by)}${b.sources > 1 ? ` · ${b.sources} adressen` : ""} · laatst ${stamp(b.last)}</div></div>`).join("")}</div>` : ""}
       ${c.domains?.length ? `<div class="tt-list">${c.domains.slice(0, 3).map((d) => `<div>${esc(d.name)} <span class="muted">${bytes(d.bytes)}</span></div>`).join("")}</div>` : ""}
-      ${c.clients?.length ? `<div class="tt-list muted">${c.clients.slice(0, 3).map((x) => esc(x.name)).join(" · ")}</div>` : ""}`;
+      ${c.clients?.length ? `<div class="tt-list muted">${c.clients.slice(0, 3).map((x) => esc(x.name)).join(" · ")}</div>` : ""}
+      <div class="tt-hint">Klik voor alle verbindingen</div>`;
   }
   async function loadWorld() {
     let d;
@@ -1666,9 +1673,16 @@
       }
     }
     $("#w-arcs").innerHTML = arcs.join("");
+    // kleine landen (Hongkong, Singapore, Malta…) hebben op deze schaal geen vorm: een stip om aan te wijzen
+    $("#w-marks").innerHTML = d.countries.filter((c) => W.countries[c.cc]?.c && !W.countries[c.cc].d && c.cc !== d.home).map((c) => {
+      const [x, y] = W.countries[c.cc].c;
+      const col = c.out_n || c.in_n ? `rgba(57, 216, 244, ${(0.35 + 0.5 * lvl(c.bytes)).toFixed(3)})` : "rgba(251, 113, 133, 0.6)";
+      return `<circle class="cmark" data-cc="${c.cc}" cx="${x}" cy="${y}" style="fill:${col}"><title>${esc(ccName(c.cc))}</title></circle>`;
+    }).join("");
     $("#w-labels").innerHTML = d.countries.filter((c) => W.countries[c.cc]?.c).map((c) => {
       const [x, y] = W.countries[c.cc].c;
-      return `<text x="${x}" y="${y}">${esc(ccName(c.cc))}</text>`;
+      const small = !W.countries[c.cc].d;
+      return `<text data-cc="${c.cc}" x="${x}" y="${y}" dy="${small ? "-0.8em" : "0"}">${esc(ccName(c.cc))}</text>`;
     }).join("");
     $("#w-home").innerHTML = `<circle class="home-ring" cx="${home[0]}" cy="${home[1]}" r="7"/><circle class="home-dot" cx="${home[0]}" cy="${home[1]}" r="3"/>`;
     $("#w-legend").innerHTML = `<span><i class="sw" style="background:${C.cyan}"></i>Uitgaand: eigen apparaat → internet</span><span><i class="sw" style="background:${C.violet}"></i>Inkomend: internet → eigen apparaat</span>

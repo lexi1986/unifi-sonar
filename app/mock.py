@@ -93,7 +93,8 @@ FLOW_DEST = [
     ("Bosch Vaatwasser", "home-connect.com", "DE", 443, "HTTPS", 20_000), ("NAS Synology", "backblazeb2.com", "US", 443, "HTTPS", 300_000_000),
     ("Docker Host", "docker.io", "US", 443, "HTTPS", 50_000_000), ("Proxmox Host", "download.proxmox.com", "AT", 443, "HTTPS", 20_000_000),
     ("Home Assistant", "nabucasa.com", "DE", 443, "HTTPS", 200_000), ("Pi-hole", "cloudflare-dns.com", "NL", 853, "DNS", 40_000),
-    ("ESP Weerstation", "openweathermap.org", "GB", 443, "HTTPS", 5_000), ("Warmtepomp", "daikineurope.com", "BE", 443, "HTTPS", 30_000),
+    ("ESP Weerstation", "openweathermap.org", "GB", 443, "HTTPS", 5_000),
+    ("Galaxy S24", "tiktokcdn.com", "SG", 443, "HTTPS", 20_000_000), ("Kantoor-PC", "alicdn.com", "HK", 443, "HTTPS", 900_000), ("Warmtepomp", "daikineurope.com", "BE", 443, "HTTPS", 30_000),
 ]
 FLOW_IN = [  # (apparaat, poort, dienst, land, grootte)
     ("Home Assistant", 8123, "HTTPS", "NL", 900_000), ("Home Assistant", 8123, "HTTPS", "ES", 600_000),

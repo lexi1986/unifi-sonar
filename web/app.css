@@ -508,3 +508,12 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 #w-conn-cc .chip .icon { width: 14px; height: 14px; }
 #w-conn, #w-cty { scroll-margin-top: 84px; }
 .card:has(> #w-cty) { scroll-margin-top: 84px; }
+
+/* kleine landen als stip, en klikbaar */
+.world-wrap .cmark { r: calc(3.6px * var(--s, 1)); stroke: var(--me-bg); stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; }
+.world-wrap .cmark.hl { stroke: var(--me-text); stroke-width: 1.5; }
+.world-wrap.focusing .cmark:not(.hl) { opacity: 0.45; }
+.world-wrap .land path { cursor: pointer; }
+.world-wrap .labels.show text { pointer-events: auto; cursor: pointer; }
+.world-wrap.dragging .land path, .world-wrap.dragging .cmark { cursor: grabbing; }
+.tooltip .tt-hint { margin-top: 6px; font-size: 11px; color: var(--me-text-muted); }
