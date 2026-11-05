@@ -1395,6 +1395,7 @@
   }
   function mountWorld() {
     const W = window.WORLD;
+    world.view = null;
     mount("wereld", `
       <div class="page-head"><div><h1>Wereld</h1><p class="subtitle">Met welke landen je netwerk praat, live uit het verkeerslogboek van je gateway.</p></div>
         <div class="seg" role="group" aria-label="Periode" id="w-range">${[[1, "1 u"], [6, "6 u"], [24, "24 u"], [48, "48 u"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${world.hours === h}">${l}</button>`).join("")}</div></div>
@@ -1407,8 +1408,13 @@
           <svg viewBox="0 0 ${W.w} ${W.h}" role="img" aria-labelledby="w-map-title" preserveAspectRatio="xMidYMid meet">
             <title id="w-map-title">Wereldkaart met verbindingen per land</title>
             <g class="land">${Object.entries(W.countries).filter(([, c]) => c.d).map(([cc, c]) => `<path data-cc="${cc}" d="${c.d}"/>`).join("")}</g>
-            <g class="arcs" id="w-arcs"></g><g class="pulses" id="w-pulses"></g><g id="w-home"></g>
+            <g class="arcs" id="w-arcs"></g><g class="pulses" id="w-pulses"></g><g id="w-home"></g><g class="labels" id="w-labels"></g>
           </svg>
+          <div class="zoom-ctl" role="group" aria-label="Zoomen">
+            <button data-z="in" aria-label="Inzoomen" title="Inzoomen">+</button>
+            <button data-z="out" aria-label="Uitzoomen" title="Uitzoomen">−</button>
+            <button data-z="reset" aria-label="Hele wereld" title="Hele wereld">${icon("globe")}</button>
+          </div>
           <div class="tooltip" id="w-tip"></div>
         </div>
         <div class="legend-row" id="w-legend"></div>
@@ -1435,6 +1441,7 @@
     });
     const map = $("#w-map"), tip = $("#w-tip");
     map.addEventListener("mousemove", (e) => {
+      if (world.drag) return;
       const t = e.target.closest("[data-cc]");
       const cc = t?.dataset.cc;
       if (!cc || !world.byCc?.[cc]) { tip.classList.remove("show"); setFocus(null); return; }
@@ -1449,11 +1456,124 @@
     $("#w-cty").addEventListener("mouseover", (e) => setFocus(e.target.closest("[data-cc]")?.dataset.cc || null));
     $("#w-cty").addEventListener("focusin", (e) => setFocus(e.target.closest("[data-cc]")?.dataset.cc || null));
     $("#w-cty").addEventListener("mouseleave", () => setFocus(null));
+    $("#w-cty").addEventListener("click", (e) => { const r = e.target.closest("[data-cc]"); if (r) zoomTo(r.dataset.cc); });
+    $("#w-cty").addEventListener("keydown", (e) => { const r = e.target.closest("[data-cc]"); if (r && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); zoomTo(r.dataset.cc); } });
+    initZoom();
     $("#w-cli").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("client", n.dataset.id, n); });
     world.after = 0; world.seen = new Set();
     loadWorld(); worldLoop();
   }
   UPDATERS.wereld = () => loadWorld();
+  // ---- zoomen en verschuiven: we passen alleen de viewBox aan, de kaart blijft één SVG
+  const ZMAX = 12;
+  function applyView() {
+    const W = window.WORLD, svg = $("#w-map svg");
+    if (!svg) return;
+    const v = world.view;
+    svg.setAttribute("viewBox", `${v.x.toFixed(2)} ${v.y.toFixed(2)} ${v.w.toFixed(2)} ${v.h.toFixed(2)}`);
+    const z = W.w / v.w;                       // 1 = hele wereld
+    svg.style.setProperty("--s", (1 / z).toFixed(4));
+    $("#w-map").classList.toggle("zoomed", z > 1.01);
+    $("#w-labels")?.classList.toggle("show", z >= 2.4);
+    const zo = $("#w-map [data-z=out]"), zr = $("#w-map [data-z=reset]"), zi = $("#w-map [data-z=in]");
+    if (zo) { zo.disabled = z <= 1.01; zr.disabled = z <= 1.01; zi.disabled = z >= ZMAX - 0.01; }
+  }
+  function clampView(v) {
+    const W = window.WORLD;
+    v.w = Math.min(W.w, Math.max(W.w / ZMAX, v.w));
+    v.h = v.w * W.h / W.w;
+    v.x = Math.min(W.w - v.w, Math.max(0, v.x));
+    v.y = Math.min(W.h - v.h, Math.max(0, v.y));
+    return v;
+  }
+  function zoomAt(factor, px, py) {   // px/py: punt in kaartcoördinaten dat op zijn plek blijft
+    const v = world.view, nw = v.w / factor;
+    const W = window.WORLD;
+    const cw = Math.min(W.w, Math.max(W.w / ZMAX, nw));
+    const f = v.w / cw;
+    world.view = clampView({ x: px - (px - v.x) / f, y: py - (py - v.y) / f, w: cw, h: 0 });
+    applyView();
+  }
+  function toMap(e) {
+    const r = $("#w-map svg").getBoundingClientRect(), v = world.view;
+    return [v.x + (e.clientX - r.left) / r.width * v.w, v.y + (e.clientY - r.top) / r.height * v.h];
+  }
+  function zoomTo(cc) {
+    const W = window.WORLD, c = W.countries[cc]?.c;
+    if (!c) return;
+    const p = document.querySelector(`#w-map .land path[data-cc="${cc}"]`);
+    let w = W.w / 5;
+    if (p) {   // zo ver inzoomen dat het land goed in beeld is (grote landen minder ver)
+      const b = p.getBBox();
+      w = Math.max(W.w / ZMAX, Math.min(W.w / 1.6, Math.max(b.width, b.height * W.w / W.h) * 3));
+    }
+    world.view = clampView({ x: c[0] - w / 2, y: c[1] - (w * W.h / W.w) / 2, w, h: 0 });
+    applyView();
+    $("#w-tip").classList.remove("show");
+    setFocus(cc);
+    $("#w-map").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "nearest" });
+  }
+  function initZoom() {
+    const W = window.WORLD, map = $("#w-map"), svg = map.querySelector("svg");
+    world.view = world.view || { x: 0, y: 0, w: W.w, h: W.h };
+    applyView();
+    map.querySelector(".zoom-ctl").addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-z]"); if (!b) return;
+      const v = world.view, cx = v.x + v.w / 2, cy = v.y + v.h / 2;
+      if (b.dataset.z === "reset") { world.view = { x: 0, y: 0, w: W.w, h: W.h }; applyView(); }
+      else zoomAt(b.dataset.z === "in" ? 1.6 : 1 / 1.6, cx, cy);
+    });
+    svg.addEventListener("wheel", (e) => {
+      const z = W.w / world.view.w;
+      if (e.deltaY > 0 && z <= 1.01) return;   // helemaal uitgezoomd: laat de pagina gewoon scrollen
+      e.preventDefault();
+      const [px, py] = toMap(e);
+      zoomAt(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0018)), px, py);
+    }, { passive: false });
+    svg.addEventListener("dblclick", (e) => { e.preventDefault(); const [px, py] = toMap(e); zoomAt(2, px, py); });
+    // slepen (muis) en knijpen (touch) met pointer events
+    const pts = new Map();
+    let last = null, pinch = null;
+    svg.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 && e.pointerType === "mouse") return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      svg.setPointerCapture(e.pointerId);
+      last = { x: e.clientX, y: e.clientY };
+      if (pts.size === 2) {
+        const [a, b] = [...pts.values()];
+        pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) };
+      }
+    });
+    svg.addEventListener("pointermove", (e) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const r = svg.getBoundingClientRect();
+      if (pts.size === 2 && pinch) {
+        const [a, b] = [...pts.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        const [px, py] = toMap({ clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 });
+        if (pinch.d > 0) zoomAt(d / pinch.d, px, py);
+        pinch.d = d;
+        return;
+      }
+      const dx = e.clientX - last.x, dy = e.clientY - last.y;
+      if (!world.drag && Math.hypot(dx, dy) < 4) return;   // klein beetje bewegen is nog een klik
+      world.drag = true;
+      map.classList.add("dragging");
+      $("#w-tip").classList.remove("show");
+      const v = world.view;
+      world.view = clampView({ x: v.x - dx / r.width * v.w, y: v.y - dy / r.height * v.h, w: v.w, h: 0 });
+      last = { x: e.clientX, y: e.clientY };
+      applyView();
+    });
+    const end = (e) => {
+      pts.delete(e.pointerId);
+      if (pts.size < 2) pinch = null;
+      if (!pts.size) { setTimeout(() => { world.drag = false; }, 0); map.classList.remove("dragging"); }
+    };
+    svg.addEventListener("pointerup", end);
+    svg.addEventListener("pointercancel", end);
+  }
   function setFocus(cc) {
     if (world.focus === cc) return;
     world.focus = cc;
@@ -1461,12 +1581,19 @@
     document.querySelectorAll("#w-map [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));
     document.querySelectorAll("#w-cty [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));
   }
+  const blockWhat = (b) => {   // "Telnet (poort 23)" of de naam van de IPS-regel
+    const svc = b.what && !/^(OTHER|Onbekend)$/i.test(b.what) ? b.what.replace(/_/g, " ") : null;
+    return svc ? (b.port ? `${svc} (poort ${b.port})` : svc) : b.port ? `poort ${b.port}` : "verbinding";
+  };
   function countryTip(c) {
     const row = (k, l, v) => (v ? `<div class="tt-row"><span><i class="sw" style="background:${DIR[k][1]}"></i>${l}</span><b>${v}</b></div>` : "");
     return `<div class="tt-time">${esc(ccName(c.cc))}</div>
       ${row("out", "Uitgaand", c.out_n ? `${nf(c.out_n)} × · ${bytes(c.bytes_out ?? c.up + c.down)}` : "")}
       ${row("in", "Inkomend", c.in_n ? `${nf(c.in_n)} ×` : "")}
       ${row("blocked", "Geblokkeerd", c.blocked_n ? `${nf(c.blocked_n)} ×` : "")}
+      ${c.blocked?.length ? `<div class="tt-list tt-blocked">${c.blocked.slice(0, 4).map((b) => `<div>
+        <div>${esc(blockWhat(b))} → ${esc(b.target)}</div>
+        <div class="muted">${nf(b.n)}× · ${esc(b.by)}${b.sources > 1 ? ` · ${b.sources} adressen` : ""} · laatst ${stamp(b.last)}</div></div>`).join("")}</div>` : ""}
       ${c.domains?.length ? `<div class="tt-list">${c.domains.slice(0, 3).map((d) => `<div>${esc(d.name)} <span class="muted">${bytes(d.bytes)}</span></div>`).join("")}</div>` : ""}
       ${c.clients?.length ? `<div class="tt-list muted">${c.clients.slice(0, 3).map((x) => esc(x.name)).join(" · ")}</div>` : ""}`;
   }
@@ -1514,6 +1641,10 @@
       }
     }
     $("#w-arcs").innerHTML = arcs.join("");
+    $("#w-labels").innerHTML = d.countries.filter((c) => W.countries[c.cc]?.c).map((c) => {
+      const [x, y] = W.countries[c.cc].c;
+      return `<text x="${x}" y="${y}">${esc(ccName(c.cc))}</text>`;
+    }).join("");
     $("#w-home").innerHTML = `<circle class="home-ring" cx="${home[0]}" cy="${home[1]}" r="7"/><circle class="home-dot" cx="${home[0]}" cy="${home[1]}" r="3"/>`;
     $("#w-legend").innerHTML = `<span><i class="sw" style="background:${C.cyan}"></i>Uitgaand: eigen apparaat → internet</span><span><i class="sw" style="background:${C.violet}"></i>Inkomend: internet → eigen apparaat</span>
       <span><i class="sw" style="background:${C.rose}"></i>Geblokkeerd: tegengehouden door IPS of firewall</span><span>Kleur van een land: hoeveel data, dikte van de boog: hoeveel verkeer</span>`;
@@ -1527,9 +1658,9 @@
     const unk = d.totals.unknown_n || 0;
     $("#w-cty-sub").textContent = `${plural(cs.length, "land", "landen")}${unk ? ` · ${nf(unk)} verbindingen zonder land` : ""}`;
     $("#w-cty-sub").title = unk ? "UniFi geeft niet bij elke verbinding een land mee, bijvoorbeeld bij DNS naar publieke resolvers." : "";
-    $("#w-cty").innerHTML = cs.length ? cs.slice(0, 12).map((c) => `
-      <div class="rank-row w-row" data-cc="${c.cc}" tabindex="0"><div class="rank-main"><div class="rank-name"><span class="cc">${esc(c.cc)}</span>${esc(ccName(c.cc))}${c.cc === d.home ? ` <span class="muted">(thuis)</span>` : ""}</div>
-        <div class="cell-sub">${[c.out_n ? `${nf(c.out_n)} uit` : "", c.in_n ? `${nf(c.in_n)} in` : "", c.blocked_n ? `<span class="t-critical">${nf(c.blocked_n)} geblokkeerd</span>` : ""].filter(Boolean).join(" · ")}${c.domains?.[0] ? ` · ${esc(c.domains[0].name)}` : ""}</div></div>
+    $("#w-cty").innerHTML = cs.length ? cs.slice(0, 25).map((c) => `
+      <div class="rank-row w-row" data-cc="${c.cc}" tabindex="0" title="Klik om in te zoomen op ${esc(ccName(c.cc))}"><div class="rank-main"><div class="rank-name"><span class="cc">${esc(c.cc)}</span>${esc(ccName(c.cc))}${c.cc === d.home ? ` <span class="muted">(thuis)</span>` : ""}</div>
+        <div class="cell-sub">${[c.out_n ? `${nf(c.out_n)} uit` : "", c.in_n ? `${nf(c.in_n)} in` : "", c.blocked_n ? `<span class="t-critical">${nf(c.blocked_n)} geblokkeerd</span>` : ""].filter(Boolean).join(" · ")}${c.domains?.[0] ? ` · ${esc(c.domains[0].name)}` : c.blocked?.[0] ? ` · ${esc(blockWhat(c.blocked[0]))} → ${esc(c.blocked[0].target)}` : ""}</div></div>
         <div class="rank-bar">${meter(100 * c.bytes / max)}</div><span class="num rank-n">${bytes(c.bytes)}</span></div>`).join("")
       : `<div class="empty">Nog geen verbindingen in deze periode.</div>`;
     const cmax = Math.max(1, ...d.clients.map((c) => c.bytes));
@@ -1565,6 +1696,7 @@
     const ns = "http://www.w3.org/2000/svg";
     const c = document.createElementNS(ns, "circle");
     c.setAttribute("r", "2.6"); c.setAttribute("fill", DIR[f.dir][1]); c.setAttribute("class", "pulse");
+    c.style.r = `calc(2.6px * var(--s, 1))`;
     const m = document.createElementNS(ns, "animateMotion");
     m.setAttribute("dur", "1.8s"); m.setAttribute("path", path); m.setAttribute("fill", "freeze"); m.setAttribute("begin", "indefinite");
     c.appendChild(m); g.appendChild(c);

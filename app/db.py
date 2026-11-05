@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS notified (channel TEXT, key TEXT, severity TEXT, sent
     PRIMARY KEY (channel, key));
 CREATE TABLE IF NOT EXISTS flows (id TEXT PRIMARY KEY, ts INT, dir TEXT, action TEXT, cc TEXT, remote_ip TEXT,
     port INT, domain TEXT, service TEXT, proto TEXT, client_mac TEXT, client_name TEXT, client_ip TEXT, net TEXT,
-    up INT, down INT, risk TEXT);
+    up INT, down INT, risk TEXT, reason TEXT);
 CREATE INDEX IF NOT EXISTS ix_flows ON flows(ts);
 CREATE INDEX IF NOT EXISTS ix_ips ON ips_events(ts);
 CREATE INDEX IF NOT EXISTS ix_dev ON device_samples(mac, ts);
@@ -56,6 +56,9 @@ class DB:
 
     def _migrate(self) -> None:
         """Kolommen die later zijn toegevoegd aan bestaande databases."""
+        fcols = {r[1] for r in self.conn.execute("PRAGMA table_info(flows)")}
+        if "reason" not in fcols:
+            self.conn.execute("ALTER TABLE flows ADD COLUMN reason TEXT")
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(wan_samples)")}
         for col in ("rx_bps", "tx_bps"):
             if col not in cols:
@@ -148,7 +151,7 @@ class DB:
 
     # ------------------------------------------------------------- verbindingen (wereldkaart)
     FLOW_COLS = ("id", "ts", "dir", "action", "cc", "remote_ip", "port", "domain", "service", "proto",
-                 "client_mac", "client_name", "client_ip", "net", "up", "down", "risk")
+                 "client_mac", "client_name", "client_ip", "net", "up", "down", "risk", "reason")
 
     def store_flows(self, flows: list[dict]) -> int:
         """Nieuwe of bijgewerkte verbindingen (UniFi meldt lange verbindingen opnieuw met meer bytes)."""
@@ -199,6 +202,11 @@ class DB:
             "AND domain IS NOT NULL GROUP BY domain ORDER BY bytes DESC LIMIT 8", (since,))]
         return {"countries": countries, "totals": {k: tot[k] or 0 for k in tot.keys()},
                 "clients": clients, "domains": domains}
+
+    def blocked_flows(self, since: int) -> list[dict]:
+        return [dict(r) for r in self.q(
+            "SELECT ts, cc, reason, service, port, client_name, client_ip, remote_ip FROM flows "
+            "WHERE ts>=? AND dir='blocked' ORDER BY ts DESC LIMIT 5000", (since,))]
 
     def flows_recent(self, after: int, limit: int = 40, include_local: bool = False) -> list[dict]:
         cond = "" if include_local else "AND dir!='local'"

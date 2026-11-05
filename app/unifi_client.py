@@ -274,12 +274,17 @@ def _name(n: str | None, ip: str | None) -> str | None:
     return ip if not n or _MAC.match(n) else n
 
 
+_LAN_NETS = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+                                                  "169.254.0.0/16", "127.0.0.0/8", "fc00::/7", "fe80::/10", "::1/128")]
+
+
 def _is_local_ip(ip: str | None) -> bool:
+    """Adres in een thuis-/bedrijfsnetwerk (RFC 1918, CGNAT, link-local). Documentatie-adressen tellen niet mee."""
     try:
         a = ipaddress.ip_address(ip or "")
     except ValueError:
         return False
-    return a.is_private or a.is_link_local or a.is_loopback or a in ipaddress.ip_network("100.64.0.0/10")
+    return any(a in n for n in _LAN_NETS if n.version == a.version)
 
 
 def normalize_flow(f: dict) -> dict:
@@ -317,7 +322,23 @@ def normalize_flow(f: dict) -> dict:
         "up": rx if incoming else tx,
         "down": tx if incoming else rx,
         "risk": f.get("risk"),
+        "reason": _block_reason(f) if blocked else None,
     }
+
+
+def _block_reason(f: dict) -> str:
+    """Waardoor een verbinding tegengehouden werd, in gewone woorden."""
+    for p in f.get("policies") or []:
+        t, it = (p.get("type") or "").upper(), (p.get("internal_type") or "").upper()
+        if "REGION" in it:
+            return "Regioblokkade"
+        if t == "INTRUSION_PREVENTION" or "IPS" in it:
+            return "IPS"
+        if t == "FIREWALL":
+            return "Firewallregel"
+        if t:
+            return t.replace("_", " ").capitalize()
+    return "Geblokkeerd"
 
 
 def normalize_ips(f: dict) -> dict:

@@ -620,6 +620,45 @@ def _flow_names(collector) -> dict:
     return {c["mac"]: c["name"] for c in snap.get("clients", []) if c.get("name") and c["name"] != c["mac"]}
 
 
+def _blocked_details(collector, db, since: int) -> dict[str, list[dict]]:
+    """Per land: wat er tegengehouden werd, gericht op welk apparaat en welke poort, vanaf hoeveel adressen."""
+    from .unifi_client import _is_local_ip, _name
+    snap = collector.latest or {}
+    by_ip = {c["ip"]: c["name"] for c in snap.get("clients", []) if c.get("ip") and c["name"] != c["mac"]}
+    by_ip.update({d["ip"]: d["name"] for d in snap.get("devices", []) if d.get("ip")})
+
+    def target(name, ip):
+        name = _name(name, ip)
+        if name and name != ip:
+            return name
+        if ip and ip in by_ip:
+            return by_ip[ip]
+        return ip if ip and _is_local_ip(ip) else "je gateway (WAN)"
+
+    rows = [{"cc": f["cc"], "by": f["reason"] or "Geblokkeerd", "what": f["service"] or "Onbekend", "port": f["port"],
+             "target": target(f["client_name"], f["client_ip"]), "src": f["remote_ip"], "ts": f["ts"]}
+            for f in db.blocked_flows(since) if f["cc"]]
+    rows += [{"cc": e["src_country"], "by": "IPS", "what": e.get("signature") or "IPS-regel", "port": e.get("dst_port"),
+              "target": target(e.get("dst_name"), e.get("dst_ip")), "src": e.get("src_ip"), "ts": e["ts"]}
+             for e in db.ips_events(since, "external") if e.get("src_country")]
+    out: dict[str, dict[tuple, dict]] = {}
+    for r in rows:
+        k = (r["by"], r["what"], r["port"], r["target"])
+        g = out.setdefault(r["cc"], {}).setdefault(k, {"by": r["by"], "what": r["what"], "port": r["port"],
+                                                        "target": r["target"], "n": 0, "last": 0, "_src": set()})
+        g["n"] += 1
+        g["last"] = max(g["last"], r["ts"])
+        if r["src"]:
+            g["_src"].add(r["src"])
+    result = {}
+    for cc, groups in out.items():
+        items = sorted(groups.values(), key=lambda g: (-g["n"], -g["last"]))[:5]
+        for g in items:
+            g["sources"] = len(g.pop("_src"))
+        result[cc] = items
+    return result
+
+
 @app.get("/api/world")
 def world(hours: float = Query(1, gt=0, le=48)):
     collector, db = _need()
@@ -637,6 +676,9 @@ def world(hours: float = Query(1, gt=0, le=48)):
     for c in w["clients"]:
         c["name"] = names.get(c["mac"], c["name"])
     w["totals"]["blocked_n"] += sum(blocked.values())
+    for cc, items in _blocked_details(collector, db, since).items():
+        if cc in w["countries"]:
+            w["countries"][cc]["blocked"] = items
     w["totals"]["countries"] = sum(1 for c in w["countries"].values() if c["out_n"] or c["in_n"])
     return {"hours": hours, "home": (rt.settings.home_country or "NL").upper(), "available": collector.flows_available,
             "error": collector.optional.get("flows"), "countries": list(w["countries"].values()),

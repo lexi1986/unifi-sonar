@@ -31,6 +31,9 @@ def test_normalize_flow_directions():
     reg = normalize_flow(flow("incoming", {"ip": "198.51.100.9", "region": "RU"}, {"ip": "192.168.1.13", "port": 445},
                               action="blocked"))
     assert reg["dir"] == "blocked" and reg["cc"] == "RU"    # regioblokkade: niet als 'inkomend' tellen
+    reg2 = normalize_flow(flow("incoming", {"ip": "198.51.100.9", "region": "RU"}, {"ip": "203.0.113.2", "port": 23},
+                               action="blocked", policies=[{"type": "PROTECTION", "internal_type": "REGION_BLOCKING"}]))
+    assert reg2["reason"] == "Regioblokkade"
 
     vpn = normalize_flow(flow("incoming", {"ip": "192.168.2.4"}, {"ip": "192.168.1.22", "port": 53}))
     assert vpn["dir"] == "local" and vpn["cc"] is None        # VPN-client: geen internetverkeer
@@ -64,5 +67,8 @@ def test_demo_world_api(tmp_path, monkeypatch):
     w = c.get("/api/world?hours=24").json()
     ccs = {x["cc"] for x in w["countries"]}
     assert w["home"] == "NL" and {"US", "SE", "CN"} <= ccs and w["totals"]["blocked_n"] > 0
+    blk = [x for x in w["countries"] if x.get("blocked")]
+    assert blk and all({"what", "target", "n", "sources", "by"} <= set(b) for x in blk for b in x["blocked"])
+    assert any(b["by"] == "Regioblokkade" and b["target"] == "je gateway (WAN)" for x in blk for b in x["blocked"])
     live = c.get("/api/world/live?limit=20").json()["flows"]
     assert live and all("remote_ip" not in f for f in live)

@@ -370,6 +370,14 @@ class MockNetwork:
                         "source": {"ip": src, "port": rnd.randint(30000, 60000), "region": cc},
                         "destination": {"ip": ip, "mac": mac, "client_name": host, "port": port},
                         "traffic_data": {"bytes_tx": int(size * rnd.random()), "bytes_rx": int(size * rnd.random() * 3)}})
+        if rnd.random() < 0.15:   # door de regioblokkade tegengehouden
+            cc, port, svc = rnd.choice((("RU", 23, "TELNET"), ("RU", 445, "MICROSOFT_DS"), ("CN", 3389, "RDP"), ("KP", 22, "SSH")))
+            out.append({"id": f"mockfb-{ts}-{port}", "action": "blocked", "direction": "incoming", "protocol": "TCP",
+                        "flow_end_time": ts * 1000, "service": svc, "risk": "high",
+                        "policies": [{"type": "PROTECTION", "internal_type": "REGION_BLOCKING"}],
+                        "in": {"network_name": "WAN"}, "source": {"ip": f"198.51.100.{rnd.randint(1, 250)}", "region": cc},
+                        "destination": {"ip": "203.0.113.24", "port": port},
+                        "traffic_data": {"bytes_tx": 60, "bytes_rx": 0}})
         if rnd.random() < 0.5:   # tussen eigen netwerken
             out.append({"id": f"mockfl-{ts}", "action": "allowed", "direction": "local", "protocol": "UDP", "service": "DNS",
                         "flow_end_time": ts * 1000, "source": {"ip": "192.168.1.105", "client_name": "Kindle"},
