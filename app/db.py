@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS issues (key TEXT PRIMARY KEY, severity TEXT, category
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS muted (key TEXT PRIMARY KEY, until INT, created INT, title TEXT);
 CREATE TABLE IF NOT EXISTS ips_events (id TEXT PRIMARY KEY, ts INT, internal INT, src_ip TEXT, sid INT, data TEXT);
+CREATE TABLE IF NOT EXISTS speedtests (ts INT PRIMARY KEY, down REAL, up REAL, latency REAL, server TEXT);
 CREATE TABLE IF NOT EXISTS ips_ignore (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, sid INT, label TEXT, created INT);
 CREATE TABLE IF NOT EXISTS notified (channel TEXT, key TEXT, severity TEXT, sent_ts INT, gone_ts INT, announced INT,
     PRIMARY KEY (channel, key));
@@ -47,6 +48,15 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self.lock = threading.Lock()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Kolommen die later zijn toegevoegd aan bestaande databases."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(wan_samples)")}
+        for col in ("rx_bps", "tx_bps"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE wan_samples ADD COLUMN {col} REAL")
+        self.conn.commit()
 
     def q(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         with self.lock:
@@ -72,8 +82,9 @@ class DB:
                 (ts, x["mac"], x["ap_mac"], x["band"], x["signal"], x["satisfaction"], x.get("retry_pct"), x["tx_rate_mbps"])
                 for x in snap["clients"]])
             w = snap["wan"]
-            c.execute("INSERT INTO wan_samples VALUES (?,?,?,?)",
-                      (ts, None if w["up"] is None else int(w["up"]), w["latency_ms"], w["loss_pct"]))
+            c.execute("INSERT INTO wan_samples (ts, up, latency_ms, loss_pct, rx_bps, tx_bps) VALUES (?,?,?,?,?,?)",
+                      (ts, None if w["up"] is None else int(w["up"]), w["latency_ms"], w["loss_pct"],
+                       w.get("rx_bps"), w.get("tx_bps")))
             c.executemany("INSERT INTO events VALUES (?,?,?,?,?)", [
                 (e["ts"], e["kind"], e["entity_type"], e["entity_id"], e["message"]) for e in events])
 
@@ -138,6 +149,27 @@ class DB:
         cond = {"internal": "AND internal=1", "external": "AND internal=0"}.get(scope, "")
         return [json.loads(r["data"]) for r in
                 self.q(f"SELECT data FROM ips_events WHERE ts>=? {cond} ORDER BY ts DESC LIMIT ?", (since, limit))]
+
+    # ------------------------------------------------------------ speedtests
+    def store_speedtests(self, rows: list[dict]) -> int:
+        """Eén rij per test: een voorlopig resultaat (zonder server) wordt vervangen door dat uit het
+        UniFi-archief, ook als de tijdstempels een paar seconden verschillen."""
+        added = 0
+        with self.lock, self.conn:
+            c = self.conn
+            for r in rows:
+                near = c.execute("SELECT ts, server FROM speedtests WHERE ts BETWEEN ? AND ?",
+                                 (r["ts"] - 300, r["ts"] + 300)).fetchall()
+                if any(n["server"] or not r.get("server") for n in near):
+                    continue
+                c.execute("DELETE FROM speedtests WHERE ts BETWEEN ? AND ?", (r["ts"] - 300, r["ts"] + 300))
+                c.execute("INSERT INTO speedtests VALUES (?,?,?,?,?)",
+                          (r["ts"], r["down"], r["up"], r["latency"], r.get("server") or ""))
+                added += 1
+        return added
+
+    def speedtests(self, since: int) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM speedtests WHERE ts>=? ORDER BY ts", (since,))]
 
     # ------------------------------------------------------ IPS negeerregels
     def ips_ignores(self) -> list[dict]:

@@ -436,6 +436,41 @@ def debug_info():
     return {"text": "\n".join(lines)}
 
 
+# ----------------------------------------------------------------------- internet
+@app.get("/api/internet")
+async def internet(hours: float = Query(24, gt=0, le=24 * 31)):
+    collector, db = _need()
+    now = int(time.time())
+    since, b = now - int(hours * 3600), _bucket(hours)
+    await collector.sync_speedtests()
+    series = [dict(r) for r in db.q(
+        f"SELECT (ts/{b})*{b} t, AVG(rx_bps) rx, MAX(rx_bps) rx_max, AVG(tx_bps) tx, MAX(tx_bps) tx_max, AVG(latency_ms) lat "
+        f"FROM wan_samples WHERE ts>=? GROUP BY t ORDER BY t", (since,))]
+    return {"bucket": b, "series": series, "wan": (collector.latest or {}).get("wan"),
+            "speedtests": db.speedtests(now - 90 * 86400), "speedtest": collector.speedtest,
+            "available": collector.mock is not None or (collector.client and collector.client.source in ("legacy-key", "legacy-login"))}
+
+
+@app.get("/api/live/wan")
+async def live_wan():
+    collector, db = _need()
+    try:
+        live = await collector.live_wan()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"Live-meting niet beschikbaar: {e}") from e
+    return {**live, "now": time.time(), "test": collector.speedtest}
+
+
+@app.post("/api/speedtest")
+async def speedtest_start():
+    collector, db = _need()
+    try:
+        await collector.start_speedtest()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(409, str(e)) from e
+    return {"ok": True}
+
+
 # ----------------------------------------------------------------------- patronen
 @app.get("/api/patterns/client/{mac}")
 def patterns_client(mac: str, days: int = Query(7, ge=1, le=31)):

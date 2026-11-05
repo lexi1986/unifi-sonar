@@ -47,6 +47,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
 
     out_devices = []
     gateway_wan: dict = {}
+    gateway_raw: dict = {}
     for d in devices:
         dtype = DEVICE_TYPE.get(d.get("type", ""), d.get("type", "other"))
         stats = d.get("system-stats") or {}
@@ -127,6 +128,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
         out_devices.append(dev)
         if dtype == "gateway":
             gateway_wan = (d.get("uptime_stats") or {}).get("WAN") or {}
+            gateway_raw = d
 
     avail = _num(gateway_wan.get("availability"))
     wan = {
@@ -138,6 +140,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
         # 0 betekent "nog nooit een snelheidstest gedraaid"
         "xput_down": _num(www.get("xput_down")) or None,
         "xput_up": _num(www.get("xput_up")) or None,
+        **wan_rates(gateway_raw, wan_h),
     }
 
     out_clients = []
@@ -177,6 +180,41 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
             "fixed_ap": c.get("fixed_ap_mac") if not wired and c.get("fixed_ap_enabled") else None,
         })
     return {"wan": wan, "devices": out_devices, "clients": out_clients}
+
+
+def wan_rates(gw: dict, wan_h: dict | None = None) -> dict:
+    """Actueel internetverkeer (bit/s) en linksnelheid van de actieve WAN-poort van de gateway."""
+    up = gw.get("uplink") or {}
+    port = next((gw[k] for k in ("wan1", "wan2", "wan3") if (gw.get(k) or {}).get("is_uplink")), None) or gw.get("wan1") or {}
+    src = port or up or wan_h or {}
+    rx, tx = _num(src.get("rx_bytes-r")), _num(src.get("tx_bytes-r"))
+    if rx is None and wan_h:
+        rx, tx = _num(wan_h.get("rx_bytes-r")), _num(wan_h.get("tx_bytes-r"))
+    return {"rx_bps": rx * 8 if rx is not None else None, "tx_bps": tx * 8 if tx is not None else None,
+            "rx_bytes": _num(src.get("rx_bytes")), "tx_bytes": _num(src.get("tx_bytes")),
+            "link_mbps": _num(port.get("speed")) or _num(up.get("speed")) or None}
+
+
+def normalize_speedtest_state(st: dict) -> dict:
+    """'speedtest-status' van de gateway: fases 0 = niet gestart, 1 = bezig, 2 = klaar."""
+    phases = {k: int(_num(st.get(f"status_{k}"), 0) or 0) for k in ("ping", "download", "upload")}
+    running = any(v == 1 for v in phases.values()) or int(_num(st.get("status_summary"), 0) or 0) == 1
+    return {"running": running, "phase": next((k for k, v in phases.items() if v == 1), None),
+            "rundate": int(_num(st.get("rundate"), 0) or 0) or None,
+            "down": _num(st.get("xput_download")) or None, "up": _num(st.get("xput_upload")) or None,
+            "latency": _num(st.get("latency")) or None}
+
+
+def normalize_speedtests(rows: list[dict]) -> list[dict]:
+    out = []
+    for r in rows:
+        ts = int((_num(r.get("time")) or 0) / 1000) or int(_num(r.get("rundate"), 0) or 0)
+        if not ts or not r.get("xput_download"):
+            continue
+        srv = r.get("server") or {}
+        out.append({"ts": ts, "down": _num(r.get("xput_download")), "up": _num(r.get("xput_upload")),
+                    "latency": _num(r.get("latency")), "server": ", ".join(x for x in (srv.get("city"), srv.get("provider")) if x)})
+    return sorted(out, key=lambda x: x["ts"])
 
 
 # ------------------------------------------------------------------ configuratie
@@ -318,7 +356,8 @@ def normalize_integration(devices: list[dict], stats: dict[str, dict], clients: 
     for dev in out_devices:
         dev["num_clients"] = sum(1 for c in out_clients if dev["mac"] in (c["ap_mac"], c["sw_mac"]))
     return {"wan": {"up": None, "latency_ms": None, "loss_pct": None, "wan_ip": "", "isp": "",
-                    "xput_down": None, "xput_up": None},
+                    "xput_down": None, "xput_up": None, "rx_bps": None, "tx_bps": None, "rx_bytes": None,
+                    "tx_bytes": None, "link_mbps": None},
             "devices": out_devices, "clients": out_clients}
 
 
@@ -415,6 +454,34 @@ class UnifiClient:
         rows = await self._legacy("stat/sysinfo", self.source == "legacy-key")
         si = rows[0] if rows else {}
         return {"network_version": si.get("version"), "build": si.get("build"), "timezone": si.get("timezone")}
+
+    # ----------------------------------------------------------- internet
+    def _legacy_only(self) -> bool:
+        if self.source not in ("legacy-key", "legacy-login"):
+            raise RuntimeError("Alleen beschikbaar via de uitgebreide API (API-key of lokaal account)")
+        return self.source == "legacy-key"
+
+    async def gateway(self, mac: str) -> dict:
+        """Ruwe gegevens van alleen de gateway: snel genoeg om elke paar seconden op te vragen."""
+        rows = await self._legacy(f"stat/device/{mac}", self._legacy_only())
+        return rows[0] if rows else {}
+
+    async def speedtest_start(self, mac: str) -> None:
+        self._legacy_only()
+        r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/cmd/devmgr", headers=self._write_headers(),
+                                 json={"cmd": "speedtest", "mac": mac.lower()})
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code != 200 or (body.get("meta") or {}).get("rc") not in (None, "ok"):
+            raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")
+
+    async def speedtests(self, since_s: int, until_s: int) -> list[dict]:
+        self._legacy_only()
+        r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/stat/report/archive.speedtest",
+                                 headers=self._write_headers(),
+                                 json={"attrs": ["xput_download", "xput_upload", "latency", "time", "rundate", "server"],
+                                       "start": since_s * 1000, "end": until_s * 1000})
+        r.raise_for_status()
+        return normalize_speedtests(r.json().get("data", []))
 
     async def fetch_ips(self, since_ms: int, until_ms: int) -> list[dict] | None:
         """Door de IPS geblokkeerde flows. None = niet beschikbaar met deze bron."""

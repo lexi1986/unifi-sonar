@@ -156,7 +156,7 @@
   }
 
   // ------------------------------------------------------------------ router
-  const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings };
+  const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, internet: mountInternet, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings };
   let current = null;
   function route() {
     const [name, id] = location.hash.replace(/^#\/?/, "").split("/");
@@ -319,7 +319,7 @@
         <div class="sub"><span>${types.gateway} gateway</span><span>${types.switch} switches</span><span>${types.ap} AP's</span></div></div>
       <div class="card compact kpi clickable" data-go="clients" tabindex="0" role="link"><div class="label">${icon("users")}Clients</div><div class="value">${s.clients.length}</div>
         <div class="sub"><span>${icon("wifi")} ${wifi} wifi</span><span>${icon("cable")} ${s.clients.length - wifi} bedraad</span></div></div>
-      <div class="card compact kpi"><div class="label">${icon("globe")}Internet</div><div class="value">${s.wan.latency_ms == null ? "–" : nf(s.wan.latency_ms)}<small>ms</small></div>
+      <div class="card compact kpi clickable" data-go="internet" tabindex="0" role="link"><div class="label">${icon("globe")}Internet</div><div class="value">${s.wan.latency_ms == null ? "–" : nf(s.wan.latency_ms)}<small>ms</small></div>
         <div class="sub">${s.wan.up === false ? badge("critical", "Offline", "octagon") : badge("ok", "Online", "check")}<span>verlies ${nf(s.wan.loss_pct, 1)}%</span></div></div>`;
     $("#ov-kpis").querySelectorAll("[data-go]").forEach((n) => {
       const go = () => (location.hash = "#/" + n.dataset.go);
@@ -535,6 +535,156 @@
           <td>${c.connected === false ? badge("", "Niet verbonden") : c.issue_count ? badge(c.score < 70 ? "critical" : "warning", `${c.issue_count} probleem${c.issue_count > 1 ? "en" : ""}`, "alert") : badge("ok", "OK", "check")}</td></tr>`;
       }).join("")}</tbody></table>` : `<div class="empty">Geen clients gevonden</div>`;
   };
+
+  // ------------------------------------------------------------------ internet
+  const net = { hours: store.get("net.hours", 24), live: [], timer: null, data: null, last: null, wasRunning: false };
+  const mb = (bps) => (bps == null ? null : bps / 1e6);
+  const mbTxt = (v) => (v == null ? "–" : nf(v, v < 10 ? 1 : 0));
+  const dateTxt = (t, withTime) => new Date(t * 1000).toLocaleString("nl-NL", withTime ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short" });
+  function mountInternet() {
+    mount("internet", `
+      <div class="page-head"><div><h1>Internet</h1><p class="subtitle" id="net-sub">Live verkeer en de snelheid van je verbinding.</p></div>
+        <div class="seg" role="group" aria-label="Periode" id="net-range">${[[6, "6 u"], [24, "24 u"], [168, "7 d"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${net.hours === h}">${l}</button>`).join("")}</div></div>
+      <div id="net-banner"></div>
+      <section class="grid kpis net-kpis" id="net-kpis" aria-label="Internet nu"></section>
+      <section class="grid cols-main" style="margin-bottom:16px">
+        <div class="card"><div class="card-head"><h2 style="margin:0">Live verkeer</h2><span class="muted" id="net-live-sub"></span></div><div id="net-live"></div>
+          <p class="help" style="margin:8px 0 0">De gateway geeft zijn tellers om de 10 à 45 seconden door aan UniFi; daarom springt de lijn in stapjes.</p></div>
+        <div class="card" id="net-test" aria-live="polite"></div>
+      </section>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>Internetverkeer</h3><span class="muted" id="net-hist-sub"></span></div><div id="net-hist"></div></section>
+      <section class="card"><div class="card-head"><h3>Speedtests</h3><span class="muted" id="net-st-sub">afgelopen 90 dagen</span></div><div id="net-st-chart"></div>
+        <div class="table-wrap" style="border:0;margin-top:12px" id="net-st-table"></div></section>`);
+    $("#net-range").addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-h]"); if (!b) return;
+      net.hours = +b.dataset.h; store.set("net.hours", net.hours);
+      $("#net-range").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+      loadInternet();
+    });
+    $("#net-test").addEventListener("click", (e) => { if (e.target.closest("[data-st=start]")) startSpeedtest(); });
+    net.live = []; net.last = null;
+    api("/api/internet?hours=0.25").then((d) => {   // de live-grafiek begint met het laatste kwartier
+      net.live = d.series.filter((p) => p.rx != null).map((p) => ({ t: p.t + 30, rx: mb(p.rx), tx: mb(p.tx) }));
+      drawLive();
+    }).catch(() => {});
+    liveLoop();
+  }
+  UPDATERS.internet = () => loadInternet();
+  async function loadInternet() {
+    let d;
+    try { d = await api(`/api/internet?hours=${net.hours}`); } catch (e) { return; }
+    if (current !== "internet") return;
+    net.data = d;
+    const w = d.wan || {};
+    $("#net-sub").textContent = [w.isp, w.link_mbps ? `WAN-poort ${speed(w.link_mbps)}` : null, "live verkeer en snelheid"].filter(Boolean).join(" · ");
+    $("#net-banner").innerHTML = d.available ? "" : `<div class="banner err">${icon("info")}<span>Live verkeer en speedtests zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).</span></div>`;
+    $("#net-hist-sub").textContent = `gemiddeld per ${d.bucket >= 3600 ? d.bucket / 3600 + " uur" : d.bucket / 60 + " min"}`;
+    MEcharts.lineChart($("#net-hist"), { series: [
+      { name: "Download", color: C.cyan, data: d.series.map((p) => [p.t, mb(p.rx)]) },
+      { name: "Upload", color: C.violet, data: d.series.map((p) => [p.t, mb(p.tx)]) }],
+      unit: " Mbit/s", yMin: 0, bucket: d.bucket, label: "Internetverkeer in Mbit/s",
+      xfmt: net.hours > 48 ? (t) => dateTxt(t) : undefined });
+    const st = d.speedtests;
+    $("#net-st-sub").textContent = st.length ? `${plural(st.length, "test", "tests")} in de afgelopen 90 dagen` : "afgelopen 90 dagen";
+    MEcharts.lineChart($("#net-st-chart"), { series: [
+      { name: "Download", color: C.cyan, data: st.map((r) => [r.ts, r.down]) },
+      { name: "Upload", color: C.violet, data: st.map((r) => [r.ts, r.up]) }],
+      unit: " Mbit/s", yMin: 0, bucket: 86400 * 4, markers: true, label: "Speedtest-resultaten",
+      xfmt: (t) => dateTxt(t), tfmt: (t) => dateTxt(t, true) });
+    $("#net-st-table").innerHTML = st.length ? `<table><thead><tr><th>Wanneer</th><th class="r">Download</th><th class="r">Upload</th><th class="r">Ping</th><th>Server</th></tr></thead><tbody>
+      ${st.slice(-10).reverse().map((r) => `<tr style="cursor:default"><td class="num">${dateTxt(r.ts, true)}</td><td class="r num">${mbTxt(r.down)} Mbit/s</td><td class="r num">${mbTxt(r.up)} Mbit/s</td><td class="r num">${r.latency == null ? "–" : nf(r.latency) + " ms"}</td><td class="muted">${esc(r.server || "–")}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">Nog geen speedtests. Start er hierboven een.</div>`;
+    renderNetKpis(); renderTest();
+  }
+  const normal = (key) => {   // wat is normaal voor deze verbinding: mediaan van de tests
+    const v = (net.data?.speedtests || []).map((r) => r[key]).filter(Boolean).sort((a, b) => a - b);
+    return v.length ? v[Math.floor(v.length / 2)] : null;
+  };
+  function renderNetKpis() {
+    const L = net.last, d = net.data;
+    if (!$("#net-kpis") || !d) return;
+    const last = d.speedtests[d.speedtests.length - 1];
+    const fresh = L ? Math.max(0, Math.round(L.now - L.updated)) : null;
+    const kpi = (ic, label, v, unit, ref, sub) => {
+      const pct = ref && v != null ? Math.min(100, (100 * v) / ref) : null;
+      return `<div class="card compact kpi"><div class="label">${icon(ic)}${label}</div><div class="value">${mbTxt(v)}<small>${unit}</small></div>
+        ${pct != null ? `<div class="scorebar" title="${nf(pct)}% van wat de verbinding haalt"><span style="width:${pct}%"></span></div>` : ""}<div class="sub">${sub}</div></div>`;
+    };
+    const live = L ? `<span class="live-dot" aria-hidden="true"></span>${fresh < 5 ? "zojuist" : `${dur(fresh)} geleden`}` : "laden…";
+    $("#net-kpis").innerHTML =
+      kpi("activity", "Download nu", mb(L?.rx_bps), "Mbit/s", normal("down"), live) +
+      kpi("activity", "Upload nu", mb(L?.tx_bps), "Mbit/s", normal("up"), normal("up") ? `van ~${mbTxt(normal("up"))} Mbit/s` : "") +
+      `<div class="card compact kpi"><div class="label">${icon("clock")}Latency</div><div class="value">${L?.latency_ms == null ? "–" : nf(L.latency_ms)}<small>ms</small></div><div class="sub">naar internet</div></div>` +
+      `<div class="card compact kpi"><div class="label">${icon("gauge")}Laatste speedtest</div><div class="value">${last ? mbTxt(last.down) : "–"}<small>/ ${last ? mbTxt(last.up) : "–"} Mbit/s</small></div>
+        <div class="sub">${last ? `${dateTxt(last.ts, true)} · ping ${nf(last.latency)} ms` : "nog niet gemeten"}</div></div>`;
+  }
+  const PHASES = [["ping", "Ping"], ["download", "Download"], ["upload", "Upload"]];
+  function renderTest() {
+    const root = $("#net-test");
+    if (!root || !net.data) return;
+    const t = net.last?.test || net.data.speedtest || {};
+    const g = net.last?.speedtest || {};
+    const last = net.data.speedtests[net.data.speedtests.length - 1];
+    const nd = normal("down");
+    if (t.running) {
+      const at = PHASES.findIndex(([k]) => k === g.phase);
+      root.innerHTML = `<div class="card-head"><h2 style="margin:0">Speedtest</h2><span class="badge info"><span class="live-dot"></span>bezig</span></div>
+        <ol class="st-steps">${PHASES.map(([k, l], i) => {
+          const val = i < at ? (k === "ping" ? (g.latency != null ? `${nf(g.latency)} ms` : "") : g[k === "download" ? "down" : "up"] != null ? `${mbTxt(g[k === "download" ? "down" : "up"])} Mbit/s` : "") : "";
+          return `<li class="${at < 0 ? (i === 0 ? "active" : "") : i < at ? "done" : i === at ? "active" : ""}">${i < at ? icon("check") : `<span>${i + 1}</span>`}${l}${val ? `<b class="num st-val">${val}</b>` : ""}</li>`;
+        }).join("")}</ol>
+        <p class="muted">Je gateway meet nu de snelheid van je internetverbinding. Dit duurt 15 tot 30 seconden.</p>`;
+      return;
+    }
+    const res = last ? `<div class="st-result"><div><div class="k">Download</div><div class="v">${mbTxt(last.down)}<small>Mbit/s</small></div></div>
+        <div><div class="k">Upload</div><div class="v">${mbTxt(last.up)}<small>Mbit/s</small></div></div>
+        <div><div class="k">Ping</div><div class="v">${last.latency == null ? "–" : nf(last.latency)}<small>ms</small></div></div></div>
+        <p class="muted" style="margin:6px 0 0">${dateTxt(last.ts, true)}${nd && last.down < 0.8 * nd ? ` · <span class="t-warning">lager dan normaal (~${mbTxt(nd)} Mbit/s)</span>` : nd ? ` · normaal ~${mbTxt(nd)} Mbit/s` : ""}</p>` : "";
+    root.innerHTML = `<div class="card-head"><h2 style="margin:0">Speedtest</h2></div>${res}
+      ${t.error ? `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(t.error)}</span></div>` : ""}
+      <div class="wiz-actions" style="margin-top:16px"><button class="btn primary" data-st="start" ${net.data.available ? "" : "disabled"}>${icon("gauge")}Start speedtest</button></div>
+      <p class="help">De test draait op je gateway zelf en meet dus je echte internetverbinding, los van wifi of dit apparaat. Duurt 15 tot 30 seconden en gebruikt even je volledige bandbreedte.</p>`;
+  }
+  async function startSpeedtest() {
+    const b = $("[data-st=start]");
+    if (b) { b.disabled = true; b.textContent = "Starten…"; }
+    try {
+      await post("/api/speedtest", {});
+      net.last = { ...(net.last || {}), test: { running: true }, speedtest: { phase: "ping" } };
+      net.wasRunning = true;
+      renderTest(); liveLoop();
+    } catch (e) {
+      net.data.speedtest = { error: e.message };
+      if (net.last) net.last.test = { error: e.message };
+      renderTest();
+    }
+  }
+  function drawLive() {
+    if (!$("#net-live")) return;
+    const cut = Date.now() / 1000 - 15 * 60;
+    net.live = net.live.filter((p) => p.t >= cut);
+    MEcharts.lineChart($("#net-live"), { series: [
+      { name: "Download", color: C.cyan, data: net.live.map((p) => [p.t, p.rx]) },
+      { name: "Upload", color: C.violet, data: net.live.map((p) => [p.t, p.tx]) }],
+      unit: " Mbit/s", yMin: 0, bucket: 60, label: "Live internetverkeer in Mbit/s", tfmt: (t) => new Date(t * 1000).toLocaleTimeString("nl-NL") });
+    $("#net-live-sub").textContent = "laatste 15 minuten";
+  }
+  async function liveLoop() {
+    clearTimeout(net.timer);
+    if (current !== "internet") return;
+    try {
+      const L = await api("/api/live/wan");
+      const prev = net.last;
+      net.last = L;
+      if (!prev || prev.updated !== L.updated) { net.live.push({ t: L.updated, rx: mb(L.rx_bps), tx: mb(L.tx_bps) }); drawLive(); }
+      renderNetKpis();
+      if (net.wasRunning && !L.test.running) { net.wasRunning = false; loadInternet(); }
+      else if (L.test.running) { net.wasRunning = true; renderTest(); }
+    } catch (e) {
+      $("#net-live-sub").textContent = e.message;
+    }
+    net.timer = setTimeout(liveLoop, net.last?.test?.running ? 1500 : 3000);
+  }
 
   // ------------------------------------------------------------------ beveiliging
   const secState = { hours: store.get("sec.hours", 24), scope: "all", ignored: false };
@@ -1221,7 +1371,7 @@
     }
   });
   let rt;
-  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (state.drawer) renderDrawer(); }, 250); });
+  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); } if (state.drawer) renderDrawer(); }, 250); });
   window.addEventListener("hashchange", route);
   route();
   refresh();

@@ -409,3 +409,23 @@ pre.debug { background: var(--me-bg); border: 1px solid var(--me-border); border
 .ap-row .cell-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub-h { font-size: 13px; font-weight: 600; color: var(--me-text-secondary); margin: 18px 0 8px; }
 @media (max-width: 640px) { .ap-row { grid-template-columns: minmax(0, 1fr) 60px 40px; } .ap-row > :nth-child(4), .ap-row > :nth-child(5) { display: none; } .heat { grid-template-columns: 22px repeat(24, minmax(0, 1fr)); gap: 1px; } .hm-c { height: 14px; } }
+
+/* internet */
+.net-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--me-success); display: inline-block; margin-right: 6px;
+  box-shadow: 0 0 0 0 rgba(72, 224, 180, 0.6); animation: pulse 2s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(72, 224, 180, 0.55); } 70% { box-shadow: 0 0 0 7px rgba(72, 224, 180, 0); } 100% { box-shadow: 0 0 0 0 rgba(72, 224, 180, 0); } }
+.st-result { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.st-result .k { font-size: 12px; color: var(--me-text-secondary); }
+.st-result .v { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.st-result .v small { font-size: 13px; font-weight: 500; color: var(--me-text-secondary); margin-left: 4px; }
+.st-steps { list-style: none; padding: 0; margin: 4px 0 16px; display: flex; flex-direction: column; gap: 10px; }
+.st-steps li { display: flex; align-items: center; gap: 10px; color: var(--me-text-secondary); }
+.st-steps li span { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--me-elevated); font-size: 12px; font-weight: 600; }
+.st-steps li .icon { width: 24px; height: 24px; color: var(--me-success); }
+.st-steps li.active { color: var(--me-text); font-weight: 600; }
+.st-steps .st-val { margin-left: auto; color: var(--me-text); font-weight: 600; }
+.st-steps li.active span { background: var(--me-primary); color: var(--me-bg); box-shadow: var(--me-glow-subtle); }
+.btn.primary .icon { width: 16px; height: 16px; }
+@media (max-width: 1200px) { .net-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.kpi .sub { align-items: center; }

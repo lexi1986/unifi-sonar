@@ -1,5 +1,6 @@
 /* Lichtgewicht SVG-lijngrafiek in Midnight Electric-stijl.
-   lineChart(el, { series:[{name, color, data:[[t, v], ...]}], unit, fmt, yMin, yMax, threshold:{value,label}, height }) */
+   lineChart(el, { series:[{name, color, data:[[t, v], ...]}], unit, fmt, yMin, yMax, threshold:{value,label}, height,
+                   bucket, xfmt (aslabels), tfmt (tooltip-tijd), markers }) */
 (function () {
   const NS = "http://www.w3.org/2000/svg";
   const SERIES = ["#39D8F4", "#9C84FF", "#48E0B4", "#FFBE5C", "#FB7185"];
@@ -81,7 +82,7 @@
     for (let i = 0; i <= nx; i++) {
       const t = t0 + ((t1 - t0) * i) / nx;
       const tx = el("text", { x: x(t), y: H - 6, "text-anchor": i === 0 ? "start" : i === nx ? "end" : "middle", class: "axis-label" }, svg);
-      tx.textContent = hhmm(t);
+      tx.textContent = (opts.xfmt || hhmm)(t);
     }
     if (opts.threshold) {
       const ty = y(opts.threshold.value);
@@ -107,6 +108,7 @@
       });
       if (series.length === 1) el("path", { d: area, fill: color, "fill-opacity": 0.1, stroke: "none" }, svg);
       el("path", { d, class: "line", stroke: color }, svg);
+      if (opts.markers) pts.forEach((p) => el("circle", { cx: x(p[0]), cy: y(p[1]), r: 3.5, fill: color, stroke: "#131C2B", "stroke-width": 2 }, svg));
     });
 
     // hover-laag
@@ -131,7 +133,7 @@
         dots[k].setAttribute("cx", X); dots[k].setAttribute("cy", y(v)); dots[k].setAttribute("visibility", "visible");
         rows += `<div class="tt-row"><span><i class="sw" style="background:${s.color || SERIES[k]};width:8px;height:8px;border-radius:2px"></i>${s.name}</span><b>${fmt(v)}${unit}</b></div>`;
       });
-      tip.innerHTML = `<div class="tt-time">${dayTime(t)}</div>${rows}`;
+      tip.innerHTML = `<div class="tt-time">${(opts.tfmt || dayTime)(t)}</div>${rows}`;
       tip.classList.add("show");
       const scale = container.clientWidth / W;
       const px = X * scale;

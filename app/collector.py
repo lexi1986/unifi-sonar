@@ -11,7 +11,8 @@ from .config import Settings
 from .db import DB
 from .mock import MockNetwork
 from .notify import Notifier
-from .unifi_client import UnifiClient, normalize_config, normalize_ips, normalize_legacy
+from .unifi_client import (UnifiClient, normalize_config, normalize_ips, normalize_legacy, normalize_speedtest_state,
+                           normalize_speedtests, wan_rates)
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +21,10 @@ def _delta(cur: float | None, prev: float | None) -> float | None:
     if cur is None or prev is None:
         return None
     return cur - prev if cur >= prev else None   # teller-reset → onbekend
+
+
+def _num_or(*vals):
+    return next((float(v) for v in vals if isinstance(v, (int, float))), None)
 
 
 def _retry_pct(pk: float | None, rt: float | None, ppk: float | None, prt: float | None) -> float | None:
@@ -49,6 +54,10 @@ class Collector:
         self._sys_checked = 0
         self.optional: dict[str, str | None] = {}   # optionele bronnen → None (ok) of foutmelding
         self.notifier = Notifier(settings, db)
+        self._live: dict | None = None            # laatste live-meting van de gateway
+        self._live_lock = asyncio.Lock()
+        self._st_checked = 0
+        self.speedtest = {"running": False, "started": None, "error": None}
 
     async def _fetch(self, dt: float) -> dict:
         if self.mock:
@@ -175,6 +184,83 @@ class Collector:
             except Exception as e:  # noqa: BLE001
                 self.optional["sysinfo"] = str(e)
 
+    # ------------------------------------------------------------ internet
+    def _gateway_mac(self) -> str | None:
+        return next((d["mac"] for d in (self.latest or {}).get("devices", []) if d["type"] == "gateway"), None)
+
+    async def _gateway_raw(self) -> dict:
+        if self.mock:
+            self.mock.now = int(time.time())
+            return self.mock.stat_device(0, [])[0]
+        mac = self._gateway_mac()
+        if not mac:
+            raise RuntimeError("Geen gateway gevonden")
+        return await self.client.gateway(mac)
+
+    async def live_wan(self) -> dict:
+        """Actueel internetverkeer. Hooguit elke 2 s naar de controller; 'updated' = wanneer de gateway
+        voor het laatst nieuwe tellers doorgaf (UniFi doet dat om de 10–45 s)."""
+        async with self._live_lock:
+            now = time.time()
+            if self._live and now - self._live["ts"] < 2:
+                return self._live
+            gw = await self._gateway_raw()
+            r = wan_rates(gw)
+            prev = self._live or {}
+            changed = bool(self.mock) or (r["rx_bytes"], r["tx_bytes"]) != (prev.get("rx_bytes"), prev.get("tx_bytes"))
+            st = normalize_speedtest_state(gw.get("speedtest-status") or {})
+            self._live = {**r, "ts": now, "updated": now if changed or not prev else prev["updated"],
+                          "latency_ms": _num_or((gw.get("uplink") or {}).get("latency"), (self.latest or {}).get("wan", {}).get("latency_ms")),
+                          "speedtest": st}
+            await self._speedtest_progress(st)
+            return self._live
+
+    async def _speedtest_progress(self, st: dict) -> None:
+        s = self.speedtest
+        if s["running"] and not st["running"] and st["rundate"] and st["rundate"] >= (s["started"] or 0) - 5:
+            s["running"] = False   # klaar: eerst het archief van UniFi, anders het resultaat van de gateway zelf
+            await self.sync_speedtests(force=True)
+            if st["down"]:
+                self.db.store_speedtests([{"ts": st["rundate"], "down": st["down"], "up": st["up"],
+                                           "latency": st["latency"], "server": ""}])
+        elif s["running"] and s["started"] and time.time() - s["started"] > 180:
+            s.update(running=False, error="De test duurde te lang en is afgebroken.")
+
+    async def start_speedtest(self) -> None:
+        s = self.speedtest
+        if s["running"]:
+            raise RuntimeError("Er loopt al een speedtest.")
+        if s["started"] and time.time() - s["started"] < 60:
+            raise RuntimeError("Wacht een minuut tussen twee tests.")
+        if self.mock:
+            self.mock.start_speedtest(time.time())
+        else:
+            mac = self._gateway_mac()
+            if not mac:
+                raise RuntimeError("Geen gateway gevonden")
+            await self.client.speedtest_start(mac)
+        s.update(running=True, started=time.time(), error=None)
+        self._live = None
+
+    async def sync_speedtests(self, force: bool = False) -> None:
+        """Speedtest-historie van de controller overnemen (elk uur), zodat hij langer bewaard blijft."""
+        now = int(time.time())
+        if not force and now - self._st_checked < 3600:
+            return
+        self._st_checked = now
+        try:
+            if self.mock:
+                rows = normalize_speedtests(self.mock.speedtest_history(now))
+            else:
+                if self.client.source not in ("legacy-key", "legacy-login"):
+                    return
+                rows = await self.client.speedtests(now - 90 * 86400, now)
+            self.db.store_speedtests(rows)
+            self.optional["speedtest"] = None
+        except Exception as e:  # noqa: BLE001 – optioneel
+            log.warning("Speedtest-historie: %s", e)
+            self.optional["speedtest"] = str(e)
+
     # ---------------------------------------------------------------- tick
     async def tick(self, ts: int | None = None, dt: float | None = None) -> dict:
         ts = int(ts or time.time())
@@ -187,6 +273,8 @@ class Collector:
         await self._collect_ips(ts, dt or self.s.poll_seconds)
         await self._collect_config(ts)
         snap["config"] = self.config
+        if not self.mock or ts >= time.time() - 120:   # demo: alleen bij echte metingen, niet tijdens het vullen
+            await self.sync_speedtests()
         issues = rules.evaluate(snap, self.db, self.s.thresholds, ts)
         self.db.sync_issues(issues, ts)
         snap["issues"] = issues

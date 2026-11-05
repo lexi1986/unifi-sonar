@@ -24,6 +24,7 @@ UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en a
   - **IPS:** een eigen apparaat dat door de IPS wordt geblokkeerd, krijgt een melding (aanvallen van buiten zijn juist het werk van de IPS)
 - **Meldingen versturen** naar Home Assistant, ntfy, Discord, Slack of een eigen webhook. Pas na een instelbare wachttijd (geen bericht bij één uitschieter), een nieuw bericht als het erger wordt, een bericht als het is opgelost, veel tegelijk wordt één bundel, en desgewenst een dagoverzicht. Ook als de controller onbereikbaar is.
 - **Meldingen negeren** voor 1 dag, 1 week, 30 dagen of altijd, bijvoorbeeld een laadpaal die nu eenmaal op 100 Mbit draait. IPS-blokkades negeer je per adres, per regel of de combinatie.
+- **Internet:** live download- en uploadverkeer, latency, het verkeer over de afgelopen dagen en een **speedtest** met één knop. De test draait op je gateway zelf, dus hij meet je echte internetverbinding en niet je wifi. Alle resultaten blijven bewaard, en zakt de snelheid ver onder wat normaal is voor jouw verbinding, dan krijg je een melding.
 - **Patronen:** per apparaat de favoriete AP, hoe lang het op elke AP zat en wanneer het verbonden is (per uur van de week); per access point hoe druk elk kanaal is per uur van de week.
 - **Pagina's** voor apparaten (radio's, poortenraster, PoE, historie), clients (signaal, retries, ervaring en roaming per apparaat), beveiliging (IPS en wat er openstaat naar internet) en een tijdlijn met gebeurtenissen.
 - **Probleemoplossing:** één knop kopieert de versie, het controllertype en de laatste fouten, zonder adressen, namen of sleutels, zodat je die in een GitHub-issue kunt plakken.
@@ -39,8 +40,10 @@ Alle screenshots tonen de ingebouwde demodata.
 | **Issues:** elke melding met uitleg en advies, gegroepeerd op oorzaak | **Clientdetail:** de Kindle bleef na een herstart van AP Boven hangen op de verre AP Schuur |
 | ![Access point met radio's en kanaalbezetting](docs/screenshots/ap-detail.png) | ![IPS-blokkades en wat er openstaat naar internet](docs/screenshots/beveiliging.png) |
 | **Access point:** dekkingsprobleem, radio's, kanaalbezetting en historie | **Beveiliging:** wat de IPS tegenhield en welke poorten openstaan, met het aantal aanvallen per poort |
-| ![Patroon van een telefoon: favoriete AP en wanneer verbonden](docs/screenshots/patronen.png) | ![Meldingen versturen naar ntfy](docs/screenshots/meldingen.png) |
-| **Patronen:** favoriete AP en wanneer een apparaat thuis is | **Meldingen versturen** naar je telefoon, Home Assistant of Discord |
+| ![Live internetverkeer en speedtest](docs/screenshots/internet.png) | ![Patroon van een telefoon: favoriete AP en wanneer verbonden](docs/screenshots/patronen.png) |
+| **Internet:** live verkeer en een speedtest vanaf de gateway | **Patronen:** favoriete AP en wanneer een apparaat thuis is |
+| ![Meldingen versturen naar ntfy](docs/screenshots/meldingen.png) | |
+| **Meldingen versturen** naar je telefoon, Home Assistant of Discord | |
 | ![Setup-wizard bij eerste gebruik](docs/screenshots/wizard.png) | <img src="docs/screenshots/mobiel.png" alt="Overzicht op een telefoon" width="260"> |
 | **Setup-wizard** bij de eerste start | **Ook op je telefoon** |
 
@@ -107,7 +110,7 @@ pct exec <container-id> -- bash /root/install-unifi-sonar.sh
 ## Privacy en veiligheid
 
 - Alles blijft op je eigen machine. Er gaat niets naar internet, behalve het downloaden van de software bij installeren en bijwerken, en de meldingen naar de diensten die je zelf instelt.
-- UniFi Sonar **leest alleen**: het verandert geen instellingen in UniFi. De enige actie is *Opnieuw verbinden* voor één wifi-apparaat.
+- UniFi Sonar **leest alleen**: het verandert geen instellingen in UniFi. De enige acties zijn *Opnieuw verbinden* voor één wifi-apparaat en een speedtest op de gateway starten.
 - De API-key en de webhook-adressen staan alleen in `/var/lib/unifi-sonar/config.json`, en alleen de service kan dat bestand lezen. De browser krijgt de sleutel nooit terug en ziet van webhook-adressen alleen het begin.
 - Het dashboard heeft **geen login**. Iedereen in je netwerk die het adres kent, kan meekijken, meldingen negeren en een wifi-apparaat opnieuw laten verbinden. Zet het daarom niet open naar internet.
 - Het dashboard antwoordt alleen op een IP-adres, `localhost` en lokale namen (`.local`, `.lan`, `.home`, `.internal`, `.home.arpa`). Zo kan een website die je bezoekt het dashboard niet via je browser aansturen (DNS-rebinding). Acties vanaf een andere website worden ook geweigerd. Gebruik je een eigen hostnaam of een reverse proxy, voeg die dan toe onder *Instellingen → Toegang*, of zet `Environment=ALLOWED_HOSTS=sonar.mijndomein.nl` in de service.

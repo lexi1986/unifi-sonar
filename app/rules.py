@@ -323,6 +323,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                           "een uitzondering voor deze regel en dit adres, of negeer de melding hier.",
                           "ips_blocks", len(evs), 1, None, c["mac"] if c else None))
 
+    _speedtest_check(out, db, ts, gw)
     cfg = snap.get("config") or {}
     _sticky_after_restart(out, snap, db, th, ts, name)
     _sticky_general(out, snap, db, th, ts, name)
@@ -445,6 +446,31 @@ def _group_coverage(out: list[dict], snap: dict, name) -> None:
                           f"{len(macs)} apparaten met problemen: {', '.join(names[:6])}{'…' if len(names) > 6 else ''}.",
                           adv, "clients", len(macs), 3, ap))
         out[-1]["members"] = sorted(macs)
+
+
+SPEED_DROP = 0.6        # laatste test onder 60% van wat normaal is
+SPEED_RECENT = 3 * 24 * HOUR
+
+
+def _speedtest_check(out: list[dict], db, ts: int, gw) -> None:
+    """Vergelijk de laatste speedtest met wat normaal is voor deze verbinding (mediaan van eerdere tests)."""
+    rows = db.speedtests(ts - 30 * 24 * HOUR)
+    if len(rows) < 4 or ts - rows[-1]["ts"] > SPEED_RECENT:
+        return
+    last, prev = rows[-1], rows[-21:-1]
+    for key, label in (("down", "download"), ("up", "upload")):
+        vals = sorted(r[key] for r in prev if r[key])
+        if not vals or not last[key]:
+            continue
+        med = vals[len(vals) // 2]
+        if last[key] < SPEED_DROP * med:
+            when = time.strftime("%d-%m %H:%M", time.localtime(last["ts"]))
+            out.append(_issue(f"speed_low:{key}", "warning", "wan", "wan", "wan", f"Internet trager dan normaal ({label})",
+                              f"Laatste speedtest ({when}): {last[key]:.0f} Mbit/s {label}, normaal rond {med:.0f} Mbit/s.",
+                              "Draai de test nog eens op een rustig moment (op de pagina Internet). Blijft het laag, kijk dan of "
+                              "het modem/de ONT goed is aangesloten en meld het bij je provider; de historie laat zien sinds wanneer.",
+                              f"speed_{key}", last[key], round(SPEED_DROP * med), gw))
+            return   # één melding is genoeg
 
 
 def _dur(sec: float) -> str:

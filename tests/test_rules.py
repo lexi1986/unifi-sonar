@@ -22,6 +22,7 @@ class EmptyDB:
     def last_state_ts(self, mac, state="online"): return getattr(self, "online_ts", None)
     def client_ap_stats(self, mac, since): return getattr(self, "ap_stats", {}).get(mac, {"aps": [], "switches": 0})
     def ips_ignores(self): return getattr(self, "ignores", [])
+    def speedtests(self, since): return getattr(self, "tests", [])
     def q(self, *a): return [{"n": 0}]
 
 

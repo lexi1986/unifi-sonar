@@ -79,10 +79,26 @@ CH24 = {AP_WK: 6, AP_BV: 1, AP_KT: 6, AP_SC: 6}       # kanaal 11 blijft vrij
 AWAY = {"iPhone", "MacBook Pro", "Galaxy S24", "Laptop Werk", "Pixel 8", "Apple Watch", "Tesla"}   # overdag weg
 
 
+LINK_DOWN, LINK_UP = 1000.0, 500.0   # demo-abonnement in Mbit/s
+
+
+def traffic(ts: float, rnd: random.Random = R) -> tuple[float, float]:
+    """Internetverkeer (bit/s) op een tijdstip: rustig 's nachts, druk 's avonds, af en toe een download."""
+    import time as _t
+    lt = _t.localtime(ts)
+    hour = lt.tm_hour + lt.tm_min / 60
+    base = 6 + 50 * max(0.0, math.sin((hour - 7) / 16 * math.pi)) + (90 if 19 <= hour < 23 else 0)
+    rx = base * rnd.uniform(0.6, 1.5) + (rnd.uniform(200, 650) if rnd.random() < 0.06 else 0)
+    tx = rx * rnd.uniform(0.05, 0.15) + (rnd.uniform(40, 120) if rnd.random() < 0.03 else 0)
+    return rx * 1e6, tx * 1e6
+
+
 class MockNetwork:
     def __init__(self) -> None:
         self.t = 0.0
         self.now = 0           # wandkloktijd, gezet door de collector
+        self.speedtest_started: float | None = None
+        self.speedtest_last: dict | None = None
         self.counters: dict[str, dict[str, float]] = {}
         self.flap_state = True
         self.sonos_ap = AP_WK
@@ -208,7 +224,11 @@ class MockNetwork:
         uptime_base = 86400 * 12 + self.t
         devs = []
         lat = 9 + R.uniform(-2, 3) + (R.uniform(90, 160) if R.random() < 0.04 else 0)
+        rx, tx = traffic(self.now or 0)
+        wan1 = {"is_uplink": True, "up": True, "speed": 1000, "rx_bytes-r": rx / 8, "tx_bytes-r": tx / 8,
+                "rx_bytes": self._cnt("wan", "rx", rx / 8 * dt), "tx_bytes": self._cnt("wan", "tx", tx / 8 * dt)}
         devs.append({
+            "wan1": wan1, "speedtest-status": self.speedtest_status(self.now or 0),
             "mac": GW, "name": "UXG", "model": "UXGMAX", "model_name": "UXG Max", "type": "uxg", "state": 1,
             "version": "4.1.13", "upgradable": False, "uptime": uptime_base, "ip": "192.168.1.1",
             "system-stats": {"cpu": f"{R.uniform(8, 22):.1f}", "mem": f"{R.uniform(48, 55):.1f}"},
@@ -256,7 +276,7 @@ class MockNetwork:
     def stat_health(self, devs: list[dict]) -> list[dict]:
         gw = devs[0]["uptime_stats"]["WAN"]
         return [
-            {"subsystem": "www", "status": "ok", "latency": gw["latency_average"], "xput_down": 940.2, "xput_up": 48.7},
+            {"subsystem": "www", "status": "ok", "latency": gw["latency_average"], "xput_down": 921.4, "xput_up": 462.3},
             {"subsystem": "wan", "status": "ok", "wan_ip": "203.0.113.24", "isp_name": "Glasvezel NL"},
         ]
 
@@ -334,7 +354,7 @@ class MockNetwork:
             lt = _t.localtime(ts)
             weekday, hour = lt.tm_wday < 5, lt.tm_hour + lt.tm_min / 60
             evening = 1.0 if 18 <= hour < 23 else 0.4 if 7 <= hour < 18 else 0.1
-            wan.append((ts, 1, 9 + rnd.uniform(-2, 3) + (30 * evening if rnd.random() < 0.03 else 0), 0))
+            wan.append((ts, 1, 9 + rnd.uniform(-2, 3) + (30 * evening if rnd.random() < 0.03 else 0), 0, *traffic(ts, rnd)))
             per_ap: dict[tuple, int] = {}
             for i, (name, _v, ap, radio, sig, retry) in enumerate(WIRELESS):
                 if name in AWAY and weekday and 8.5 <= hour < 17.5:
@@ -358,6 +378,47 @@ class MockNetwork:
         db.store_rows("client_samples", cli)
         db.store_rows("radio_samples", rad)
         db.store_rows("wan_samples", wan)
+
+    # ----------------------------------------------------------- speedtest
+    TEST_PHASES = (("ping", 3), ("download", 12), ("upload", 12))
+
+    def start_speedtest(self, now: float) -> None:
+        self.speedtest_started = now
+
+    def speedtest_status(self, now: float) -> dict:
+        """Zelfde velden als 'speedtest-status' op een echte gateway."""
+        st = {"status_ping": 0, "status_download": 0, "status_upload": 0, "status_summary": 0}
+        if self.speedtest_started is not None:
+            el, t0 = now - self.speedtest_started, 0
+            for name, length in self.TEST_PHASES:
+                if el < t0 + length:
+                    st[f"status_{name}"] = 1
+                    st["status_summary"] = 1
+                    break
+                st[f"status_{name}"] = 2
+                t0 += length
+            else:
+                rnd = random.Random(int(self.speedtest_started))
+                self.speedtest_last = {"rundate": int(self.speedtest_started + t0),
+                                       "xput_download": round(LINK_DOWN * rnd.uniform(0.88, 0.95), 1),
+                                       "xput_upload": round(LINK_UP * rnd.uniform(0.9, 0.97), 1), "latency": rnd.randint(4, 8)}
+                self.speedtest_started = None
+                st["status_summary"] = 2
+        return {**st, **(self.speedtest_last or {"rundate": 0, "xput_download": 0, "xput_upload": 0, "latency": 0})}
+
+    def speedtest_history(self, now: int, days: int = 30) -> list[dict]:
+        """Archief zoals stat/report/archive.speedtest: elke nacht een test, één keer een slechte."""
+        rnd, out = random.Random(11), []
+        for d in range(days, 0, -1):
+            ts = now - d * 86400 - (now % 86400) + 3 * 3600 + rnd.randint(0, 1800)
+            bad = d == 9
+            out.append({"time": ts * 1000, "xput_download": round(LINK_DOWN * (rnd.uniform(0.35, 0.45) if bad else rnd.uniform(0.86, 0.96)), 1),
+                        "xput_upload": round(LINK_UP * rnd.uniform(0.88, 0.97), 1), "latency": rnd.randint(4, 9) + (25 if bad else 0),
+                        "server": {"city": "Amsterdam", "provider": "Demo"}})
+        if self.speedtest_last:
+            out.append({"time": self.speedtest_last["rundate"] * 1000, **{k: self.speedtest_last[k] for k in ("xput_download", "xput_upload", "latency")},
+                        "server": {"city": "Amsterdam", "provider": "Demo"}})
+        return out
 
     def snapshot(self, dt: float) -> tuple[list, list, list]:
         self.advance(dt)
