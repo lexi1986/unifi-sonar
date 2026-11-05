@@ -5,6 +5,9 @@ Natural Earth is publiek domein (https://www.naturalearthdata.com). Eenmalig dra
     curl -fsSLO https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_110m_admin_0_countries.geojson
     curl -fsSLO https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_50m_admin_0_countries.geojson
     python tools/make_world.py ne_110m_admin_0_countries.geojson ne_50m_admin_0_countries.geojson > web/world.js
+    python tools/make_world.py --geo ne_110m_admin_0_countries.geojson ne_50m_admin_0_countries.geojson > web/world-geo.js
+
+Met --geo komen de grenzen in lengte-/breedtegraden (voor de 3D-globe, getekend met d3-geo).
 """
 import json
 import math
@@ -57,6 +60,60 @@ def ring_path(ring: list) -> str:
     return "M" + "L".join(f"{x:g},{y:g}" for x, y in pts) + "Z"
 
 
+def _signed_area(ring: list) -> float:
+    return sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1])) / 2
+
+
+def geo_ring(ring: list, exterior: bool) -> list:
+    """Vereenvoudigde ring in graden. d3-geo wil buitenringen met de klok mee en gaten andersom."""
+    pts, last = [], None
+    for lon, lat in ring:
+        p = (round(lon, 2), round(lat, 2))
+        if last and abs(p[0] - last[0]) + abs(p[1] - last[1]) < 0.25:
+            continue
+        pts.append(p)
+        last = p
+    if len(pts) < 4:
+        return []
+    if pts[0] != pts[-1]:
+        pts.append(pts[0])
+    clockwise = _signed_area(pts[:-1]) < 0
+    if clockwise != exterior:
+        pts.reverse()
+    return [list(p) for p in pts]
+
+
+def main_geo(shapes_file: str, labels_file: str) -> None:
+    feats: dict[str, list] = {}
+    for f in json.load(open(shapes_file))["features"]:
+        c = code(f["properties"])
+        if not c or c == "AQ":
+            continue
+        g = f["geometry"]
+        polys = g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]
+        for poly in polys:
+            target = c
+            for parent, sub, test, _label in OVERSEAS:
+                if c == parent and test(poly[0][0][0]):
+                    target = sub
+            rings = [geo_ring(r, i == 0) for i, r in enumerate(poly)]
+            if rings and rings[0]:
+                feats.setdefault(target, []).append([r for r in rings if r])
+    labels: dict[str, list] = {}
+    for f in json.load(open(labels_file))["features"]:
+        p = f["properties"]
+        c = code(p)
+        if c and c != "AQ" and p.get("LABEL_X") is not None:
+            labels[c] = [round(p["LABEL_X"], 2), round(p["LABEL_Y"], 2)]
+    for _parent, sub, _test, (lon, lat) in OVERSEAS:
+        labels[sub] = [lon, lat]
+    out = {"type": "FeatureCollection", "labels": labels, "features": [
+        {"type": "Feature", "id": c, "geometry": {"type": "MultiPolygon", "coordinates": polys}}
+        for c, polys in sorted(feats.items())]}
+    print("// Gegenereerd door tools/make_world.py --geo uit Natural Earth (publiek domein). Niet met de hand bewerken.")
+    print("window.WORLD_GEO = " + json.dumps(out, separators=(",", ":")) + ";")
+
+
 def main(shapes_file: str, labels_file: str) -> None:
     countries: dict[str, dict] = {}
     for f in json.load(open(shapes_file))["features"]:
@@ -87,4 +144,7 @@ def main(shapes_file: str, labels_file: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    if sys.argv[1] == "--geo":
+        main_geo(sys.argv[2], sys.argv[3])
+    else:
+        main(sys.argv[1], sys.argv[2])

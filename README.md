@@ -25,7 +25,7 @@ UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en a
 - **Meldingen versturen** naar Home Assistant, ntfy, Discord, Slack of een eigen webhook. Pas na een instelbare wachttijd (geen bericht bij één uitschieter), een nieuw bericht als het erger wordt, een bericht als het is opgelost, veel tegelijk wordt één bundel, en desgewenst een dagoverzicht. Ook als de controller onbereikbaar is.
 - **Meldingen negeren** voor 1 dag, 1 week, 30 dagen of altijd, bijvoorbeeld een laadpaal die nu eenmaal op 100 Mbit draait. IPS-blokkades negeer je per adres, per regel of de combinatie.
 - **Internet:** live download- en uploadverkeer, latency, het verkeer over de afgelopen dagen en een **speedtest** met één knop. De test draait op je gateway zelf, dus hij meet je echte internetverbinding en niet je wifi. Alle resultaten blijven bewaard, en zakt de snelheid ver onder wat normaal is voor jouw verbinding, dan krijg je een melding.
-- **Wereld:** een live wereldkaart van alle verbindingen door je gateway. Bogen naar elk land waar je apparaten mee praten, inkomend verkeer en wat de IPS of je regioblokkade tegenhield, met per land de belangrijkste domeinen en apparaten, en bij blokkades welke dienst en welk apparaat het doelwit was. Inzoomen kan met scrollen, slepen, knijpen of door op een land in de lijst te klikken. Klik op een van de tegels bovenaan voor de lijst met verbindingen, samengevoegd per apparaat en bestemming en te doorzoeken. De gegevens komen uit het verkeerslogboek dat UniFi zelf al bijhoudt: geen NetFlow, geen GeoIP-database en geen extra software nodig.
+- **Wereld:** een live wereldkaart van alle verbindingen door je gateway. Bogen naar elk land waar je apparaten mee praten, inkomend verkeer en wat de IPS of je regioblokkade tegenhield, met per land de belangrijkste domeinen en apparaten, en bij blokkades welke dienst en welk apparaat het doelwit was. Kies tussen een platte kaart en een draaiende 3D-globe tegen een sterrenhemel. Inzoomen kan met scrollen, slepen, knijpen of door op een land in de lijst te klikken. Klik op een van de tegels bovenaan voor de lijst met verbindingen, samengevoegd per apparaat en bestemming en te doorzoeken. De gegevens komen uit het verkeerslogboek dat UniFi zelf al bijhoudt: geen NetFlow, geen GeoIP-database en geen extra software nodig.
 - **Patronen:** per apparaat de favoriete AP, hoe lang het op elke AP zat en wanneer het verbonden is (per uur van de week); per access point hoe druk elk kanaal is per uur van de week.
 - **Pagina's** voor apparaten (radio's, poortenraster, PoE, historie), clients (signaal, retries, ervaring en roaming per apparaat), beveiliging (IPS en wat er openstaat naar internet) en een tijdlijn met gebeurtenissen.
 - **Probleemoplossing:** één knop kopieert de versie, het controllertype en de laatste fouten, zonder adressen, namen of sleutels, zodat je die in een GitHub-issue kunt plakken.
@@ -184,12 +184,13 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | `app/setup.py` | Verbindingstest voor de wizard |
 | `app/mock.py` | Nagebootst netwerk met ingebouwde problemen (demomodus) |
 | `web/` | Dashboard (vanilla JS, geen build-stap) |
-| `web/world.js` | Landsgrenzen voor de wereldkaart, gemaakt met `tools/make_world.py` uit Natural Earth |
+| `web/world.js`, `web/world-geo.js` | Landsgrenzen voor de platte kaart en de globe, gemaakt met `tools/make_world.py` uit Natural Earth |
+| `web/globe.js` | De 3D-globe (canvas), met [d3-geo](https://d3js.org/d3-geo) uit `web/vendor/` (ISC-licentie) |
 | `scripts/` | Installeren (Linux, Proxmox), bijwerken (`update.sh`, wordt het commando `update`) en `dev-deploy.sh` om lokale code naar een test-LXC te zetten |
 
 Ideeën en verbeteringen zijn welkom via issues en pull requests. Plak bij een probleem de debug-info uit *Instellingen → Probleemoplossing*.
 
-Een aantal ideeën is geïnspireerd door [Network Optimizer](https://github.com/Ozark-Connect/NetworkOptimizer), [UI Toolkit](https://github.com/Crosstalk-Solutions/unifi-toolkit) en [Lagezentrum (unifi-HQ)](https://github.com/ProfessorQuantumUniverse/unifi-HQ); er is geen code van overgenomen. De landsgrenzen komen van [Natural Earth](https://www.naturalearthdata.com) (publiek domein).
+Een aantal ideeën is geïnspireerd door [Network Optimizer](https://github.com/Ozark-Connect/NetworkOptimizer), [UI Toolkit](https://github.com/Crosstalk-Solutions/unifi-toolkit) en [Lagezentrum (unifi-HQ)](https://github.com/ProfessorQuantumUniverse/unifi-HQ); er is geen code van overgenomen. De landsgrenzen komen van [Natural Earth](https://www.naturalearthdata.com) (publiek domein); de globe gebruikt [d3-geo en d3-array](https://d3js.org) (ISC-licentie, zie `web/vendor/LICENSE-d3.txt`).
 
 ## Licentie
 

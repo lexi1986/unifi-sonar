@@ -1371,6 +1371,7 @@
 
   // ------------------------------------------------------------------ wereld
   const world = { hours: store.get("world.hours", 6), show: store.get("world.show", { out: true, in: true, blocked: true }),
+                  mode: store.get("world.mode", "flat"), globe: null,
                   data: null, after: 0, timer: null, seen: new Set(), focus: null,
                   conn: { dir: "all", sort: "last", q: "", cc: null, limit: 50 } };
   const DIR = { out: ["Uitgaand", C.cyan, "arrow-up-right"], in: ["Inkomend", C.violet, "arrow-down-left"], blocked: ["Geblokkeerd", C.rose, "octagon"] };
@@ -1397,6 +1398,7 @@
   function mountWorld() {
     const W = window.WORLD;
     world.view = null;
+    world.globe?.destroy(); world.globe = null;
     mount("wereld", `
       <div class="page-head"><div><h1>Wereld</h1><p class="subtitle">Met welke landen je netwerk praat, live uit het verkeerslogboek van je gateway.</p></div>
         <div class="seg" role="group" aria-label="Periode" id="w-range">${[[1, "1 u"], [6, "6 u"], [24, "24 u"], [48, "48 u"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${world.hours === h}">${l}</button>`).join("")}</div></div>
@@ -1404,8 +1406,10 @@
       <section class="grid kpis" id="w-kpis" aria-label="Samenvatting"></section>
       <section class="card world-card">
         <div class="card-head"><div class="chips" role="group" aria-label="Soort verkeer" id="w-show">${Object.entries(DIR).map(([k, [l, col]]) => `<button class="chip" data-k="${k}" aria-pressed="${!!world.show[k]}"><i class="sw" style="background:${col}"></i>${l}</button>`).join("")}</div>
-          <span class="muted" id="w-live-sub"><span class="live-dot" aria-hidden="true"></span>live</span></div>
+          <div class="w-head-r"><div class="seg" role="group" aria-label="Weergave" id="w-mode">${[["flat", "Plat"], ["globe", "Globe"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${world.mode === k}">${l}</button>`).join("")}</div>
+          <span class="muted" id="w-live-sub"><span class="live-dot" aria-hidden="true"></span>live</span></div></div>
         <div class="world-wrap" id="w-map">
+          <div class="globe-host" id="w-globe" hidden></div>
           <svg viewBox="0 0 ${W.w} ${W.h}" role="img" aria-labelledby="w-map-title" preserveAspectRatio="xMidYMid meet">
             <title id="w-map-title">Wereldkaart met verbindingen per land</title>
             <g class="land">${Object.entries(W.countries).filter(([, c]) => c.d).map(([cc, c]) => `<path data-cc="${cc}" d="${c.d}"/>`).join("")}</g>
@@ -1453,7 +1457,7 @@
     });
     const map = $("#w-map"), tip = $("#w-tip");
     map.addEventListener("mousemove", (e) => {
-      if (world.drag) return;
+      if (world.drag || world.mode === "globe") return;
       const t = e.target.closest("[data-cc]");
       const cc = t?.dataset.cc;
       if (!cc || !world.byCc?.[cc]) { tip.classList.remove("show"); setFocus(null); return; }
@@ -1465,6 +1469,8 @@
       tip.classList.add("show");
     });
     map.addEventListener("mouseleave", () => { tip.classList.remove("show"); setFocus(null); });
+    $("#w-mode").addEventListener("click", (e) => { const b = e.target.closest("[data-m]"); if (b) setMode(b.dataset.m); });
+    if (world.mode === "globe") setMode("globe");
     $("#w-cty").addEventListener("mouseover", (e) => setFocus(e.target.closest("[data-cc]")?.dataset.cc || null));
     $("#w-cty").addEventListener("focusin", (e) => setFocus(e.target.closest("[data-cc]")?.dataset.cc || null));
     $("#w-cty").addEventListener("mouseleave", () => setFocus(null));
@@ -1524,6 +1530,7 @@
     return [v.x + (e.clientX - r.left) / r.width * v.w, v.y + (e.clientY - r.top) / r.height * v.h];
   }
   function zoomTo(cc) {
+    if (world.globe) { world.globe.zoomTo(cc); setFocus(cc); $("#w-tip").classList.remove("show"); return; }
     const W = window.WORLD, c = W.countries[cc]?.c;
     if (!c) return;
     const p = document.querySelector(`#w-map .land path[data-cc="${cc}"]`);
@@ -1544,6 +1551,10 @@
     applyView();
     map.querySelector(".zoom-ctl").addEventListener("click", (e) => {
       const b = e.target.closest("button[data-z]"); if (!b) return;
+      if (world.globe) {
+        if (b.dataset.z === "reset") world.globe.reset(); else world.globe.zoomBy(b.dataset.z === "in" ? 1.6 : 1 / 1.6);
+        return;
+      }
       const v = world.view, cx = v.x + v.w / 2, cy = v.y + v.h / 2;
       if (b.dataset.z === "reset") { world.view = { x: 0, y: 0, w: W.w, h: W.h }; applyView(); }
       else zoomAt(b.dataset.z === "in" ? 1.6 : 1 / 1.6, cx, cy);
@@ -1608,6 +1619,7 @@
   function setFocus(cc) {
     if (world.focus === cc) return;
     world.focus = cc;
+    world.globe?.setFocus(cc);
     $("#w-map")?.classList.toggle("focusing", !!cc);
     document.querySelectorAll("#w-map [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));   // land, boog, stip en naam
     document.querySelectorAll("#w-cty [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));
@@ -1688,6 +1700,62 @@
     $("#w-legend").innerHTML = `<span><i class="sw" style="background:${C.cyan}"></i>Uitgaand: eigen apparaat → internet</span><span><i class="sw" style="background:${C.violet}"></i>Inkomend: internet → eigen apparaat</span>
       <span><i class="sw" style="background:${C.rose}"></i>Geblokkeerd: tegengehouden door IPS of firewall</span><span>Kleur van een land: hoeveel data, dikte van de boog: hoeveel verkeer</span>`;
     if (world.focus) { const f = world.focus; world.focus = null; setFocus(f); }
+    if (world.globe) {
+      const ga = [];
+      for (const c of d.countries) {
+        if (c.cc === d.home) continue;
+        for (const k of ["out", "in", "blocked"]) {
+          const n = c[`${k}_n`] || 0;
+          if (n && world.show[k]) ga.push({ cc: c.cc, kind: k, w: 0.8 + 2.6 * (k === "out" ? lvl(c.bytes) : Math.log10(1 + n) / Math.log10(1 + maxN)) });
+        }
+      }
+      const G = window.WORLD_GEO, has = new Set(G.features.map((f) => f.id));
+      world.globe.setData({ home: d.home, byCc: world.byCc, show: world.show, lvl, name: ccName, arcs: ga,
+        dots: d.countries.filter((c) => c.cc !== d.home && G.labels[c.cc] && !has.has(c.cc)).map((c) => c.cc) });
+    }
+  }
+  // ---- globe: pas laden als je hem kiest (d3-geo + landsgrenzen in graden)
+  let globeLoad = null;
+  function loadScript(src) {
+    return new Promise((ok, fail) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = () => fail(new Error(src)); document.head.appendChild(s); });
+  }
+  function ensureGlobe() {
+    globeLoad ||= (async () => {
+      if (!window.d3?.geoOrthographic) { await loadScript("vendor/d3-array.min.js"); await loadScript("vendor/d3-geo.min.js"); }
+      if (!window.WORLD_GEO) await loadScript("world-geo.js");
+      if (!window.SonarGlobe) await loadScript("globe.js");
+    })();
+    return globeLoad;
+  }
+  async function setMode(m) {
+    world.mode = m; store.set("world.mode", m);
+    $("#w-mode")?.querySelectorAll("[data-m]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.m === m));
+    const map = $("#w-map"), host = $("#w-globe"), tip = $("#w-tip");
+    if (!map) return;
+    tip.classList.remove("show");
+    if (m !== "globe") {
+      world.globe?.destroy(); world.globe = null;
+      host.hidden = true; map.classList.remove("globe-mode");
+      applyView();
+      return;
+    }
+    map.classList.add("globe-mode"); host.hidden = false;
+    try { await ensureGlobe(); } catch (e) { host.innerHTML = `<div class="empty">De globe kon niet laden.</div>`; return; }
+    if (world.mode !== "globe" || world.globe || !host.isConnected) return;
+    world.globe = window.SonarGlobe.mount(host, {
+      onHover(cc, x, y) {
+        const c = world.byCc?.[cc]; if (!c) return;
+        setFocus(cc);
+        tip.innerHTML = countryTip(c);
+        const r = map.getBoundingClientRect();
+        tip.style.left = `${Math.max(4, Math.min(x - r.left + 14, r.width - tip.offsetWidth - 4))}px`;
+        tip.style.top = `${Math.max(4, y - r.top - tip.offsetHeight - 12)}px`;
+        tip.classList.add("show");
+      },
+      onLeave() { tip.classList.remove("show"); setFocus(null); },
+      onClick(cc) { if (world.byCc?.[cc]) { tip.classList.remove("show"); setConn({ cc }, true); } },
+    });
+    renderWorld();
   }
   function renderWorldLists() {
     const d = world.data;
@@ -1765,6 +1833,7 @@
     }).join("") : `<li class="empty">Wachten op verbindingen…</li>`;
   }
   function pulse(f) {
+    if (world.globe) { if (world.show[f.dir]) world.globe.pulse(f.dir, f.cc); return; }
     const W = window.WORLD, d = world.data;
     if (!d || reduceMotion() || !world.show[f.dir] || f.cc === d.home) return;
     const home = W.countries[d.home]?.c, far = W.countries[f.cc]?.c, g = $("#w-pulses");

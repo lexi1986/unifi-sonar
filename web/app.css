@@ -517,3 +517,13 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .world-wrap .labels.show text { pointer-events: auto; cursor: pointer; }
 .world-wrap.dragging .land path, .world-wrap.dragging .cmark { cursor: grabbing; }
 .tooltip .tt-hint { margin-top: 6px; font-size: 11px; color: var(--me-text-muted); }
+
+/* globe */
+.w-head-r { display: flex; align-items: center; gap: 12px; }
+.world-wrap.globe-mode > svg { display: none; }
+.globe-host { position: relative; height: clamp(360px, 52vw, 640px); border-radius: var(--me-radius-md); overflow: hidden; background: #05080F; }
+.globe-host canvas { display: block; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+.globe-host canvas.dragging { cursor: grabbing; }
+.world-wrap.globe-mode .zoom-ctl { top: 12px; right: 12px; }
+.world-wrap.globe-mode .zoom-ctl button { background: rgba(19, 28, 43, 0.85); }
+@media (max-width: 640px) { .w-head-r { width: 100%; justify-content: space-between; } }
