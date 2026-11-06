@@ -827,6 +827,27 @@ def _blocked_details(collector, db, since: int) -> dict[str, list[dict]]:
     return result
 
 
+@app.get("/api/segments")
+def segments_api():
+    """Netwerken, firewallzones en wat er tussen de zones mag (alleen lezen)."""
+    from . import segments
+    collector, _ = _need()
+    seg = (collector.config or {}).get("segments")
+    if not seg:
+        return {"available": False}
+    snap = collector.latest or {}
+    clients = snap.get("clients", [])
+    cnt = segments.counts(clients, seg)
+    names = {d["ip"]: d["name"] for d in snap.get("devices", []) if d.get("ip")}
+    names.update({c["ip"]: c["name"] for c in clients if c.get("ip")})
+    cells = {}
+    for k, c in ((seg.get("matrix") or {}).get("cells") or {}).items():
+        cells[k] = {**c, "rules": [{**r, "targets": [names.get(ip, ip) for ip in r["ips"]]} for r in c["rules"]]}
+    return {"available": True,
+            "segments": [{**s, **cnt.get(s["id"], {})} for s in seg["segments"]],
+            "matrix": {**seg["matrix"], "cells": cells} if seg.get("matrix") else None}
+
+
 @app.get("/api/world")
 def world(hours: float = Query(1, gt=0, le=48)):
     collector, db = _need()

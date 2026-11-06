@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from . import segments
 from .config import Settings
 
 log = logging.getLogger(__name__)
@@ -155,6 +156,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
             "vendor": c.get("oui", ""),
             "wired": wired,
             "network": c.get("network", ""),
+            "network_id": c.get("network_id"),
             "guest": bool(c.get("is_guest")),
             "ssid": None if wired else c.get("essid"),
             "ap_mac": None if wired else c.get("ap_mac"),
@@ -222,7 +224,11 @@ def normalize_speedtests(rows: list[dict]) -> list[dict]:
 # ------------------------------------------------------------------ configuratie
 
 def config_from_raw(raw: dict) -> dict:
-    return normalize_config(raw["wlans"], raw["settings"], raw["forwards"], raw.get("networks"))
+    cfg = normalize_config(raw["wlans"], raw["settings"], raw["forwards"], raw.get("networks"))
+    fw = raw.get("firewall")
+    cfg["segments"] = segments.build(raw.get("networks"), raw.get("zones"),
+                                     fw if raw.get("zones") is not None else None)
+    return cfg
 
 
 def normalize_vpn(networks: list[dict]) -> list[dict]:
@@ -552,12 +558,15 @@ class UnifiClient:
             raw["networks"] = await self._legacy("rest/networkconf", use_key)
         except Exception:  # noqa: BLE001 – optioneel
             raw["networks"] = None
-        raw["firewall"] = None
+        raw["firewall"] = raw["zones"] = None
         try:   # zone-gebaseerde firewall (Network 9+), anders de oude regels
-            r = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/firewall-policies",
-                                    headers=self._headers() if use_key else {})
+            v2h = self._headers() if use_key else {}
+            r = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/firewall-policies", headers=v2h)
             if r.status_code == 200 and isinstance(r.json(), list):
                 raw["firewall"] = r.json()
+                z = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/firewall/zone", headers=v2h)
+                if z.status_code == 200 and isinstance(z.json(), list):
+                    raw["zones"] = z.json()
             else:
                 raw["firewall"] = await self._legacy("rest/firewallrule", use_key)
         except Exception:  # noqa: BLE001 – optioneel

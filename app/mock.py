@@ -72,6 +72,16 @@ WIRED = [  # naam, vendor, switch, poort
     ("UPS", "APC", SW_MK, 20), ("Docker Host", "Intel", SW_MK, 21), ("Mediaspeler", "Nvidia", SW_MK, 22),
 ]
 
+# Deze slimme apparaten staan in de demo al op het aparte IoT-netwerk; de rest van de slimme apparaten
+# (ESP Weerstation, Camera Tuin, P1 Meter) nog niet, zodat de segmentatie-check iets te melden heeft.
+IOT_CLIENTS = {"Ring Deurbel", "Nest Thermostaat", "Robotstofzuiger", "Shelly Plug Schuur", "Shelly 1PM Tuin",
+               "Hue Bridge Gast", "Echo Dot Keuken", "Echo Show Slaapkamer", "Wasmachine", "Droger", "Tado Bridge",
+               "Bosch Vaatwasser", "Zonnepanelen Omvormer", "Hue Bridge", "Warmtepomp", "Laadpaal", "Doorbell Hub"}
+
+
+def _cip(name: str, i: int, wired: bool) -> str:
+    return f"192.168.{20 if name in IOT_CLIENTS else 1}.{(10 if wired else 100) + i}"
+
 
 # Wie praat met welk land: (apparaat, domein, land, poort, dienst, typische grootte in bytes)
 FLOW_DEST = [
@@ -246,7 +256,8 @@ class MockNetwork:
             rate = max(6.5, min(1200, 2.2 ** ((s + 95) / 5)) if radio == "na" else min(144, 2.2 ** ((s + 95) / 6.5))) * 1000
             out.append({
                 "mac": mac, "name": name, "hostname": name.lower().replace(" ", "-"), "oui": vendor,
-                "ip": f"192.168.1.{100 + i}", "is_wired": False, "network": "Default", "essid": "Thuis",
+                "ip": _cip(name, i, False), "is_wired": False, "network": "IoT" if name in IOT_CLIENTS else "Default",
+                "essid": "Thuis-IoT" if name in IOT_CLIENTS and radio == "ng" else "Thuis",
                 "ap_mac": ap, "radio": radio, "channel": CH24[ap] if radio == "ng" else CH5[ap],
                 "radio_proto": "ax" if radio == "na" else "n", "signal": round(s), "noise": -95,
                 "satisfaction": round(sat), "tx_rate": round(rate), "rx_rate": round(rate * 0.8),
@@ -256,7 +267,8 @@ class MockNetwork:
         for i, (name, vendor, sw, port) in enumerate(WIRED):
             out.append({
                 "mac": _mac(0x200 + i), "name": name, "hostname": name.lower().replace(" ", "-"), "oui": vendor,
-                "ip": f"192.168.1.{10 + i}", "is_wired": True, "network": "Default", "sw_mac": sw, "sw_port": port,
+                "ip": _cip(name, i, True), "is_wired": True, "network": "IoT" if name in IOT_CLIENTS else "Default",
+                "sw_mac": sw, "sw_port": port,
                 "satisfaction": 100, "uptime": int(self.t + 86400 * (i % 5 + 1)),
             })
         return [c for c in out if c["mac"] not in self.blocked]
@@ -352,8 +364,8 @@ class MockNetwork:
         rnd = rnd or R
         hour = time.localtime(ts).tm_hour
         busy = 1.0 if 18 <= hour < 23 else 0.6 if 7 <= hour < 18 else 0.25
-        names = {n: (_mac(0x100 + i), f"192.168.1.{100 + i}") for i, (n, *_r) in enumerate(WIRELESS)}
-        names.update({n: (_mac(0x200 + i), f"192.168.1.{10 + i}") for i, (n, *_r) in enumerate(WIRED)})
+        names = {n: (_mac(0x100 + i), _cip(n, i, False)) for i, (n, *_r) in enumerate(WIRELESS)}
+        names.update({n: (_mac(0x200 + i), _cip(n, i, True)) for i, (n, *_r) in enumerate(WIRED)})
         out = []
         for k in range(max(1, int(dt / 60 * 22 * busy))):
             who, domain, cc, port, svc, size = rnd.choice(FLOW_DEST)
@@ -415,8 +427,42 @@ class MockNetwork:
         if self.t >= CHANGE_T + 600:
             forwards = [f for f in forwards if f["name"] != "Oude camera"]
         settings = settings + [{"key": "global_switch", "stp_version": "rstp", "auto_stp_edge_detection_enabled": False}]
+        zones, policies = self.firewall()
         return {"wlans": wlans, "settings": settings, "forwards": forwards, "networks": networks,
-                "firewall": [{"name": "IoT naar LAN blokkeren", "enabled": True, "action": "BLOCK"}]}
+                "zones": zones, "firewall": policies}
+
+    @staticmethod
+    def firewall() -> tuple[list, list]:
+        """Zone-gebaseerde firewall zoals UniFi Network 9+ die geeft (v2 firewall/zone en firewall-policies)."""
+        zones = [{"_id": "z-int", "name": "Internal", "zone_key": "internal", "network_ids": ["net-default"]},
+                 {"_id": "z-ext", "name": "External", "zone_key": "external", "network_ids": ["net-wan"]},
+                 {"_id": "z-gw", "name": "Gateway", "zone_key": "gateway", "network_ids": []},
+                 {"_id": "z-vpn", "name": "Vpn", "zone_key": "vpn", "network_ids": ["net-wg", "net-ovpn"]},
+                 {"_id": "z-hs", "name": "Hotspot", "zone_key": "hotspot", "network_ids": []},
+                 {"_id": "z-dmz", "name": "Dmz", "zone_key": "dmz", "network_ids": []},
+                 {"_id": "z-iot", "name": "IoT", "zone_key": None, "network_ids": ["net-iot"]}]
+        allow = {"internal": lambda d: d != "z-iot", "external": lambda d: False, "gateway": lambda d: True,
+                 "vpn": lambda d: d != "z-iot", "hotspot": lambda d: d == "z-ext", "dmz": lambda d: d == "z-ext",
+                 None: lambda d: d in ("z-ext", "z-gw")}
+
+        def pol(name, src, dst, action, index, predefined=False, ips=None, port=None, proto="all"):
+            return {"_id": f"p-{src}-{dst}-{index}", "name": name, "action": action, "enabled": True, "index": index,
+                    "predefined": predefined, "protocol": proto, "connection_state_type": "ALL",
+                    "source": {"zone_id": src, "matching_target": "ANY"},
+                    "destination": {"zone_id": dst, "matching_target": "IP" if ips else "ANY", "ips": ips or [],
+                                    "port_matching_type": "SPECIFIC" if port else "ANY", "port": port}}
+        policies = []
+        for z in zones:
+            for d in zones:
+                if z["zone_key"] == d["zone_key"] == "gateway":
+                    continue
+                ok = allow[z["zone_key"]](d["_id"])
+                policies.append(pol("Allow All Traffic" if ok else "Block All Traffic", z["_id"], d["_id"],
+                                    "ALLOW" if ok else "BLOCK", 2147483647, predefined=True))
+        policies += [pol("Internal naar IoT", "z-int", "z-iot", "ALLOW", 10000),
+                     pol("IoT naar Home Assistant", "z-iot", "z-int", "ALLOW", 10000, ips=["192.168.1.10"]),
+                     pol("IoT naar Pi-hole", "z-iot", "z-int", "ALLOW", 10001, ips=["192.168.1.22"], port="53", proto="tcp_udp")]
+        return zones, policies
 
     @staticmethod
     def config() -> tuple[list, list, list, list]:
@@ -442,8 +488,12 @@ class MockNetwork:
              "fwd_port": "80", "rx_bytes": 92_118},
         ]
         networks = [
-            {"name": "WireGuard", "purpose": "remote-user-vpn", "vpn_type": "wireguard-server", "enabled": True, "local_port": 51820},
-            {"name": "OpenVPN", "purpose": "remote-user-vpn", "vpn_type": "openvpn-server", "enabled": True,
+            {"_id": "net-default", "name": "Default", "purpose": "corporate", "ip_subnet": "192.168.1.1/24",
+             "firewall_zone_id": "z-int"},
+            {"_id": "net-iot", "name": "IoT", "purpose": "corporate", "vlan": 20, "vlan_enabled": True,
+             "ip_subnet": "192.168.20.1/24", "firewall_zone_id": "z-iot"},
+            {"_id": "net-wg", "name": "WireGuard", "purpose": "remote-user-vpn", "vpn_type": "wireguard-server", "enabled": True, "local_port": 51820},
+            {"_id": "net-ovpn", "name": "OpenVPN", "purpose": "remote-user-vpn", "vpn_type": "openvpn-server", "enabled": True,
              "local_port": 1194, "vpn_protocol": "TCP"},
         ]
         return wlans, settings, forwards, networks

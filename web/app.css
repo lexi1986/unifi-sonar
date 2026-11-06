@@ -158,9 +158,9 @@ h3 { font-size: 15px; font-weight: 600; margin: 0; }
 .issue .sev.info { background: var(--me-primary-tint-strong); color: var(--me-primary); }
 .issue .title { font-weight: 600; }
 .issue .detail { color: var(--me-text-secondary); margin-top: 2px; }
-.issue .advice { display: flex; gap: 8px; margin-top: 10px; padding: 10px 12px; border-radius: var(--me-radius-sm);
+.issue .advice, .seg-advice { display: flex; gap: 8px; margin-top: 10px; padding: 10px 12px; border-radius: var(--me-radius-sm);
   background: var(--me-elevated); color: var(--me-text); font-size: 13px; }
-.issue .advice .icon { color: var(--me-warning); width: 16px; height: 16px; margin-top: 2px; }
+.issue .advice .icon, .seg-advice .icon { flex: none;  color: var(--me-warning); width: 16px; height: 16px; margin-top: 2px; }
 .issue .meta { text-align: right; font-size: 12px; color: var(--me-text-secondary); white-space: nowrap; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
 .issue.resolved { opacity: 0.72; }
 .issue .members { margin-top: 10px; border-left: 2px solid var(--me-border); padding-left: 12px; display: flex; flex-direction: column; gap: 6px; }
@@ -604,3 +604,40 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .tdot:hover, .tdot:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--me-primary-border); }
 .tmore { position: absolute; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--me-text-secondary); }
 .topo-legend { justify-content: center; }
+
+/* ---------------------------------------------------------------- netwerkscheiding */
+.seg-nets { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.seg-net { border: 1px solid var(--me-border); border-radius: var(--me-radius-md); padding: 14px; display: flex; flex-direction: column; gap: 8px; background: var(--me-elevated); }
+.seg-net-head { display: flex; align-items: center; gap: 10px; }
+.seg-ico { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--me-primary-tint-strong); color: var(--me-primary); flex: none; }
+.seg-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg-facts { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--me-text-secondary); }
+.seg-facts b { color: var(--me-text); font-weight: 600; }
+.seg-count { font-size: 14px; }
+.seg-count .num { font-weight: 700; }
+.seg-badges { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
+.seg-sub-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 20px 0 10px; }
+.seg-sub-head h3 { margin: 0; }
+.mx-wrap { background: transparent; }
+.mx-table th, .mx-table td { text-align: center; white-space: nowrap; }
+.mx-table tbody th { text-align: left; font-weight: 600; color: var(--me-text); }
+.mx-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: var(--me-radius-pill); }
+.mx-pill .icon { width: 12px; height: 12px; }
+.mx.block .mx-pill { background: var(--me-surface-hover); color: var(--me-text); }
+.mx.allow .mx-pill { color: var(--me-text-secondary); border: 1px dashed var(--me-border-strong); }
+.mx-n { margin-left: 6px; font-size: 12px; font-weight: 600; color: var(--me-primary); font-variant-numeric: tabular-nums; }
+.mx-na { color: var(--me-text-muted); }
+.mx-exc { margin-top: 12px; display: flex; flex-direction: column; }
+.mx-exc-row { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 12px; padding: 10px 0; border-top: 1px solid var(--me-border); }
+.mx-exc-row:first-child { border-top: 0; }
+.mx-exc-pair { font-weight: 600; }
+.mx-exc ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.mx-exc li.off { opacity: .55; }
+@media (max-width: 600px) { .mx-exc-row { grid-template-columns: 1fr; gap: 4px; } }
+.seg-advice { margin-bottom: 10px; }
+.seg-devs { display: flex; flex-direction: column; }
+.seg-dev { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--me-border); }
+.seg-dev:first-child { border-top: 0; }
+.seg-dev.muted { opacity: .6; }
+.seg-dev-ico { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--me-surface-hover); color: var(--me-text-secondary); }
+.seg-dev-act { display: flex; align-items: center; gap: 12px; }

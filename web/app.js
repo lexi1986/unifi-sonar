@@ -35,6 +35,8 @@
     key: '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
     eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
     shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+    lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    layers: '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
     home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   };
   const icon = (n, cls = "") => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ""}</svg>`;
@@ -275,6 +277,13 @@
     else if (i.first_seen) parts.push(`melding sinds ${ago(i.first_seen)}`);
     return parts.map((p) => `<span>${p}</span>`).join("");
   }
+  function muteCtlHTML(i) {
+    const k = esc(i.key);
+    return i.muted
+      ? `<button class="mutebtn" data-unmute="${k}">Niet meer negeren</button>`
+      : `<details class="mute"><summary class="mutebtn">Negeren</summary><div class="mute-menu" role="group" aria-label="Negeren voor">
+           ${[[1, "1 dag"], [7, "1 week"], [30, "30 dagen"], ["", "Altijd"]].map(([d, l]) => `<button data-mute="${k}" data-days="${d}">${l}</button>`).join("")}</div></details>`;
+  }
   function issueHTML(i, all, flat) {
     const members = all.filter((m) => m.group === i.key);
     const open = state.expanded.has(i.key);
@@ -286,10 +295,7 @@
     const when = issueWhen(i);
     const k = esc(i.key);
     const approveBtn = i.approve && !i.resolved_at ? `<button class="btn small" data-approve="${esc(i.approve)}">${icon("check")}Ken ik</button>` : "";
-    const muteCtl = flat || i.resolved_at || i.group || i.approve ? "" : i.muted
-      ? `<button class="mutebtn" data-unmute="${k}">Niet meer negeren</button>`
-      : `<details class="mute"><summary class="mutebtn">Negeren</summary><div class="mute-menu" role="group" aria-label="Negeren voor">
-           ${[[1, "1 dag"], [7, "1 week"], [30, "30 dagen"], ["", "Altijd"]].map(([d, l]) => `<button data-mute="${k}" data-days="${d}">${l}</button>`).join("")}</div></details>`;
+    const muteCtl = flat || i.resolved_at || i.group || i.approve ? "" : muteCtlHTML(i);
     const mutedBadge = i.muted ? badge("", i.muted_until ? `Genegeerd t/m ${new Date(i.muted_until * 1000).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}` : "Genegeerd (altijd)") : "";
     return `<article class="issue ${flat ? "flat" : ""} ${i.resolved_at ? "resolved" : ""} ${i.muted ? "muted" : ""}">
       <div class="sev ${i.severity}" aria-hidden="true">${icon(SEV[i.severity][1])}</div>
@@ -924,7 +930,7 @@
   const catLabel = (c) => (c || "").replace(/^emerging-/, "").replace(/-/g, " ");
   function mountSecurity() {
     mount("beveiliging", `
-      <div class="page-head"><div><h1>Beveiliging</h1><p class="subtitle">Verkeer dat de IPS op je gateway heeft tegengehouden. Aanvallen van buiten zijn normaal; blokkades van <b>eigen apparaten</b> verdienen aandacht.</p></div>
+      <div class="page-head"><div><h1>Beveiliging</h1><p class="subtitle">Wat de IPS op je gateway tegenhield, wat er openstaat naar internet en hoe je netwerken van elkaar gescheiden zijn. Aanvallen van buiten zijn normaal; blokkades van <b>eigen apparaten</b> verdienen aandacht.</p></div>
         <div class="seg" role="group" aria-label="Periode" id="sec-range">${[[24, "24 u"], [168, "7 d"], [336, "14 d"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${secState.hours === h}">${l}</button>`).join("")}</div></div>
       <div id="sec-banner"></div>
       <section class="grid kpis" id="sec-kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))"></section>
@@ -932,6 +938,8 @@
         <div class="card"><div class="card-head"><h2 style="margin:0">Meest geraakte regels</h2></div><div class="rank" id="sec-sigs"></div></div>
         <div class="card"><div class="card-head"><h2 style="margin:0">Bronnen</h2></div><div class="rank" id="sec-srcs"></div></div>
       </section>
+      <section class="card" style="margin-bottom:16px" id="sec-seg-card"><div class="card-head"><h2 style="margin:0">Netwerkscheiding</h2><span class="muted" id="sec-seg-sub"></span></div>
+        <div class="seg-nets" id="sec-seg-nets"></div><div id="sec-seg-issues"></div><div id="sec-seg-matrix"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">Open naar internet</h2><span class="muted" id="sec-expo-sub"></span></div><div id="sec-expo"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>Blokkades in de tijd</h3><span class="muted" id="sec-bucket"></span></div><div id="sec-chart"></div></section>
       <div class="toolbar"><div class="chips" role="group" aria-label="Bron" id="sec-scope">${[["all", "Alles"], ["internal", "Eigen apparaten"], ["external", "Van buiten"]].map(([v, l]) => `<button class="chip" data-s="${v}" aria-pressed="${secState.scope === v}">${l}</button>`).join("")}</div>
@@ -951,6 +959,97 @@
       UPDATERS.beveiliging();
     });
     $("#sec-ignored").onclick = (e) => { secState.ignored = !secState.ignored; e.currentTarget.setAttribute("aria-pressed", secState.ignored); UPDATERS.beveiliging(); };
+    bindIssueActions($("#sec-seg-issues"), renderSegIssues);
+  }
+  // ------------------------------------------------------------------ netwerkscheiding
+  let segData = null;
+  const SEG_KIND = { main: ["Hoofdnetwerk", "home"], iot: ["Slimme apparaten", "plug"], other: ["Apart netwerk", "layers"], guest: ["Gasten", "users"] };
+  async function loadSegments() {
+    try { segData = await api("/api/segments"); } catch { segData = null; }
+    if (current !== "beveiliging") return;
+    renderSegments();
+  }
+  function segIssues() {
+    return (state.issues || []).filter((i) => (i.key.startsWith("segment:") || i.key.startsWith("segment_open:")) && !i.resolved_at)
+      .sort((a, b) => (a.muted - b.muted) || (a.key.startsWith("segment_open:") ? -1 : 0));
+  }
+  function renderSegIssues() {
+    const el = $("#sec-seg-issues"); if (!el || !segData || !segData.available) return;
+    const all = segIssues(), open = all.filter((i) => !i.muted), muted = all.length - open.length;
+    const hasApart = segData.segments.some((s) => s.kind === "iot" || s.kind === "other");
+    const shown = state.segShowMuted ? all : open;
+    el.innerHTML = `<div class="seg-sub-head"><h3>${hasApart ? "Slimme apparaten op je hoofdnetwerk" : "Advies"}</h3>
+        ${muted ? `<button class="chip" id="seg-muted" aria-pressed="${!!state.segShowMuted}">Genegeerde tonen <span class="num">(${muted})</span></button>` : ""}</div>
+      ${shown.length ? segListHTML(shown, all)
+        : `<div class="empty">${icon("check")}<div>${hasApart ? "Alle herkende slimme apparaten staan op een apart netwerk" : "Niets te melden"}</div></div>`}`;
+    const b = $("#seg-muted");
+    if (b) b.onclick = () => { state.segShowMuted = !state.segShowMuted; renderSegIssues(); };
+  }
+  // Per apparaat één regel; het (steeds gelijke) verhuisadvies staat er één keer boven.
+  function segListHTML(shown, all) {
+    const general = shown.filter((i) => !i.key.startsWith("segment:") || i.key === "segment:none");
+    const devs = shown.filter((i) => !general.includes(i));
+    const cli = cliByMac();
+    const target = (segData.segments.find((s) => s.kind === "iot") || segData.segments.find((s) => s.kind === "other") || {}).name || "het aparte netwerk";
+    return `${general.length ? `<div class="issue-list" style="margin-bottom:12px">${general.map((i) => issueHTML(i, all)).join("")}</div>` : ""}
+      ${devs.length ? `<div class="advice seg-advice">${icon("bulb")}<span><b>Verhuizen naar ${esc(target)}:</b> wifi-apparaten in UniFi bij het apparaat → Settings → Virtual Network Override (kan op dezelfde SSID). Daarna stellen alle access points zich opnieuw in en valt de wifi ongeveer een minuut weg, dus verhuis ze in één keer. Bekabelde apparaten via de switchpoort (Port Manager → Native VLAN/Network). Pas daarna het nieuwe IP-adres aan in Home Assistant of de app die het aanstuurt. Hoort een apparaat bewust hier? Kies Negeren → Altijd.</span></div>
+      <div class="seg-devs">${devs.map((i) => {
+        const c = cli[i.client_mac] || {};
+        const why = (i.detail.match(/\(([^)]+)\)/) || [])[1] || "";
+        const via = c.wired ? `bekabeld · ${devName(c.sw_mac)}${c.sw_port ? ` poort ${c.sw_port}` : ""}` : c.ap_mac ? `wifi · ${devName(c.ap_mac)}` : "";
+        return `<div class="seg-dev ${i.muted ? "muted" : ""}"><span class="seg-dev-ico">${icon(c.wired ? "cable" : "wifi")}</span>
+          <div style="min-width:0"><div class="seg-name">${esc(c.name || i.title.replace(" staat op je hoofdnetwerk", ""))}</div><div class="cell-sub">${esc([why, via, c.ip].filter(Boolean).join(" · "))}</div></div>
+          <div class="seg-dev-act">${i.muted ? badge("", "Genegeerd") : ""}${i.client_mac ? `<button class="linkbtn" data-open="client" data-id="${esc(i.client_mac)}">Bekijk</button>` : ""}${muteCtlHTML(i)}</div></div>`;
+      }).join("")}</div>` : ""}`;
+  }
+  function ruleText(r) {
+    const what = r.targets.length ? r.targets.join(", ") : r.to === "any" ? "alles" : r.to;
+    const port = r.port ? ` · poort ${r.port}${r.proto ? " " + r.proto : ""}` : r.proto ? ` · ${r.proto}` : "";
+    return `${r.action === "allow" ? "toegestaan" : "geblokkeerd"} naar ${what}${port}`;
+  }
+  function renderSegments() {
+    const d = segData;
+    if (!d || !d.available) {
+      $("#sec-seg-sub").textContent = "";
+      $("#sec-seg-nets").innerHTML = `<p class="muted">Netwerken en firewallzones zijn alleen te zien via de uitgebreide UniFi-API (API-key of lokaal account).</p>`;
+      $("#sec-seg-issues").innerHTML = $("#sec-seg-matrix").innerHTML = "";
+      return;
+    }
+    const nets = d.segments;
+    $("#sec-seg-sub").textContent = `${nets.length} netwerk${nets.length === 1 ? "" : "en"}${d.matrix ? ` · ${d.matrix.zones.length} firewallzones` : ""}`;
+    $("#sec-seg-nets").innerHTML = nets.map((n) => {
+      const [label, ic] = SEG_KIND[n.kind] || SEG_KIND.other;
+      const iso = n.isolated === true ? badge("ok", "Afgeschermd", "lock") : n.isolated === false ? badge("warning", "Niet afgeschermd", "alert") : "";
+      return `<div class="seg-net">
+        <div class="seg-net-head"><span class="seg-ico">${icon(ic)}</span><div style="min-width:0"><div class="seg-name">${esc(n.name)}</div><div class="cell-sub">${esc(label)}</div></div></div>
+        <div class="seg-facts"><span>VLAN <b class="num">${n.vlan ?? "1"}</b></span>${n.subnet ? `<span class="num">${esc(n.subnet)}</span>` : ""}${n.zone ? `<span>zone <b>${esc(n.zone)}</b></span>` : ""}</div>
+        <div class="seg-count"><span class="num">${nf(n.clients)}</span> apparaten<span class="muted"> · ${nf(n.wifi)} wifi · ${nf(n.wired)} bekabeld</span></div>
+        <div class="seg-badges">${iso}${n.smart ? `<span class="muted">${nf(n.smart)} herkend als slim apparaat</span>` : ""}</div></div>`;
+    }).join("");
+    renderSegIssues();
+    const m = d.matrix;
+    if (!m) {
+      $("#sec-seg-matrix").innerHTML = `<p class="muted" style="margin-top:16px">Wat er tussen je netwerken mag, is alleen te zien met de zone-gebaseerde firewall (UniFi Network 9 of nieuwer).</p>`;
+      return;
+    }
+    const srcs = m.zones.filter((z) => z.networks && z.key !== "external");
+    const cell = (a, b) => m.cells[`${a.id}>${b.id}`];
+    const rows = srcs.map((a) => `<tr style="cursor:default"><th scope="row">${esc(a.name)}</th>${m.zones.map((b) => {
+      const c = cell(a, b);
+      if (a.id === b.id && a.networks < 2) return `<td class="mx-na" title="Binnen één netwerk gaat verkeer niet via de firewall">–</td>`;
+      if (!c || !c.effective) return `<td class="mx-na">?</td>`;
+      const n = c.rules.filter((r) => r.enabled).length;
+      const lbl = c.effective === "allow" ? "Open" : "Dicht";
+      const tip = `${a.name} → ${b.name}: ${c.effective === "allow" ? "toegestaan" : "geblokkeerd"}${n ? `, met ${n} eigen regel${n > 1 ? "s" : ""}` : ""}`;
+      return `<td class="mx ${c.effective}" title="${esc(tip)}"><span class="mx-pill">${c.effective === "block" ? icon("lock") : ""}${lbl}</span>${n ? `<span class="mx-n">+${n}</span>` : ""}</td>`;
+    }).join("")}</tr>`).join("");
+    const exc = [];
+    srcs.forEach((a) => m.zones.forEach((b) => { const c = cell(a, b); if (c && c.rules.length) exc.push([a, b, c]); }));
+    $("#sec-seg-matrix").innerHTML = `
+      <div class="seg-sub-head"><h3>Wat mag er tussen de zones?</h3><span class="muted">rij = van, kolom = naar · standaard plus je eigen regels</span></div>
+      <div class="table-wrap mx-wrap"><table class="mx-table"><thead><tr><th scope="col"><span class="sr-only">Van</span></th>${m.zones.map((z) => `<th scope="col">${esc(z.key === "external" ? "Internet" : z.name)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>
+      ${exc.length ? `<div class="mx-exc">${exc.map(([a, b, c]) => `<div class="mx-exc-row"><div class="mx-exc-pair">${esc(a.name)} → ${esc(b.key === "external" ? "Internet" : b.name)}<div class="cell-sub">standaard ${c.default === "allow" ? "open" : "dicht"}</div></div>
+        <ul>${c.rules.map((r) => `<li class="${r.enabled ? "" : "off"}"><b>${esc(r.name)}</b> <span class="muted">${esc(ruleText(r))}${r.enabled ? "" : " · uitgeschakeld"}</span></li>`).join("")}</ul></div>`).join("")}</div>` : ""}`;
   }
   $("#view").addEventListener("click", async (e) => { if (current === "clients") await pauseAction(e); });
   $("#view").addEventListener("click", async (e) => {   // één keer gebonden; #view blijft bestaan
@@ -977,6 +1076,7 @@
   }
   const srcLabel = (e) => `${esc(e.src_name && e.src_name !== e.src_ip ? e.src_name : e.src_ip)}${e.src_name && e.src_name !== e.src_ip ? `<div class="cell-sub">${esc(e.src_ip)}</div>` : ""}`;
   UPDATERS.beveiliging = async function () {
+    loadSegments();
     const d = await api(`/api/ips?hours=${secState.hours}&scope=${secState.scope}&ignored=${secState.ignored}`);
     if (current !== "beveiliging") return;
     const s = d.summary;

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 
+from . import segments
 from .config import Thresholds
 
 WINDOW = 15 * 60
@@ -344,6 +345,8 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
         _exposure_checks(out, snap, cfg, db, ts, ignores)
     if cfg.get("vpn") is not None:
         _vpn_checks(out, cfg, db, ts)
+    if cfg.get("segments"):
+        _segment_checks(out, snap, cfg["segments"], name)
     out.sort(key=lambda i: (SEVERITY_ORDER[i["severity"]], i["category"], i["title"]))
     return out
 
@@ -522,6 +525,59 @@ def _new_devices(out: list[dict], snap: dict, db, ts: int, name) -> None:
                           "netwerk → Privé-wifiadres → Vast. Mac: Systeeminstellingen → Wifi → Details → Privé-wifiadres → Vast. "
                           "Android: Wifi → je netwerk → Privacy → 'Willekeurig MAC-adres per netwerk' (niet 'per verbinding').",
                           client_mac=r["mac"] if c else None))
+
+
+SEGMENT_SUGGEST_MIN = 3   # zoveel slimme apparaten zonder apart netwerk = tip om er een te maken
+
+
+def _segment_checks(out: list[dict], snap: dict, seg: dict, name) -> None:
+    """Slimme apparaten op het hoofdnetwerk, en een IoT-netwerk dat niet is afgeschermd."""
+    segs = seg["segments"]
+    apart = [s for s in segs if s["kind"] in ("iot", "other")]
+    if not apart:
+        smart = [c for c in snap["clients"] if segments.smart_reason(c)
+                 and (s := segments.client_segment(c, segs)) and s["kind"] == "main"]
+        if len(smart) >= SEGMENT_SUGGEST_MIN:
+            names = sorted(c["name"] for c in smart)
+            out.append(_issue("segment:none", "info", "security", "site", "segments",
+                              f"{len(smart)} slimme apparaten delen het netwerk met je computers",
+                              f"Onder andere {_join(names[:5])}{' en meer' if len(names) > 5 else ''}. Slimme apparaten krijgen "
+                              "zelden updates; wordt er één overgenomen, dan kan het van daaruit bij je computers, NAS en "
+                              "telefoons.",
+                              "Maak in UniFi een apart netwerk (VLAN) voor slimme apparaten en zet het in een eigen firewallzone "
+                              "(Instellingen → Netwerken, daarna Zone-Based Firewall → Create Zone). Sta daarna alleen toe wat nodig "
+                              "is, bijvoorbeeld verkeer naar Home Assistant. Wifi-apparaten verhuis je zonder nieuwe SSID met "
+                              "'Virtual Network Override' per apparaat.", "clients", len(smart), SEGMENT_SUGGEST_MIN))
+        return
+    target = next((s for s in apart if s["kind"] == "iot"), apart[0])
+    for s in apart:
+        if s["isolated"] is False:
+            out.append(_issue(f"segment_open:{s['id']}", "warning", "security", "site", f"segment:{s['id']}",
+                              f"Netwerk {s['name']} is niet afgeschermd",
+                              f"{s['name']} zit in de firewallzone '{s['zone'] or 'Internal'}'"
+                              + (" samen met je hoofdnetwerk" if (s["zone"] or "Internal") == next(
+                                  (m["zone"] for m in segs if m["kind"] == "main"), None) else "")
+                              + ": apparaten op dit netwerk kunnen gewoon bij je computers, NAS en telefoons. Een apart "
+                              "VLAN alleen scheidt niets.",
+                              "Maak in UniFi een eigen zone voor dit netwerk (Instellingen → Zone-Based Firewall → Create Zone). "
+                              "Verkeer van die zone naar Internal is dan standaard geblokkeerd; sta daarna alleen toe wat nodig "
+                              "is, zoals Home Assistant of je DNS-server."))
+    for c, why in segments.misplaced(snap["clients"], seg):
+        up = c.get("ap_mac") or c.get("sw_mac")
+        main = segments.client_segment(c, segs)
+        how = ("Wifi: in UniFi bij het apparaat → Settings → Virtual Network Override → " + target["name"] + ". Dat kan op "
+               "dezelfde SSID. Let op: na zo'n wijziging stellen alle access points zich opnieuw in en valt de wifi ongeveer "
+               "een minuut weg, dus verhuis meerdere apparaten in één keer." if not c.get("wired") else
+               f"Bekabeld: zet de switchpoort ({name(up)}" + (f" poort {c['sw_port']}" if c.get("sw_port") else "")
+               + f") op het netwerk {target['name']} (Port Manager → Native VLAN/Network).")
+        i = _issue(f"segment:{c['mac']}", "info", "security", "client", c["mac"],
+                   f"{c['name']} staat op je hoofdnetwerk",
+                   f"Sonar herkent dit als slim apparaat ({why}). Het staat op {main['name']}, terwijl je daar het netwerk "
+                   f"{target['name']} voor hebt.",
+                   how + " Krijgt het daar een nieuw IP-adres, pas dat dan ook aan in Home Assistant of de app die het "
+                   "aanstuurt. Hoort het bewust hier (bijvoorbeeld omdat het met je telefoon moet praten)? Kies dan "
+                   "Negeren → Altijd.", device_mac=up, client_mac=c["mac"])
+        out.append(i)
 
 
 def _speedtest_check(out: list[dict], db, ts: int, gw) -> None:
