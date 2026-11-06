@@ -843,9 +843,18 @@ def segments_api():
     cells = {}
     for k, c in ((seg.get("matrix") or {}).get("cells") or {}).items():
         cells[k] = {**c, "rules": [{**r, "targets": [names.get(ip, ip) for ip in r["ips"]]} for r in c["rules"]]}
+    fl = segments.flows(seg, (collector.config or {}).get("forwards"))
+    if fl:
+        cnt_all = {**cnt}
+        for n in fl["nodes"]:
+            n.update(cnt_all.get(n["id"], {}))
+        for e in fl["edges"]:
+            e["rules"] = [{**r, "targets": [names.get(ip, ip) for ip in r["ips"]],
+                           "sources": [names.get(ip, ip) for ip in r.get("src_ips", [])]} for r in e["rules"]]
     return {"available": True,
             "segments": [{**s, **cnt.get(s["id"], {})} for s in seg["segments"]],
-            "matrix": {**seg["matrix"], "cells": cells} if seg.get("matrix") else None}
+            "matrix": {**seg["matrix"], "cells": cells} if seg.get("matrix") else None,
+            "flows": fl}
 
 
 @app.get("/api/world")

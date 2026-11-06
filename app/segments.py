@@ -2,6 +2,7 @@
 mag, en welke slimme apparaten nog op het hoofdnetwerk staan. Alleen lezen; Sonar verandert hier niets aan."""
 from __future__ import annotations
 
+import ipaddress
 import re
 
 # Fabrikanten (OUI) die vrijwel alleen slimme apparaten maken. Bewust zonder Apple, Samsung, Google, Amazon,
@@ -52,7 +53,9 @@ def _policy_summary(p: dict) -> dict:
     return {"name": p.get("name") or "?", "action": "allow" if p.get("action") == "ALLOW" else "block",
             "enabled": bool(p.get("enabled", True)), "proto": None if proto == "all" else proto.replace("_", "/"),
             "port": str(port) if port else None, "ips": list(d.get("ips") or []),
-            "to": (d.get("matching_target") or "ANY").lower(), "full": full, "index": p.get("index") or 0}
+            "to": (d.get("matching_target") or "ANY").lower(), "full": full, "index": p.get("index") or 0,
+            "src_ips": list(s.get("ips") or []), "src_nets": list(s.get("network_ids") or []),
+            "dst_nets": list(d.get("network_ids") or [])}
 
 
 def build(networks: list[dict] | None, zones: list[dict] | None, policies: list[dict] | None) -> dict | None:
@@ -121,7 +124,110 @@ def build(networks: list[dict] | None, zones: list[dict] | None, policies: list[
         else:
             s["isolated"] = None
         del s["isolated_flag"]
-    return {"segments": segs, "matrix": matrix, "zones_available": matrix is not None}
+    vpn = []
+    for n in networks:
+        if n.get("purpose") == "remote-user-vpn" or (n.get("vpn_type") or "").endswith("-server"):
+            z = zone_by_id.get(n.get("firewall_zone_id")) or net_zone.get(n.get("_id"))
+            vpn.append({"id": n.get("_id"), "name": n.get("name") or "VPN", "subnet": n.get("ip_subnet"), "kind": "vpn",
+                        "zone_id": (z or {}).get("_id"), "zone": (z or {}).get("name"), "enabled": bool(n.get("enabled", True))})
+    return {"segments": segs, "vpn": vpn, "matrix": matrix, "zones_available": matrix is not None}
+
+
+# ------------------------------------------------------------------ verkeersstromen tussen netwerken
+
+def _net(subnet: str | None):
+    try:
+        return ipaddress.ip_network(subnet, strict=False) if subnet else None
+    except ValueError:
+        return None
+
+
+def _ip_in(ips: list[str], net) -> bool:
+    for ip in ips:
+        try:
+            if net is not None and (ipaddress.ip_network(ip, strict=False).subnet_of(net)
+                                    or net.subnet_of(ipaddress.ip_network(ip, strict=False))):
+                return True
+        except (ValueError, TypeError):
+            continue
+    return False
+
+
+def _public(ips: list[str]) -> bool:
+    for ip in ips:
+        try:
+            if not ipaddress.ip_network(ip, strict=False).is_private:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def flows(seg: dict, forwards: list[dict] | None = None) -> dict | None:
+    """Per paar netwerken (plus gateway en internet): mag een nieuwe verbinding van A naar B?
+    'allow', 'partial' (alleen sommige apparaten/poorten, of met uitzonderingen) of 'block', met de regels die dat
+    bepalen. Nagerekend uit de zone-standaard en de eigen regels op volgorde, per netwerk verfijnd waar een regel
+    op een adres of netwerk mikt."""
+    m = seg.get("matrix")
+    if not m:
+        return None
+    key_zone = {z["key"]: z["id"] for z in m["zones"] if z["key"] in ("external", "gateway")}
+    nets = [{**x, "net": _net(x.get("subnet"))} for x in seg["segments"] + [v for v in seg.get("vpn", []) if v["enabled"]]
+            if x.get("zone_id")]
+    nodes = [{"id": n["id"], "name": n["name"], "kind": n["kind"], "zone": n.get("zone"), "subnet": n.get("subnet"),
+              "isolated": n.get("isolated")} for n in nets]
+    special = []
+    if "gateway" in key_zone:
+        special.append({"id": "gateway", "name": "Gateway", "kind": "gateway", "zone_id": key_zone["gateway"], "net": None})
+    if "external" in key_zone:
+        special.append({"id": "internet", "name": "Internet", "kind": "internet", "zone_id": key_zone["external"], "net": None})
+    nodes += [{"id": x["id"], "name": x["name"], "kind": x["kind"]} for x in special]
+    sources = nets + [x for x in special if x["id"] == "internet"]
+    edges = []
+    for a in sources:
+        for b in nets + special:
+            if a["id"] == b["id"] or (a["id"] == "internet" and b["id"] == "gateway"):
+                continue
+            cell = m["cells"].get(f"{a['zone_id']}>{b['zone_id']}")
+            if not cell or not cell.get("default"):
+                continue
+            base, why, partial = cell["default"], [], False
+            whole_set = False
+            for r in cell["rules"]:
+                if not r["enabled"]:
+                    continue
+                if r["src_nets"] and a["id"] not in r["src_nets"]:
+                    continue
+                if r["dst_nets"] and b["id"] not in r["dst_nets"]:
+                    continue
+                if r["src_ips"] and a["net"] is not None and not _ip_in(r["src_ips"], a["net"]):
+                    continue
+                if r["ips"]:
+                    if b["id"] == "internet" and not _public(r["ips"]):
+                        continue
+                    if b["net"] is not None and not _ip_in(r["ips"], b["net"]):
+                        continue
+                if whole_set:   # na een regel die alles afvangt, komt de rest nooit meer aan de beurt
+                    continue
+                whole = not r["ips"] and not r["src_ips"] and not r["port"] and not r["proto"]
+                if whole:
+                    base, whole_set = r["action"], True
+                why.append(r)
+            if any(r["action"] != base for r in why):
+                partial = True
+            fw = []
+            if a["id"] == "internet" and b["net"] is not None:
+                for f in forwards or []:
+                    if f.get("enabled") and _ip_in([f.get("fwd_ip") or ""], b["net"]):
+                        fw.append({"name": f["name"], "action": "allow", "enabled": True, "proto": f.get("proto") or None,
+                                   "port": f.get("port") or None, "ips": [f["fwd_ip"]], "to": "ip", "forward": True,
+                                   "upnp": f.get("upnp", False)})
+                if fw and base == "block":
+                    partial = True
+            edges.append({"from": a["id"], "to": b["id"], "status": "partial" if partial else base,
+                          "default": cell["default"], "rules": [{k: v for k, v in r.items() if k not in ("src_nets", "dst_nets")}
+                                                                for r in why] + fw})
+    return {"nodes": nodes, "edges": edges}
 
 
 def client_segment(c: dict, segs: list[dict]) -> dict | None:

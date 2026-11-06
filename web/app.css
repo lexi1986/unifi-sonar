@@ -641,3 +641,66 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .seg-dev.muted { opacity: .6; }
 .seg-dev-ico { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--me-surface-hover); color: var(--me-text-secondary); }
 .seg-dev-act { display: flex; align-items: center; gap: 12px; }
+
+/* ---------------------------------------------------------------- toegang tussen netwerken (diagram) */
+.fl-canvas { position: relative; border: 1px solid var(--me-border); border-radius: var(--me-radius-card); overflow: hidden;
+  background-color: var(--me-bg); background-image: radial-gradient(rgba(148, 164, 186, 0.10) 1px, transparent 1.2px);
+  background-size: 22px 22px; min-height: 200px; }
+.fl-svg { display: block; max-width: 100%; height: auto; font-family: inherit; }
+.fl-node { cursor: pointer; outline: none; }
+.fl-node > rect:first-of-type { fill: var(--me-surface); stroke: var(--me-border); stroke-width: 1; transition: stroke var(--me-transition-fast), fill var(--me-transition-fast); }
+.fl-node:hover > rect:first-of-type { stroke: var(--me-border-strong); fill: var(--me-elevated); }
+.fl-node:focus-visible > rect:first-of-type { stroke: var(--me-primary); stroke-width: 2; }
+.fl-node.sel > rect:first-of-type { fill: var(--me-elevated); stroke: var(--me-primary-border); stroke-width: 1.5; filter: drop-shadow(0 0 14px rgba(57, 216, 244, 0.28)); }
+.fl-ico-bg { fill: var(--me-surface-hover); }
+.fl-node.sel .fl-ico-bg { fill: var(--me-primary-tint-strong); }
+.fl-ico { fill: none; stroke: var(--me-text-secondary); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.fl-node.sel .fl-ico { stroke: var(--me-primary); }
+.fl-name { fill: var(--me-text); font-size: 13.5px; font-weight: 600; }
+.fl-sub { fill: var(--me-text-secondary); font-size: 11.5px; }
+.fl-lock { fill: none; stroke: var(--me-success); stroke-width: 2.4; stroke-linecap: round; }
+.fl-line { fill: none; stroke-width: 2; stroke-linecap: round; transition: stroke-width var(--me-transition-fast), opacity var(--me-transition-fast); }
+.fl-edge.allow .fl-line { stroke: var(--me-primary); }
+.fl-edge.partial .fl-line { stroke: var(--me-warning); stroke-dasharray: 7 5; }
+.fl-edge.block .fl-line { stroke: var(--me-danger); stroke-dasharray: 1 5; opacity: .9; }
+.fl-mk.allow path { fill: var(--me-primary); }
+.fl-mk.partial path { fill: var(--me-warning); }
+.fl-mk.block rect { fill: var(--me-danger); }
+.fl-dot { fill: var(--me-text); opacity: .9; pointer-events: none; }
+.fl-edge.partial .fl-dot { fill: var(--me-warning); }
+.fl-hit { fill: none; stroke: transparent; stroke-width: 18; cursor: pointer; pointer-events: stroke; outline: none; }
+.fl-edge:hover .fl-line, .fl-edge:focus-within .fl-line, .fl-edge.on .fl-line { stroke-width: 3.2; }
+.fl-edges.has-on .fl-edge:not(.on) { opacity: .28; }
+.fl-legend { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px 22px; margin-top: 12px; font-size: 13px; color: var(--me-text-secondary); }
+.fl-leg { display: inline-flex; align-items: center; gap: 6px; }
+.fl-leg .icon { width: 14px; height: 14px; }
+.fl-leg svg:first-child path { fill: none; stroke-width: 2; stroke-linecap: round; }
+.fl-leg.allow svg:first-child path { stroke: var(--me-primary); } .fl-leg.allow .hd { fill: var(--me-primary); stroke: none; }
+.fl-leg.partial svg:first-child path { stroke: var(--me-warning); stroke-dasharray: 5 4; } .fl-leg.partial .hd { fill: var(--me-warning); stroke: none; stroke-dasharray: none; }
+.fl-leg.block svg:first-child path { stroke: var(--me-danger); stroke-dasharray: 1 4; } .fl-leg.block rect { fill: var(--me-danger); }
+.fl-detail { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--me-border); border-radius: var(--me-radius-md); background: var(--me-elevated); }
+.fl-det-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.fl-det-head .linkbtn { margin-left: auto; }
+.fl-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: var(--me-radius-pill); white-space: nowrap; }
+.fl-pill .icon { width: 13px; height: 13px; }
+.fl-pill.allow { background: var(--me-primary-tint-strong); color: var(--me-primary); }
+.fl-pill.partial { background: var(--me-warning-tint); color: var(--me-warning); }
+.fl-pill.block { background: var(--me-danger-tint); color: var(--me-danger); }
+.fl-wn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.fl-wn { border: 1px solid var(--me-border); border-radius: var(--me-radius-sm); padding: 10px 12px; background: var(--me-surface); }
+.fl-wn-h { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+.fl-wn-h .icon { width: 15px; height: 15px; }
+.fl-wn.wel .fl-wn-h { color: var(--me-primary); }
+.fl-wn.niet .fl-wn-h { color: var(--me-danger); }
+.fl-wn ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.fl-how { margin-left: 6px; color: var(--me-text-secondary); font-size: 13px; }
+.fl-sum { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.fl-sum-h { font-weight: 600; font-size: 13px; color: var(--me-text-secondary); margin-bottom: 8px; }
+.fl-sum-row { display: flex; align-items: baseline; gap: 10px; padding: 4px 0; font-size: 14px; }
+.fl-sum-row .fl-pill { flex: none; min-width: 96px; justify-content: flex-start; }
+@media (max-width: 640px) { .fl-wn-grid, .fl-sum { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .fl-line, .fl-node > rect:first-of-type { transition: none; } }
+.fl-node { transition: transform 420ms cubic-bezier(.2, .8, .2, 1); }
+.fl-edges { transition: opacity 220ms ease; }
+.fl-edges.hidden { opacity: 0; transition: none; }
+@media (prefers-reduced-motion: reduce) { .fl-node { transition: none; } }

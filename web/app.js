@@ -939,7 +939,7 @@
         <div class="card"><div class="card-head"><h2 style="margin:0">Bronnen</h2></div><div class="rank" id="sec-srcs"></div></div>
       </section>
       <section class="card" style="margin-bottom:16px" id="sec-seg-card"><div class="card-head"><h2 style="margin:0">Netwerkscheiding</h2><span class="muted" id="sec-seg-sub"></span></div>
-        <div class="seg-nets" id="sec-seg-nets"></div><div id="sec-seg-issues"></div><div id="sec-seg-matrix"></div></section>
+        <div class="seg-nets" id="sec-seg-nets"></div><div id="sec-seg-matrix"></div><div id="sec-seg-issues"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">Open naar internet</h2><span class="muted" id="sec-expo-sub"></span></div><div id="sec-expo"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>Blokkades in de tijd</h3><span class="muted" id="sec-bucket"></span></div><div id="sec-chart"></div></section>
       <div class="toolbar"><div class="chips" role="group" aria-label="Bron" id="sec-scope">${[["all", "Alles"], ["internal", "Eigen apparaten"], ["external", "Van buiten"]].map(([v, l]) => `<button class="chip" data-s="${v}" aria-pressed="${secState.scope === v}">${l}</button>`).join("")}</div>
@@ -960,6 +960,7 @@
     });
     $("#sec-ignored").onclick = (e) => { secState.ignored = !secState.ignored; e.currentTarget.setAttribute("aria-pressed", secState.ignored); UPDATERS.beveiliging(); };
     bindIssueActions($("#sec-seg-issues"), renderSegIssues);
+    bindFlow($("#sec-seg-matrix"));
   }
   // ------------------------------------------------------------------ netwerkscheiding
   let segData = null;
@@ -1005,7 +1006,9 @@
   function ruleText(r) {
     const what = r.targets.length ? r.targets.join(", ") : r.to === "any" ? "alles" : r.to;
     const port = r.port ? ` · poort ${r.port}${r.proto ? " " + r.proto : ""}` : r.proto ? ` · ${r.proto}` : "";
-    return `${r.action === "allow" ? "toegestaan" : "geblokkeerd"} naar ${what}${port}`;
+    if (r.forward) return `${r.upnp ? "UPnP-mapping" : "port forward"} naar ${what}${port}`;
+    const from = r.sources && r.sources.length ? ` · alleen vanaf ${r.sources.join(", ")}` : "";
+    return `${r.action === "allow" ? "toegestaan" : "geblokkeerd"} naar ${what}${port}${from}`;
   }
   function renderSegments() {
     const d = segData;
@@ -1027,11 +1030,9 @@
         <div class="seg-badges">${iso}${n.smart ? `<span class="muted">${nf(n.smart)} herkend als slim apparaat</span>` : ""}</div></div>`;
     }).join("");
     renderSegIssues();
-    const m = d.matrix;
-    if (!m) {
-      $("#sec-seg-matrix").innerHTML = `<p class="muted" style="margin-top:16px">Wat er tussen je netwerken mag, is alleen te zien met de zone-gebaseerde firewall (UniFi Network 9 of nieuwer).</p>`;
-      return;
-    }
+    renderFlowBlock();
+  }
+  function matrixHTML(m) {
     const srcs = m.zones.filter((z) => z.networks && z.key !== "external");
     const cell = (a, b) => m.cells[`${a.id}>${b.id}`];
     const rows = srcs.map((a) => `<tr style="cursor:default"><th scope="row">${esc(a.name)}</th>${m.zones.map((b) => {
@@ -1045,11 +1046,212 @@
     }).join("")}</tr>`).join("");
     const exc = [];
     srcs.forEach((a) => m.zones.forEach((b) => { const c = cell(a, b); if (c && c.rules.length) exc.push([a, b, c]); }));
-    $("#sec-seg-matrix").innerHTML = `
-      <div class="seg-sub-head"><h3>Wat mag er tussen de zones?</h3><span class="muted">rij = van, kolom = naar · standaard plus je eigen regels</span></div>
+    return `<p class="cell-sub" style="margin:0 0 8px">Per firewallzone · rij = van, kolom = naar · standaard plus je eigen regels</p>
       <div class="table-wrap mx-wrap"><table class="mx-table"><thead><tr><th scope="col"><span class="sr-only">Van</span></th>${m.zones.map((z) => `<th scope="col">${esc(z.key === "external" ? "Internet" : z.name)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>
       ${exc.length ? `<div class="mx-exc">${exc.map(([a, b, c]) => `<div class="mx-exc-row"><div class="mx-exc-pair">${esc(a.name)} → ${esc(b.key === "external" ? "Internet" : b.name)}<div class="cell-sub">standaard ${c.default === "allow" ? "open" : "dicht"}</div></div>
         <ul>${c.rules.map((r) => `<li class="${r.enabled ? "" : "off"}"><b>${esc(r.name)}</b> <span class="muted">${esc(ruleText(r))}${r.enabled ? "" : " · uitgeschakeld"}</span></li>`).join("")}</ul></div>`).join("")}</div>` : ""}`;
+  }
+
+  // ------------------------------------------------------------------ toegang tussen netwerken (diagram)
+  const FL = { sel: store.get("fl.sel", null), edge: null, view: store.get("fl.view", "diagram"), key: "", ro: null, w: 0 };
+  const FL_ICON = { main: "home", iot: "plug", other: "layers", guest: "users", vpn: "key", gateway: "router", internet: "globe" };
+  const FL_SUB = { main: "hoofdnetwerk", iot: "slimme apparaten", other: "apart netwerk", guest: "gasten", vpn: "VPN", gateway: "router", internet: "buitenwereld" };
+  const FL_ST = { allow: ["mag", "check"], partial: ["deels", "alert"], block: ["geblokkeerd", "x"] };
+  const trunc = (t, n) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
+
+  function renderFlowBlock() {
+    const el = $("#sec-seg-matrix"), d = segData;
+    if (!el || !d || !d.available) return;
+    if (!d.matrix || !d.flows) {
+      FL.key = "";
+      el.innerHTML = `<p class="muted" style="margin-top:16px">Wat er tussen je netwerken mag, is alleen te zien met de zone-gebaseerde firewall (UniFi Network 9 of nieuwer).</p>`;
+      return;
+    }
+    const key = FL.view + JSON.stringify(d.flows) + (FL.view === "tabel" ? JSON.stringify(d.matrix) : "");
+    if (key === FL.key && el.firstChild) return;   // niets veranderd: laat selectie en animatie staan
+    FL.key = key;
+    el.innerHTML = `
+      <div class="seg-sub-head"><div><h3>Toegang tussen netwerken</h3>
+          <div class="cell-sub">Wat er mag bij een nieuwe verbinding, nagerekend uit je firewallregels op volgorde. Kies een netwerk voor zijn pijlen, of een pijl voor de regels die het bepalen.</div></div>
+        <div class="seg" role="group" aria-label="Weergave" id="fl-view">${[["diagram", "Diagram"], ["tabel", "Tabel"]].map(([v, l]) => `<button data-flview="${v}" aria-pressed="${FL.view === v}">${l}</button>`).join("")}</div></div>
+      ${FL.view === "tabel" ? matrixHTML(d.matrix) : `<div class="fl-canvas" id="fl-canvas"></div>
+        <div class="fl-legend" aria-hidden="true">${["allow", "partial", "block"].map((st) => `<span class="fl-leg ${st}"><svg width="34" height="10" viewBox="0 0 34 10"><path d="M1 5 H${st === "block" ? 30 : 27}"/>${st === "block" ? `<rect x="30" y="0" width="3" height="10" rx="1"/>` : `<path class="hd" d="M25 1 L33 5 L25 9 z"/>`}</svg>${icon(FL_ST[st][1])}${FL_ST[st][0]}</span>`).join("")}</div>
+        <div class="fl-detail" id="fl-detail" aria-live="polite"></div>`}`;
+    if (FL.view !== "tabel") {
+      drawFlow();
+      if (FL.ro) FL.ro.disconnect();
+      FL.ro = new ResizeObserver(() => { const c = $("#fl-canvas"); if (c && Math.abs(c.clientWidth - FL.w) > 4) drawFlow(); });
+      FL.ro.observe($("#fl-canvas"));
+    }
+  }
+
+  // Het gekozen netwerk staat in het midden, de rest in een vaste volgorde in een ring eromheen (internet boven).
+  // Alle pijlen zijn dan stralen vanuit het midden en kruisen geen blokken. Smal scherm: gekozen netwerk links,
+  // de rest in een kolom rechts.
+  const FL_ORDER = { internet: 0, gateway: 1, main: 2, iot: 3, other: 4, guest: 5, vpn: 6 };
+  function flLayout(nodes, W, sel) {
+    const ring = nodes.filter((n) => n.id !== sel).sort((a, b) => (FL_ORDER[a.kind] ?? 9) - (FL_ORDER[b.kind] ?? 9));
+    const pos = {}, N = ring.length;
+    if (W < 560) {
+      const nw = Math.min(150, Math.floor((W - 64) / 2)), nh = 52, gap = 66;
+      ring.forEach((n, i) => { pos[n.id] = [W - nw / 2 - 9, nh / 2 + 9 + i * gap]; });
+      const H = nh + 18 + (N - 1) * gap;
+      pos[sel] = [nw / 2 + 9, H / 2];
+      return { pos, H, nw, nh, center: pos[sel] };
+    }
+    const nw = 156, nh = 58, cx = W / 2;
+    const rx = Math.min(W / 2 - nw / 2 - 16, 340), ry = Math.max(150, Math.min(230, N * 34)), cy = nh / 2 + 6 + ry;
+    ring.forEach((n, i) => {
+      const t = (-90 + i * 360 / Math.max(1, N)) * Math.PI / 180;
+      pos[n.id] = [cx + rx * Math.cos(t), cy + ry * Math.sin(t)];
+    });
+    pos[sel] = [cx, cy];
+    return { pos, H: cy + ry + nh / 2 + 6, nw, nh, center: pos[sel] };
+  }
+  function flClip(p, w, h, t) {   // punt op de rand van een blok (met wat lucht) in de richting van t
+    const dx = t[0] - p[0], dy = t[1] - p[1];
+    const s = Math.min(1, dx ? (w / 2 + 7) / Math.abs(dx) : Infinity, dy ? (h / 2 + 7) / Math.abs(dy) : Infinity);
+    return [p[0] + dx * s, p[1] + dy * s];
+  }
+  function flPath(a, b, both, w, h) {   // heen en terug buigen vanzelf naar verschillende kanten
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L, half = both ? 13 : 5;
+    const c = [(a[0] + b[0]) / 2 + nx * half * 2, (a[1] + b[1]) / 2 + ny * half * 2];
+    const p0 = flClip(a, w, h, c), p1 = flClip(b, w, h, c), f = (v) => v.toFixed(1);
+    return { d: `M${f(p0[0])},${f(p0[1])} Q${f(c[0])},${f(c[1])} ${f(p1[0])},${f(p1[1])}`, len: L };
+  }
+
+  function flNodeHTML(n, x, y, nw, nh, on, compact) {
+    const sub = n.kind !== "vpn" && n.kind !== "gateway" && n.kind !== "internet" && n.clients != null
+      ? `${nf(n.clients)} apparaten` : FL_SUB[n.kind] || "";
+    const tx = compact ? 13 : 51, maxc = Math.floor((nw - tx - (n.isolated ? 24 : 8)) / 7.4);
+    return `<g class="fl-node ${n.kind}${on ? " sel" : ""}" data-node="${esc(n.id)}" tabindex="0" role="button" aria-pressed="${on}"
+        aria-label="${esc(`${n.name}${n.isolated ? ", afgeschermd" : ""}`)}" style="transform:translate(${(x - nw / 2).toFixed(1)}px,${(y - nh / 2).toFixed(1)}px)">
+      <title>${esc(n.name)}${n.subnet ? ` · ${esc(n.subnet)}` : ""}</title>
+      <rect width="${nw}" height="${nh}" rx="14"/>
+      ${compact ? "" : `<rect class="fl-ico-bg" x="11" y="${nh / 2 - 15}" width="30" height="30" rx="9"/>
+      <svg class="fl-ico" x="17" y="${nh / 2 - 9}" width="18" height="18" viewBox="0 0 24 24">${ICONS[FL_ICON[n.kind]] || ""}</svg>`}
+      <text class="fl-name" x="${tx}" y="${nh / 2 - 2}">${esc(trunc(n.name, maxc))}</text>
+      <text class="fl-sub" x="${tx}" y="${nh / 2 + 14}">${esc(trunc(sub, Math.floor((nw - tx - 6) / 6.3)))}</text>
+      ${n.isolated ? `<svg class="fl-lock" x="${nw - 21}" y="8" width="13" height="13" viewBox="0 0 24 24"><title>Afgeschermd</title>${ICONS.lock}</svg>` : ""}
+    </g>`;
+  }
+
+  function drawFlow(animate) {
+    const canvas = $("#fl-canvas"), fl = segData && segData.flows;
+    if (!canvas || !fl) return;
+    const W = Math.max(260, canvas.clientWidth);
+    FL.w = canvas.clientWidth;
+    const byId = Object.fromEntries(fl.nodes.map((n) => [n.id, n]));
+    if (!byId[FL.sel]) FL.sel = (fl.nodes.find((n) => n.kind === "main") || fl.nodes[0]).id;
+    const sel = FL.sel;
+    const { pos, H, nw, nh } = flLayout(fl.nodes, W, sel);
+    const edges = fl.edges.map((e, i) => ({ ...e, i })).filter((e) => e.from === sel || e.to === sel);
+    if (FL.edge != null && !edges.some((e) => e.i === FL.edge)) FL.edge = null;
+    const pairs = new Set(edges.map((e) => `${e.from}>${e.to}`));
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    edges.sort((a, b) => (a.i === FL.edge) - (b.i === FL.edge));
+    const lines = edges.map((e) => {
+      const { d, len } = flPath(pos[e.from], pos[e.to], pairs.has(`${e.to}>${e.from}`), nw, nh);
+      const lbl = `${byId[e.from].name} naar ${byId[e.to].name}: ${FL_ST[e.status][0]}`;
+      return `<g class="fl-edge ${e.status}${e.i === FL.edge ? " on" : ""}">
+        <path class="fl-line" d="${d}" marker-end="url(#fl-m-${e.status})"/>
+        ${!reduce && e.status !== "block" ? `<circle class="fl-dot" r="2.6"><animateMotion dur="${(len / 75 + 1.2).toFixed(1)}s" repeatCount="indefinite" path="${d}"/></circle>` : ""}
+        <path class="fl-hit" d="${d}" data-edge="${e.i}" tabindex="0" role="button" aria-label="${esc(lbl)}"><title>${esc(lbl)}</title></path></g>`;
+    }).join("");
+    const svg = canvas.querySelector("svg.fl-svg");
+    const same = svg && +svg.dataset.w === W && svg.dataset.nodes === fl.nodes.map((n) => n.id).join("|");
+    if (same && animate && !reduce) {
+      // Blokken schuiven naar hun nieuwe plek; de pijlen komen er daarna bij.
+      svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H.toFixed(0));
+      svg.querySelectorAll(".fl-node").forEach((g) => {
+        const id = g.dataset.node, [x, y] = pos[id], on = id === sel;
+        g.style.transform = `translate(${(x - nw / 2).toFixed(1)}px,${(y - nh / 2).toFixed(1)}px)`;
+        g.classList.toggle("sel", on); g.setAttribute("aria-pressed", on);
+      });
+      const eg = svg.querySelector(".fl-edges");
+      eg.classList.add("hidden");
+      clearTimeout(FL.t);
+      FL.t = setTimeout(() => { eg.innerHTML = lines; eg.classList.toggle("has-on", FL.edge != null); eg.classList.remove("hidden"); }, 420);
+    } else if (same) {
+      const eg = svg.querySelector(".fl-edges");
+      eg.innerHTML = lines; eg.classList.toggle("has-on", FL.edge != null); eg.classList.remove("hidden");
+    } else {
+      canvas.innerHTML = `<svg class="fl-svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H.toFixed(0)}" data-w="${W}" data-nodes="${esc(fl.nodes.map((n) => n.id).join("|"))}" role="group" aria-label="Toegang tussen netwerken">
+        <defs>${["allow", "partial"].map((st) => `<marker id="fl-m-${st}" class="fl-mk ${st}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,1 L9,5 L0,9 z"/></marker>`).join("")}
+          <marker id="fl-m-block" class="fl-mk block" viewBox="0 0 10 12" refX="8" refY="6" markerWidth="10" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto"><rect x="6" y="0" width="3" height="12" rx="1.5"/></marker></defs>
+        <g class="fl-edges${FL.edge != null ? " has-on" : ""}">${lines}</g>
+        <g class="fl-nodes">${fl.nodes.map((n) => flNodeHTML(n, pos[n.id][0], pos[n.id][1], nw, nh, n.id === sel, W < 560)).join("")}</g></svg>`;
+    }
+    renderFlowDetail(fl, byId, edges);
+  }
+
+  function renderFlowDetail(fl, byId, edges) {
+    const el = $("#fl-detail"); if (!el) return;
+    const pill = (st) => `<span class="fl-pill ${st}">${icon(FL_ST[st][1])}${FL_ST[st][0]}</span>`;
+    const e = edges.find((x) => x.i === FL.edge);
+    if (e) {
+      const a = byId[e.from], b = byId[e.to], wn = flWelNiet(e, b);
+      const col = (kind, title, items) => `<div class="fl-wn ${kind}"><div class="fl-wn-h">${icon(kind === "wel" ? "check" : "x")}${title}</div>
+        <ul>${items.map((it) => `<li><span>${esc(it.what)}</span>${it.how ? `<span class="fl-how">${esc(it.how)}</span>` : ""}${it.name ? `<div class="cell-sub">regel: ${esc(it.name)}</div>` : ""}</li>`).join("")}</ul></div>`;
+      el.innerHTML = `<div class="fl-det-head"><b>${esc(a.name)} → ${esc(b.name)}</b>${pill(e.status)}<button class="linkbtn" data-fl-close>Sluiten</button></div>
+        <div class="fl-wn-grid">${col("wel", "Wel", wn.wel)}${col("niet", "Niet", wn.niet)}</div>
+        <div class="cell-sub" style="margin-top:10px">Standaard ${e.default === "allow" ? "toegestaan" : "geblokkeerd"}${a.zone && b.zone ? ` (zone ${esc(a.zone)} → ${esc(b.zone)})` : ""}${e.rules.length ? `, aangevuld met ${e.rules.length} eigen regel${e.rules.length > 1 ? "s" : ""}.` : ", zonder eigen regels."}
+          ${wn.base === "block" ? ` Antwoorden op verbindingen die ${esc(b.name)} zelf begint, komen wel terug.` : ""}</div>`;
+      return;
+    }
+    const n = byId[FL.sel];
+    const group = (list, dirTo) => ["allow", "partial", "block"].map((st) => {
+      const xs = list.filter((x) => x.status === st);
+      if (!xs.length) return "";
+      const names = xs.map((x) => {
+        const other = byId[dirTo ? x.to : x.from].name;
+        if (st !== "partial") return esc(other);
+        const wn = flWelNiet(x, byId[x.to]);
+        const short = (wn.base === "block" ? wn.wel : wn.niet).map((it) => it.what + (it.how ? ` ${it.how}` : "")).join(", ");
+        return `${esc(other)} <span class="muted">(${wn.base === "block" ? "alleen" : "behalve"} ${esc(short)})</span>`;
+      });
+      return `<div class="fl-sum-row">${pill(st)}<span>${names.join(", ")}</span></div>`;
+    }).join("");
+    const out = edges.filter((x) => x.from === n.id), inc = edges.filter((x) => x.to === n.id);
+    el.innerHTML = `<div class="fl-sum">
+      ${out.length ? `<div><div class="fl-sum-h">Vanaf ${esc(n.name)} naar</div>${group(out, true)}</div>` : ""}
+      ${inc.length ? `<div><div class="fl-sum-h">Naar ${esc(n.name)} vanaf</div>${group(inc, false)}</div>` : ""}</div>`;
+  }
+
+  // Wat mag er wel en niet over deze pijl? Uit de standaard plus de regels op volgorde.
+  function flWelNiet(e, b) {
+    const isWhole = (r) => !r.forward && !r.ips.length && !(r.src_ips || []).length && !r.port && !r.proto;
+    const whole = e.rules.find(isWhole);
+    const base = whole ? whole.action : e.default;
+    const item = (r) => ({
+      what: r.targets && r.targets.length ? r.targets.join(", ") : r.to === "any" ? `alles in ${b.name}` : r.to,
+      how: [r.port ? `poort ${r.port}${r.proto ? " " + r.proto : ""}` : r.proto || "",
+            r.sources && r.sources.length ? `alleen vanaf ${r.sources.join(", ")}` : "",
+            r.forward ? (r.upnp ? "UPnP" : "port forward") : ""].filter(Boolean).join(" · "),
+      name: r.forward ? r.name : r.name });
+    const exc = e.rules.filter((r) => r !== whole);
+    const rest = { what: exc.length ? "al het andere" : `alles naar ${b.name}`, how: "", name: whole ? whole.name : "" };
+    const wel = exc.filter((r) => r.action === "allow").map(item), niet = exc.filter((r) => r.action === "block").map(item);
+    if (base === "allow") wel.push(rest); else niet.push(rest);
+    return { base, wel: wel.length ? wel : [{ what: "niets", how: "", name: "" }], niet: niet.length ? niet : [{ what: "niets", how: "", name: "" }] };
+  }
+
+  function bindFlow(root) {
+    const act = (t) => {
+      const v = t.closest("[data-flview]");
+      if (v) { FL.view = v.dataset.flview; store.set("fl.view", FL.view); FL.key = ""; renderFlowBlock(); return true; }
+      const n = t.closest("[data-node]");
+      if (n) { const moved = FL.sel !== n.dataset.node; FL.sel = n.dataset.node; FL.edge = null; store.set("fl.sel", FL.sel); drawFlow(moved); return true; }
+      const e = t.closest("[data-edge]");
+      if (e) { FL.edge = FL.edge === +e.dataset.edge ? null : +e.dataset.edge; drawFlow(); return true; }
+      if (t.closest("[data-fl-close]")) { FL.edge = null; drawFlow(); return true; }
+      return false;
+    };
+    root.addEventListener("click", (ev) => { if (act(ev.target)) ev.preventDefault(); });
+    root.addEventListener("keydown", (ev) => {
+      if ((ev.key === "Enter" || ev.key === " ") && ev.target.closest("[data-node],[data-edge]") && act(ev.target)) ev.preventDefault();
+      if (ev.key === "Escape" && FL.edge != null) { FL.edge = null; drawFlow(); }
+    });
   }
   $("#view").addEventListener("click", async (e) => { if (current === "clients") await pauseAction(e); });
   $("#view").addEventListener("click", async (e) => {   // één keer gebonden; #view blijft bestaan

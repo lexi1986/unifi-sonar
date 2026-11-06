@@ -92,3 +92,41 @@ def test_demo_and_endpoint(tmp_path, monkeypatch):
     assert by["IoT"]["isolated"] and by["IoT"]["clients"] >= 10 and by["Default"]["smart"] == 3
     ha = d["matrix"]["cells"]["z-iot>z-int"]["rules"][0]
     assert ha["targets"] == ["Home Assistant"]      # IP-adres vertaald naar de naam van het apparaat
+
+
+def test_flows_between_networks():
+    nets = NETS[:2] + [{"_id": "net-wg", "name": "WireGuard", "purpose": "remote-user-vpn", "vpn_type": "wireguard-server",
+                        "enabled": True, "firewall_zone_id": "z-vpn"}]
+    nets = [dict(n, ip_subnet=sn) for n, sn in zip(nets, ("192.168.1.1/24", "192.168.20.1/24", "10.8.0.1/24"))]
+    seg = segments.build(nets, ZONES, POLICIES)
+    fwd = [{"name": "NAS SSH", "enabled": True, "fwd_ip": "192.168.1.13", "port": "22", "proto": "tcp"}]
+    fl = segments.flows(seg, fwd)
+    assert {n["id"] for n in fl["nodes"]} == {"net-default", "net-iot", "net-wg", "gateway", "internet"}
+    e = {(x["from"], x["to"]): x for x in fl["edges"]}
+    assert e[("net-iot", "net-default")]["status"] == "partial"           # dicht, behalve HA en DNS
+    assert [r["name"] for r in e[("net-iot", "net-default")]["rules"]] == ["IoT naar Home Assistant", "IoT naar Pi-hole"]
+    assert e[("net-default", "net-iot")]["status"] == "allow"             # eigen regel 'alles toestaan'
+    assert e[("net-iot", "internet")]["status"] == "allow" and e[("net-iot", "gateway")]["status"] == "allow"
+    assert e[("net-iot", "net-wg")]["status"] == "block" and e[("net-wg", "net-iot")]["status"] == "block"
+    assert e[("internet", "net-default")]["status"] == "partial"          # port forward
+    assert e[("internet", "net-default")]["rules"][0]["forward"]
+    assert e[("internet", "net-iot")]["status"] == "block"
+    assert ("internet", "gateway") not in e and ("gateway", "net-iot") not in e
+
+    # een regel naar een adres in een ánder netwerk van dezelfde zone telt niet mee voor dit netwerk
+    nets2 = nets + [{"_id": "net-lab", "name": "Lab", "purpose": "corporate", "ip_subnet": "192.168.50.1/24",
+                     "firewall_zone_id": "z-int"}]
+    zones2 = [dict(z, network_ids=z["network_ids"] + ["net-lab"]) if z["_id"] == "z-int" else z for z in ZONES]
+    fl2 = segments.flows(segments.build(nets2, zones2, POLICIES))
+    e2 = {(x["from"], x["to"]): x for x in fl2["edges"]}
+    assert e2[("net-iot", "net-lab")]["status"] == "block" and e2[("net-iot", "net-default")]["status"] == "partial"
+    assert e2[("net-default", "net-lab")]["status"] == "allow"            # Internal → Internal
+
+    # alles-afvangende blokkade vóór een uitzondering: de uitzondering komt nooit aan de beurt
+    pols = POLICIES + [{"_id": "x", "name": "Alles dicht", "action": "BLOCK", "enabled": True, "index": 5000,
+                        "predefined": False, "protocol": "all", "connection_state_type": "ALL",
+                        "source": {"zone_id": "z-int", "matching_target": "ANY"},
+                        "destination": {"zone_id": "z-iot", "matching_target": "ANY"}}]
+    e3 = {(x["from"], x["to"]): x for x in segments.flows(segments.build(nets, ZONES, pols))["edges"]}
+    assert e3[("net-default", "net-iot")]["status"] == "block"
+    assert [r["name"] for r in e3[("net-default", "net-iot")]["rules"]] == ["Alles dicht"]
