@@ -127,6 +127,8 @@ def test_radio_retries_ignored_on_quiet_radio():
                  num_clients=2, satisfaction=None, tx_packets=1, tx_retries=1, retry_pct=28)
     assert "radio_retry:ap1@5" not in run(snap([ap(radios=[radio])], []))
     radio["num_clients"] = 6
+    assert "radio_retry:ap1@5" not in run(snap([ap(radios=[radio])], []))   # 3% bezetting: kost geen zendtijd
+    radio["cu_total"] = 12
     assert "radio_retry:ap1@5" in run(snap([ap(radios=[radio])], []))
 
 
@@ -334,3 +336,23 @@ def test_ips_ignore_rules():
     assert rules.ips_ignored(e, [{"ip": None, "sid": 7}])
     assert rules.ips_ignored(e, [{"ip": "10.0.0.5", "sid": 7}])
     assert not rules.ips_ignored(e, [{"ip": "10.0.0.5", "sid": 8}, {"ip": "10.0.0.6", "sid": None}])
+
+
+def test_retry_on_idle_radio_is_quiet():
+    busy = ap(radios=[radio("6", 37, 80, retry_pct=30, num_clients=4, cu_total=30, interference=0)])
+    idle = ap(radios=[radio("6", 37, 80, retry_pct=30, num_clients=4, cu_total=2, interference=0)])
+    keys = lambda d: {i["key"].split(":")[0] for i in rules.evaluate(snap([d], []), EmptyDB(), Thresholds(), TS)}  # noqa: E731
+    assert "radio_retry" in keys(busy) and "radio_retry" not in keys(idle)
+
+
+def test_open_vpn_server_is_reported():
+    from app.unifi_client import normalize_vpn
+    vpn = normalize_vpn([{"name": "WG", "vpn_type": "wireguard-server", "enabled": True, "local_port": 51820},
+                         {"name": "OVPN", "vpn_type": "openvpn-server", "enabled": True, "local_port": 1024, "vpn_protocol": "TCP"},
+                         {"name": "Oud", "vpn_type": "openvpn-server", "enabled": False, "local_port": 1194},
+                         {"name": "LAN", "purpose": "corporate"}])
+    assert [v["type"] for v in vpn] == ["wireguard", "openvpn", "openvpn"] and vpn[1]["proto"] == "tcp"
+    out = []
+    rules._vpn_checks(out, {"vpn": vpn}, EmptyDB(), TS)
+    assert [i["key"] for i in out] == ["vpn_open:openvpn:1024"]      # WireGuard en uitgeschakelde servers niet
+    assert out[0]["severity"] == "info" and "1024/tcp" in out[0]["title"]

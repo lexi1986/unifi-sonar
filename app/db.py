@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS flows (id TEXT PRIMARY KEY, ts INT, dir TEXT, action 
     up INT, down INT, risk TEXT, reason TEXT);
 CREATE INDEX IF NOT EXISTS ix_flows ON flows(ts);
 CREATE TABLE IF NOT EXISTS usage (period TEXT, ts INT, rx REAL, tx REAL, PRIMARY KEY (period, ts));
+CREATE TABLE IF NOT EXISTS pauses (mac TEXT PRIMARY KEY, until INT, created INT, name TEXT);
 CREATE TABLE IF NOT EXISTS known_clients (mac TEXT PRIMARY KEY, first_seen INT, name TEXT, hostname TEXT,
     private INT, approved INT, rotated_from TEXT);
 CREATE INDEX IF NOT EXISTS ix_ips ON ips_events(ts);
@@ -101,6 +102,13 @@ class DB:
     def set_kv(self, key: str, value: dict) -> None:
         with self.lock, self.conn:
             self.conn.execute("INSERT OR REPLACE INTO kv VALUES (?,?)", (key, json.dumps(value)))
+
+    def add_events(self, events: list[dict]) -> None:
+        if not events:
+            return
+        with self.lock, self.conn:
+            self.conn.executemany("INSERT INTO events VALUES (?,?,?,?,?)", [
+                (e["ts"], e["kind"], e["entity_type"], e["entity_id"], e["message"]) for e in events])
 
     def get_kv(self, key: str) -> dict | None:
         rows = self.q("SELECT value FROM kv WHERE key=?", (key,))
@@ -243,6 +251,18 @@ class DB:
                 if not baseline:
                     new.append(mac)
             return new
+
+    # ------------------------------------------------------------- internet pauzeren
+    def set_pause(self, mac: str, until: int | None, created: int, name: str) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO pauses VALUES (?,?,?,?)", (mac, until, created, name))
+
+    def clear_pause(self, mac: str) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM pauses WHERE mac=?", (mac,))
+
+    def pauses(self) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM pauses ORDER BY created DESC")]
 
     def pending_new(self, since: int) -> list[dict]:
         return [dict(r) for r in self.q("SELECT * FROM known_clients WHERE approved=0 AND first_seen>=? ORDER BY first_seen DESC", (since,))]

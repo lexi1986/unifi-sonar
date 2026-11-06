@@ -103,3 +103,24 @@ def test_usage_and_me_endpoints(tmp_path, monkeypatch):
     wired = c.get("/api/me?ip=192.168.1.10").json()
     assert wired["client"]["wired"] and wired["client"]["name"] == "Home Assistant"
     assert c.get("/api/me?ip=10.9.9.9").json() == {"found": False, "ip": "10.9.9.9"}
+
+
+def test_pause_and_resume(tmp_path, monkeypatch):
+    monkeypatch.setenv("NO_DOTENV", "1")
+    import time as _t
+    from fastapi.testclient import TestClient
+    from app import main
+    st = Settings(mode="mock", db_path=str(tmp_path / "p.db"), mock_seed_hours=1)
+    col = Collector(st, DB(st.db_path))
+    asyncio.run(col.seed_history())
+    monkeypatch.setattr(main.rt, "collector", col)
+    monkeypatch.setattr(main.rt, "db", col.db)
+    c = TestClient(main.app)
+    mac = next(x["mac"] for x in col.latest["clients"] if x["name"] == "iPad Keuken")
+    assert c.post(f"/api/clients/{mac}/pause", json={"until": int(_t.time()) + 60}).json()["ok"]
+    assert mac in col.mock.blocked and c.get("/api/pauses").json()["pauses"][0]["name"] == "iPad Keuken"
+    asyncio.run(col._expire_pauses(int(_t.time()) + 61))             # tijd om: vanzelf weer toegelaten
+    assert mac not in col.mock.blocked and col.db.pauses() == []
+    c.post(f"/api/clients/{mac}/pause", json={"until": None})
+    assert c.post(f"/api/clients/{mac}/resume").json()["ok"] and mac not in col.mock.blocked
+    assert c.post(f"/api/clients/{mac}/pause", json={"until": 5}).status_code == 400

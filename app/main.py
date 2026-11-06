@@ -36,6 +36,7 @@ if not os.environ.get("NO_DOTENV"):   # tests/verse installaties: .env overslaan
 
 from . import VERSION  # noqa: E402
 from . import notify as notify_mod  # noqa: E402
+from . import ha_mqtt  # noqa: E402
 from . import setup as setup_mod  # noqa: E402
 from .collector import Collector  # noqa: E402
 from .config import Settings, Thresholds  # noqa: E402
@@ -76,6 +77,7 @@ class Runtime:
             await self.collector.client.close()
         if self.collector:
             await self.collector.notifier.close()
+            await self.collector.ha.stop()
         self.task = self.collector = None
 
     async def apply(self, settings: Settings) -> None:
@@ -274,6 +276,54 @@ class ChannelIn(BaseModel):
     min_severity: Literal["critical", "warning", "info"] = "warning"
     resolved: bool = True
     enabled: bool = True
+
+
+class MqttSave(BaseModel):
+    enabled: bool = False
+    host: str = Field(default="", max_length=200)
+    port: int = Field(default=1883, ge=1, le=65535)
+    username: str = Field(default="", max_length=120)
+    password: str | None = Field(default=None, max_length=200)   # None of leeg = bewaarde wachtwoord houden
+    prefix: str = Field(default="homeassistant", max_length=60)
+
+
+def _mqtt_cfg(req: MqttSave) -> dict:
+    old = ha_mqtt.config(rt.settings)
+    host = req.host.strip()
+    if req.enabled and not host:
+        raise HTTPException(400, "Vul het adres van de MQTT-broker in.")
+    if re.search(r"[\s/:]", host):
+        raise HTTPException(400, "Alleen de naam of het IP-adres van de broker, zonder http:// of poort.")
+    return {"enabled": req.enabled, "host": host, "port": req.port, "username": req.username.strip(),
+            "password": req.password if req.password else old.get("password", ""),
+            "prefix": req.prefix.strip().strip("/") or "homeassistant"}
+
+
+@app.get("/api/mqtt")
+def mqtt_info():
+    cfg = ha_mqtt.config(rt.settings)
+    status = rt.collector.ha.status if rt.collector else {}
+    return {**{k: v for k, v in cfg.items() if k != "password"}, "has_password": bool(cfg.get("password")), "status": status}
+
+
+@app.post("/api/mqtt/test")
+async def mqtt_test(req: MqttSave):
+    cfg = _mqtt_cfg(MqttSave(**{**req.model_dump(), "enabled": True}))
+    err = await ha_mqtt.try_connect(cfg)
+    return {"ok": err is None, "error": err}
+
+
+@app.post("/api/mqtt/save")
+async def mqtt_save(req: MqttSave):
+    cfg = _mqtt_cfg(req)
+    s = Settings.load(DATA_DIR)
+    s.mqtt = cfg
+    s.save()
+    rt.settings.mqtt = cfg
+    if rt.collector:
+        await rt.collector.ha.stop()
+        rt.collector.ha.start()
+    return {"ok": True}
 
 
 class NotifySave(BaseModel):
@@ -602,6 +652,53 @@ async def reconnect(mac: str):
         await collector.client.reconnect(c["mac"])
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"UniFi weigerde: {e}") from e
+    return {"ok": True}
+
+
+class PauseRequest(BaseModel):
+    until: int | None = Field(default=None, gt=0)   # Unix-tijd; None = tot je zelf hervat
+
+
+@app.get("/api/pauses")
+def pauses():
+    _, db = _need()
+    return {"pauses": db.pauses(), "now": int(time.time())}
+
+
+@app.post("/api/clients/{mac}/pause")
+async def pause(mac: str, req: PauseRequest):
+    """Internet pauzeren: het apparaat wordt in UniFi geblokkeerd (geen wifi/netwerk) tot 'until' of tot hervatten."""
+    collector, db = _need()
+    mac = mac.lower()
+    now = int(time.time())
+    if req.until is not None and req.until <= now:
+        raise HTTPException(400, "Het eindtijdstip ligt in het verleden")
+    c = next((x for x in (collector.latest or {}).get("clients", []) if x["mac"] == mac), None)
+    name = c["name"] if c else next((p["name"] for p in db.pauses() if p["mac"] == mac), mac)
+    try:
+        await collector.set_blocked(mac, True)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"UniFi weigerde: {e}") from e
+    db.set_pause(mac, req.until, now, name)
+    until = time.strftime("%d-%m %H:%M", time.localtime(req.until)) if req.until else "je hervat"
+    db.add_events([{"ts": now, "kind": "client_leave", "entity_type": "client", "entity_id": mac,
+                    "message": f"{name}: internet gepauzeerd tot {until}"}])
+    return {"ok": True, "demo": bool(collector.mock)}
+
+
+@app.post("/api/clients/{mac}/resume")
+async def resume(mac: str):
+    collector, db = _need()
+    mac = mac.lower()
+    p = next((x for x in db.pauses() if x["mac"] == mac), None)
+    try:
+        await collector.set_blocked(mac, False)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"UniFi weigerde: {e}") from e
+    db.clear_pause(mac)
+    if p:
+        db.add_events([{"ts": int(time.time()), "kind": "client_join", "entity_type": "client", "entity_id": mac,
+                        "message": f"{p['name']}: pauze opgeheven"}])
     return {"ok": True}
 
 

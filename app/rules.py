@@ -215,7 +215,10 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                 out.append(_issue(f"radio_intf:{rid}", "warning", "wifi", "radio", rid, f"{dn}: veel storing op {r['radio']} GHz",
                                   f"{intf:.0f}% van de zendtijd bezet door andere netwerken op {where}.",
                                   "Kies een rustiger kanaal.", "interference", intf, th.radio_interference_warn, mac))
-            if rrt is not None and rrt >= th.radio_retry_warn and r["num_clients"] >= th.radio_retry_min_clients:
+            # Op een radio die bijna niets doet (bezetting < RETRY_MIN_CU) kosten retries geen zendtijd: dan is het
+            # ruis van een paar apparaten die snelheden uitproberen (zoals iPhones op 6 GHz), geen probleem.
+            busy = cu is None or cu >= RETRY_MIN_CU
+            if rrt is not None and rrt >= th.radio_retry_warn and r["num_clients"] >= th.radio_retry_min_clients and busy:
                 out.append(_issue(f"radio_retry:{rid}", "warning", "wifi", "radio", rid, f"{dn}: veel retries op {r['radio']} GHz",
                                   f"{rrt:.0f}% retries over alle clients op {where}.",
                                   "Kijk welke clients op deze radio slecht scoren; vaak is één zwak apparaat de oorzaak.",
@@ -339,6 +342,8 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
         _config_checks(out, snap, cfg, name)
     if cfg.get("forwards") is not None:
         _exposure_checks(out, snap, cfg, db, ts, ignores)
+    if cfg.get("vpn") is not None:
+        _vpn_checks(out, cfg, db, ts)
     out.sort(key=lambda i: (SEVERITY_ORDER[i["severity"]], i["category"], i["title"]))
     return out
 
@@ -459,6 +464,31 @@ SPEED_RECENT = 3 * 24 * HOUR
 
 
 NEW_DEVICE_DAYS = 7
+RETRY_MIN_CU = 5.0          # % kanaalbezetting waaronder retries van een radio niet gemeld worden
+VPN_LABEL = {"openvpn": "OpenVPN", "l2tp": "L2TP/IPsec", "pptp": "PPTP", "wireguard": "WireGuard"}
+
+
+def _vpn_checks(out: list[dict], cfg: dict, db, ts: int) -> None:
+    """VPN-servers op de gateway die naar internet openstaan. WireGuard antwoordt alleen op verkeer met een
+    geldige sleutel en is daardoor onzichtbaar voor scanners; OpenVPN en zeker L2TP/PPTP niet."""
+    for v in cfg.get("vpn") or []:
+        if not v["enabled"] or v["type"] == "wireguard" or not v["port"]:
+            continue
+        row = db.q("SELECT COUNT(*) n, COUNT(DISTINCT remote_ip) s FROM flows WHERE ts>=? AND dir IN ('in','blocked') "
+                   "AND port=?", (ts - 24 * 3600, v["port"]))[0]
+        n, srcs = row["n"] or 0, (dict(row).get("s") or 0)
+        label = VPN_LABEL.get(v["type"], v["type"])
+        old = v["type"] in ("l2tp", "pptp")
+        seen = (f" In de afgelopen 24 uur kwamen er {n} verbindingspogingen van buiten op die poort"
+                + (f" (van {srcs} adressen)." if srcs > 1 else ".")) if n else ""
+        out.append(_issue(f"vpn_open:{v['type']}:{v['port']}", "warning" if old else "info", "security", "site", "vpn",
+                          f"{label}-server open naar internet (poort {v['port']}/{v['proto']})",
+                          f"VPN-server '{v['name']}' antwoordt op poort {v['port']}: iedereen op internet kan zien dat hier een "
+                          f"VPN-server draait.{seen}"
+                          + (" Dit protocol is verouderd en niet meer veilig genoeg." if old else ""),
+                          "Gebruik je hem niet (meer), zet hem dan uit (UniFi: Instellingen → VPN → VPN Server). Gebruik je "
+                          "hem wel, stap dan bij voorkeur over op WireGuard: dat antwoordt alleen op verkeer met een geldige "
+                          "sleutel en is daardoor onzichtbaar voor scanners. Houd de firmware van je gateway actueel."))
 
 
 def _new_devices(out: list[dict], snap: dict, db, ts: int, name) -> None:

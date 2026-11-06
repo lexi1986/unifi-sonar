@@ -105,6 +105,7 @@ ATTACKER_CC = {"198.51.100.7": "RU", "198.51.100.23": "CN", "198.51.100.61": "US
                "198.51.100.140": "NL", "203.0.113.9": "IN", "203.0.113.45": "KR", "203.0.113.200": "DE"}
 
 NEWDEV_T = 5 * 3600   # simulatietijd waarop een onbekende tablet opduikt
+CHANGE_T = 5.5 * 3600  # simulatietijd waarop er instellingen veranderen (voor het wijzigingslog)
 ROTATE_T = 4.5 * 3600  # simulatietijd waarop de iPad Keuken een nieuw privé-adres krijgt
 REBOOT_T = 3 * 3600   # simulatietijd waarop AP Boven herstart
 PRINTER_T = 3.5 * 3600  # simulatietijd waarop de printer naar AP Schuur zakt
@@ -136,6 +137,7 @@ class MockNetwork:
         self.counters: dict[str, dict[str, float]] = {}
         self.flap_state = True
         self.sonos_ap = AP_WK
+        self.blocked: set[str] = set()   # gepauzeerde apparaten: verschijnen niet meer als client
 
     # ----------------------------------------------------------------- helpers
     def _cnt(self, key: str, field: str, inc: float) -> float:
@@ -257,7 +259,7 @@ class MockNetwork:
                 "ip": f"192.168.1.{10 + i}", "is_wired": True, "network": "Default", "sw_mac": sw, "sw_port": port,
                 "satisfaction": 100, "uptime": int(self.t + 86400 * (i % 5 + 1)),
             })
-        return out
+        return [c for c in out if c["mac"] not in self.blocked]
 
     def stat_device(self, dt: float, sta: list[dict]) -> list[dict]:
         uptime_base = 86400 * 12 + self.t
@@ -289,7 +291,7 @@ class MockNetwork:
                 "system-stats": {"cpu": f"{R.uniform(3, 15):.1f}", "mem": f"{R.uniform(30, 45):.1f}"},
                 "general_temperature": round(R.uniform(40, 48), 1) if mac == SW_MK else None,
                 "num_sta": num, "port_table": ports,
-                "uplink": {"uplink_mac": GW if mac == SW_MK else SW_MK, "uplink_remote_port": 2 if mac == SW_MK else {SW_KT: 23, SW_SC: 24}[mac], "type": "wire"},
+                "uplink": {"uplink_mac": GW if mac == SW_MK else SW_MK, "uplink_remote_port": 2 if mac == SW_MK else {SW_KT: 23, SW_SC: 24}[mac], "type": "wire", "speed": 1000},
             }
             if budget:
                 d["total_max_power"] = budget
@@ -307,7 +309,7 @@ class MockNetwork:
                 "num_sta": len(on), "satisfaction": round(sum(c["satisfaction"] for c in on) / len(on)) if on else 100,
                 "radio_table": table, "radio_table_stats": stats,
                 "bandsteering_mode": "off" if mac == AP_SC else "prefer_5g",
-                "uplink": {"uplink_mac": info["uplink"][0], "uplink_remote_port": info["uplink"][1], "type": "wire"},
+                "uplink": {"uplink_mac": info["uplink"][0], "uplink_remote_port": info["uplink"][1], "type": "wire", "speed": 1000},
                 "port_table": [self._port(mac, 1, dt, name="Uplink", uplink=True)],
             })
         return devs
@@ -405,8 +407,19 @@ class MockNetwork:
         }
 
     # ------------------------------------------------------------ instellingen
+    def config_raw(self) -> dict:
+        """Zoals UnifiClient.fetch_config_raw. Halverwege de demo zet iemand Fast Roaming aan en verdwijnt een oude forward."""
+        wlans, settings, forwards, networks = self.config()
+        if self.t >= CHANGE_T:
+            wlans[0].update(fast_roaming_enabled=True, minrate_ng_data_rate_kbps=6000)
+        if self.t >= CHANGE_T + 600:
+            forwards = [f for f in forwards if f["name"] != "Oude camera"]
+        settings = settings + [{"key": "global_switch", "stp_version": "rstp", "auto_stp_edge_detection_enabled": False}]
+        return {"wlans": wlans, "settings": settings, "forwards": forwards, "networks": networks,
+                "firewall": [{"name": "IoT naar LAN blokkeren", "enabled": True, "action": "BLOCK"}]}
+
     @staticmethod
-    def config() -> tuple[list, list, list]:
+    def config() -> tuple[list, list, list, list]:
         """Ruwe rest/wlanconf, rest/setting en stat/portforward."""
         wlans = [
             {"name": "Thuis", "enabled": True, "wlan_bands": ["2g", "5g"], "fast_roaming_enabled": False,
@@ -428,7 +441,12 @@ class MockNetwork:
             {"name": "Camera Tuin", "enabled": True, "is_upnp": 1, "proto": "tcp", "dst_port": "80", "fwd": "192.168.1.123",
              "fwd_port": "80", "rx_bytes": 92_118},
         ]
-        return wlans, settings, forwards
+        networks = [
+            {"name": "WireGuard", "purpose": "remote-user-vpn", "vpn_type": "wireguard-server", "enabled": True, "local_port": 51820},
+            {"name": "OpenVPN", "purpose": "remote-user-vpn", "vpn_type": "openvpn-server", "enabled": True,
+             "local_port": 1194, "vpn_protocol": "TCP"},
+        ]
+        return wlans, settings, forwards, networks
 
     # ------------------------------------------------------------ historie
     def backfill(self, db, start: int, end: int, step: int = 300) -> None:

@@ -12,7 +12,9 @@ from .config import Settings
 from .db import DB
 from .mock import MockNetwork
 from .notify import Notifier
-from .unifi_client import (UnifiClient, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
+from . import changes
+from .ha_mqtt import HAMqtt
+from .unifi_client import (UnifiClient, config_from_raw, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
                            normalize_speedtests, wan_rates)
 
 log = logging.getLogger(__name__)
@@ -64,6 +66,7 @@ class Collector:
         self.speedtest = {"running": False, "started": None, "error": None}
         self.flows_available: bool | None = True if self.mock else None
         self._usage_checked = 0
+        self.ha = HAMqtt(settings, self)
         self._flows_checked = 0
 
     async def _fetch(self, dt: float) -> dict:
@@ -191,16 +194,19 @@ class Collector:
     async def _collect_config(self, ts: int) -> None:
         """Instellingen veranderen zelden: live elke 15 minuten, demo altijd."""
         if self.mock:
-            self.config = normalize_config(*self.mock.config())
+            raw = self.mock.config_raw()
+            self.config = config_from_raw(raw)
+            self._track("fp_config", changes.config_fingerprint(raw, self._salt()), ts)
             return
         if ts - self._cfg_checked < 900:
             return
         self._cfg_checked = ts
         try:
-            cfg = await self.client.fetch_config()
-            if cfg is not None:
-                self.config = cfg
-            self.optional["config"] = None if cfg is not None else "alleen via de uitgebreide API"
+            raw = await self.client.fetch_config_raw()
+            if raw is not None:
+                self.config = config_from_raw(raw)
+                self._track("fp_config", changes.config_fingerprint(raw, self._salt()), ts)
+            self.optional["config"] = None if raw is not None else "alleen via de uitgebreide API"
         except Exception as e:  # noqa: BLE001 – optioneel
             log.warning("Instellingen ophalen: %s", e)
             self.optional["config"] = str(e)
@@ -210,6 +216,49 @@ class Collector:
                 self.sysinfo = await self.client.sysinfo() or self.sysinfo
             except Exception as e:  # noqa: BLE001
                 self.optional["sysinfo"] = str(e)
+
+    # ------------------------------------------------------------ internet pauzeren
+    async def set_blocked(self, mac: str, blocked: bool) -> None:
+        if self.mock:
+            (self.mock.blocked.add if blocked else self.mock.blocked.discard)(mac)
+            return
+        await self.client.block(mac, blocked)
+
+    async def _expire_pauses(self, ts: int) -> None:
+        """Pauzes waarvan de tijd om is: apparaat weer toelaten."""
+        for p in self.db.pauses():
+            if p["until"] and p["until"] <= ts:
+                try:
+                    await self.set_blocked(p["mac"], False)
+                except Exception as e:  # noqa: BLE001 – volgende ronde opnieuw
+                    log.warning("Pauze opheffen voor %s: %s", p["mac"], e)
+                    continue
+                self.db.clear_pause(p["mac"])
+                self.db.add_events([{"ts": ts, "kind": "client_join", "entity_type": "client", "entity_id": p["mac"],
+                                     "message": f"{p['name']}: pauze voorbij, mag weer online"}])
+
+    # ------------------------------------------------------------ wijzigingslog
+    def _salt(self) -> str:
+        """Willekeurig zout per installatie, zodat wachtwoord-hashes in de database niets zeggen."""
+        kv = self.db.get_kv("fp_salt")
+        if not kv:
+            import secrets
+            kv = {"salt": secrets.token_hex(16)}
+            self.db.set_kv("fp_salt", kv)
+        return kv["salt"]
+
+    def _track(self, key: str, fp: dict, ts: int) -> None:
+        """Vergelijk een vingerafdruk met de vorige en zet verschillen als 'config'-gebeurtenis op de tijdlijn.
+        De eerste keer wordt alleen de beginstand bewaard."""
+        old = self.db.get_kv(key)
+        if old is not None and old != fp:
+            names = {d["mac"]: d["name"] for d in (self.latest or {}).get("devices", [])}
+            evs = changes.diff(old, fp, names)
+            self.db.add_events([{"ts": ts, "kind": "config", **e} for e in evs])
+            if evs:
+                log.info("Wijzigingslog: %s", "; ".join(e["message"] for e in evs[:5]))
+        if old != fp:
+            self.db.set_kv(key, fp)
 
     # ------------------------------------------------------------ internet
     def _gateway_mac(self) -> str | None:
@@ -318,6 +367,8 @@ class Collector:
         events = self._enrich(snap)
         self.db.store(snap, events)
         self.db.register_clients(snap["clients"], ts)
+        self._track("fp_devices", changes.device_fingerprint(snap["devices"]), ts)
+        await self._expire_pauses(ts)
         await self._collect_ips(ts, dt or self.s.poll_seconds)
         await self._collect_flows(ts, dt or self.s.poll_seconds)
         await self._collect_config(ts)
@@ -366,10 +417,12 @@ class Collector:
 
     async def run(self) -> None:
         last_purge = 0
+        self.ha.start()
         while True:
             try:
                 snap = await self.tick()
                 self.db.set_kv("latest", self.latest)
+                self.ha.publish_state()
                 if time.time() - last_purge > 3600:
                     self.db.purge(int(time.time()) - self.s.retention_days * 86400)
                     self.db.purge_flows(int(time.time()) - FLOW_HOURS * 3600)

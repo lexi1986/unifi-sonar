@@ -29,7 +29,11 @@ UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en a
 - **Internet:** live download- en uploadverkeer, latency, het verkeer over de afgelopen dagen, je **datagebruik per dag en per maand** (met een verwachting voor de hele maand) en een **speedtest** met één knop. De test draait op je gateway zelf, dus hij meet je echte internetverbinding en niet je wifi. Alle resultaten blijven bewaard, en zakt de snelheid ver onder wat normaal is voor jouw verbinding, dan krijg je een melding.
 - **Wereld:** een live wereldkaart van alle verbindingen door je gateway. Bogen naar elk land waar je apparaten mee praten, inkomend verkeer en wat de IPS of je regioblokkade tegenhield, met per land de belangrijkste domeinen en apparaten, en bij blokkades welke dienst en welk apparaat het doelwit was. Kies tussen een platte kaart en een draaiende 3D-globe tegen een sterrenhemel. Inzoomen kan met scrollen, slepen, knijpen of door op een land in de lijst te klikken. Klik op een van de tegels bovenaan voor de lijst met verbindingen, samengevoegd per apparaat en bestemming en te doorzoeken. De gegevens komen uit het verkeerslogboek dat UniFi zelf al bijhoudt: geen NetFlow, geen GeoIP-database en geen extra software nodig.
 - **Patronen:** per apparaat de favoriete AP, hoe lang het op elke AP zat en wanneer het verbonden is (per uur van de week); per access point hoe druk elk kanaal is per uur van de week.
-- **Pagina's** voor apparaten (radio's, poortenraster, PoE, historie), clients (signaal, retries, ervaring en roaming per apparaat), beveiliging (IPS en wat er openstaat naar internet) en een tijdlijn met gebeurtenissen.
+- **Wijzigingslog:** elke wijziging in je instellingen komt op de tijdlijn, zoals "Wifi 'Thuis': Fast Roaming uit → aan" of "AP Woonkamer · 2.4 GHz kanaal: 11 → 6". Sonar volgt wifi-netwerken, netwerken en VPN-servers, port forwards, firewallregels, algemene instellingen (UPnP, spanning tree, IPS) en per apparaat de kanalen, breedte, zendvermogen en band steering. Van een wifi-wachtwoord bewaart Sonar alleen een gezouten hash, zodat er "wachtwoord gewijzigd" kan staan.
+- **Netwerkkaart:** gateway, switches en access points als boom, met per verbinding de poort en snelheid (trager dan 1 Gbit/s valt op) en desgewenst alle clients als stippen, gekleurd naar signaal.
+- **Internet pauzeren** per apparaat: 30 minuten, 1 of 2 uur, tot morgen 07:00 of tot je hervat. Sonar blokkeert het apparaat dan in UniFi en laat het vanzelf weer toe als de tijd om is.
+- **Home Assistant via MQTT:** netwerkscore, meldingen, clients, latency, live internetverkeer, speedtest, datagebruik, nieuwe apparaten en IPS-blokkades als sensoren, plus een knop om een speedtest te starten. Home Assistant herkent alles vanzelf (MQTT-discovery).
+- **Pagina's** voor apparaten (radio's, poortenraster, PoE, historie), clients (signaal, retries, ervaring en roaming per apparaat), beveiliging (IPS, wat er openstaat naar internet en VPN-servers die zichtbaar zijn voor scanners) en een tijdlijn met gebeurtenissen.
 - **Probleemoplossing:** één knop kopieert de versie, het controllertype en de laatste fouten, zonder adressen, namen of sleutels, zodat je die in een GitHub-issue kunt plakken.
 - **Demomodus** met een nagebootst netwerk, zodat je zonder controller kunt rondkijken.
 
@@ -133,7 +137,8 @@ Heb je UniFi Sonar geïnstalleerd vóór versie 1.2? Draai dan één keer het in
 ## Privacy en veiligheid
 
 - Alles blijft op je eigen machine. Er gaat niets naar internet, behalve het downloaden van de software bij installeren en bijwerken, en de meldingen naar de diensten die je zelf instelt.
-- UniFi Sonar **leest alleen**: het verandert geen instellingen in UniFi. De enige acties zijn *Opnieuw verbinden* voor één wifi-apparaat en een speedtest op de gateway starten.
+- UniFi Sonar **verandert geen instellingen** in UniFi. De enige acties zijn *Opnieuw verbinden* voor één wifi-apparaat, een speedtest op de gateway starten en *Pauzeren*: dat blokkeert één apparaat in UniFi tot de gekozen tijd om is.
+- Gebruik je de koppeling met Home Assistant, dan staan het adres en de inloggegevens van de MQTT-broker alleen in `config.json`. De browser krijgt het wachtwoord nooit terug.
 - De API-key en de webhook-adressen staan alleen in `/var/lib/unifi-sonar/config.json`, en alleen de service kan dat bestand lezen. De browser krijgt de sleutel nooit terug en ziet van webhook-adressen alleen het begin.
 - Het dashboard heeft **geen login**. Iedereen in je netwerk die het adres kent, kan meekijken, meldingen negeren en een wifi-apparaat opnieuw laten verbinden. Zet het daarom niet open naar internet.
 - Het dashboard antwoordt alleen op een IP-adres, `localhost` en lokale namen (`.local`, `.lan`, `.home`, `.internal`, `.home.arpa`). Zo kan een website die je bezoekt het dashboard niet via je browser aansturen (DNS-rebinding). Acties vanaf een andere website worden ook geweigerd. Gebruik je een eigen hostnaam of een reverse proxy, voeg die dan toe onder *Instellingen → Toegang*, of zet `Environment=ALLOWED_HOSTS=sonar.mijndomein.nl` in de service.
@@ -183,6 +188,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | `app/collector.py` | Elke minuut meten, delta's berekenen (retries, fouten, throughput), events |
 | `app/rules.py` | Alle meldingen, groepering op oorzaak en scores |
 | `app/notify.py` | Meldingen versturen (Home Assistant, ntfy, Discord, Slack, webhook) |
+| `app/changes.py` | Wijzigingslog: vingerafdruk van de instellingen en leesbare verschillen |
+| `app/ha_mqtt.py` | Home Assistant-koppeling via MQTT (kleine eigen MQTT 3.1.1-client, discovery) |
 | `app/setup.py` | Verbindingstest voor de wizard |
 | `app/mock.py` | Nagebootst netwerk met ingebouwde problemen (demomodus) |
 | `web/` | Dashboard (vanilla JS, geen build-stap) |

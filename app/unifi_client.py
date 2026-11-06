@@ -119,6 +119,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
             "uplink_mac": uplink.get("uplink_mac"),
             "uplink_port": uplink.get("uplink_remote_port"),
             "uplink_type": uplink.get("type"),
+            "uplink_speed": _num(uplink.get("speed")),
             "poe_budget_w": poe_budget,
             "poe_used_w": sum(p["poe_w"] or 0 for p in ports) if poe_budget else None,
             "radios": radios,
@@ -220,7 +221,26 @@ def normalize_speedtests(rows: list[dict]) -> list[dict]:
 
 # ------------------------------------------------------------------ configuratie
 
-def normalize_config(wlans: list[dict], settings: list[dict], forwards: list[dict]) -> dict:
+def config_from_raw(raw: dict) -> dict:
+    return normalize_config(raw["wlans"], raw["settings"], raw["forwards"], raw.get("networks"))
+
+
+def normalize_vpn(networks: list[dict]) -> list[dict]:
+    """VPN-servers op de gateway (rest/networkconf), zonder sleutels of wachtwoorden."""
+    out = []
+    for n in networks:
+        t = (n.get("vpn_type") or "").lower()
+        if not t.endswith("-server"):
+            continue
+        kind = t.removesuffix("-server")
+        port = n.get("local_port") or n.get(f"{kind}_local_port") or (51820 if kind == "wireguard" else None)
+        proto = "udp" if kind in ("wireguard", "l2tp") else (n.get("vpn_protocol") or "udp").lower()
+        out.append({"name": n.get("name") or kind, "type": kind, "enabled": bool(n.get("enabled", True)),
+                    "port": int(port) if port else None, "proto": proto})
+    return out
+
+
+def normalize_config(wlans: list[dict], settings: list[dict], forwards: list[dict], networks: list[dict] | None = None) -> dict:
     """Wifi-netwerken, UPnP en port forwards. Wachtwoorden en sleutels worden bewust overgeslagen."""
     out_wlans = []
     for w in wlans:
@@ -250,7 +270,8 @@ def normalize_config(wlans: list[dict], settings: list[dict], forwards: list[dic
             "src": f.get("src") or "any",
             "rx_bytes": _num(f.get("rx_bytes"), 0),
         })
-    return {"wlans": out_wlans, "upnp_enabled": usg.get("upnp_enabled"), "forwards": out_fw}
+    return {"wlans": out_wlans, "upnp_enabled": usg.get("upnp_enabled"), "forwards": out_fw,
+            "vpn": normalize_vpn(networks) if networks is not None else None}
 
 
 # ----------------------------------------------------------------------------- IPS
@@ -414,7 +435,7 @@ def normalize_integration(devices: list[dict], stats: dict[str, dict], clients: 
             "uptime": _num(s.get("uptimeSec"), 0), "ip": d.get("ipAddress", ""),
             "cpu": _num(s.get("cpuUtilizationPct")), "mem": _num(s.get("memoryUtilizationPct")),
             "temp": None, "num_clients": 0, "satisfaction": None,
-            "uplink_mac": None, "uplink_port": None, "uplink_type": None,
+            "uplink_mac": None, "uplink_port": None, "uplink_type": None, "uplink_speed": None,
             "poe_budget_w": None, "poe_used_w": None,
             "radios": radios, "ports": [], "bandsteering": None,
         })
@@ -518,15 +539,35 @@ class UnifiClient:
     def _write_headers(self) -> dict:
         return self._headers() if self.source == "legacy-key" else ({"x-csrf-token": self._csrf} if self._csrf else {})
 
-    async def fetch_config(self) -> dict | None:
-        """Wifi-instellingen, UPnP en port forwards (alleen lezen). None = niet beschikbaar."""
+    async def fetch_config_raw(self) -> dict | None:
+        """Ruwe instellingen (alleen lezen): wifi, algemene instellingen, port forwards, netwerken, firewall.
+        None = niet beschikbaar. Wachtwoorden zitten erin; die gaan alleen gehasht het wijzigingslog in."""
         if self.source not in ("legacy-key", "legacy-login"):
             return None
         use_key = self.source == "legacy-key"
-        wlans = await self._legacy("rest/wlanconf", use_key)
-        settings = await self._legacy("rest/setting", use_key)
-        forwards = await self._legacy("stat/portforward", use_key)   # statisch én actieve UPnP-mappings
-        return normalize_config(wlans, settings, forwards)
+        raw = {"wlans": await self._legacy("rest/wlanconf", use_key),
+               "settings": await self._legacy("rest/setting", use_key),
+               "forwards": await self._legacy("stat/portforward", use_key)}   # statisch én actieve UPnP-mappings
+        try:
+            raw["networks"] = await self._legacy("rest/networkconf", use_key)
+        except Exception:  # noqa: BLE001 – optioneel
+            raw["networks"] = None
+        raw["firewall"] = None
+        try:   # zone-gebaseerde firewall (Network 9+), anders de oude regels
+            r = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/firewall-policies",
+                                    headers=self._headers() if use_key else {})
+            if r.status_code == 200 and isinstance(r.json(), list):
+                raw["firewall"] = r.json()
+            else:
+                raw["firewall"] = await self._legacy("rest/firewallrule", use_key)
+        except Exception:  # noqa: BLE001 – optioneel
+            pass
+        return raw
+
+    async def fetch_config(self) -> dict | None:
+        """Wifi-instellingen, UPnP, port forwards en VPN-servers (alleen lezen). None = niet beschikbaar."""
+        raw = await self.fetch_config_raw()
+        return config_from_raw(raw) if raw is not None else None
 
     async def sysinfo(self) -> dict:
         if self.source not in ("legacy-key", "legacy-login"):
@@ -620,6 +661,17 @@ class UnifiClient:
         headers = self._write_headers()
         r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/cmd/stamgr", headers=headers,
                                  json={"cmd": "kick-sta", "mac": mac.lower()})
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code != 200 or (body.get("meta") or {}).get("rc") not in (None, "ok"):
+            raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")
+
+    async def block(self, mac: str, blocked: bool) -> None:
+        """Apparaat blokkeren of weer toelaten (UniFi 'block-sta'/'unblock-sta'): geblokkeerd kan het niet
+        verbinden met wifi of het netwerk. Sonar gebruikt dit voor 'internet pauzeren'."""
+        if self.source not in ("legacy-key", "legacy-login"):
+            raise RuntimeError("Pauzeren kan alleen via de uitgebreide API")
+        r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/cmd/stamgr", headers=self._write_headers(),
+                                 json={"cmd": "block-sta" if blocked else "unblock-sta", "mac": mac.lower()})
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         if r.status_code != 200 or (body.get("meta") or {}).get("rc") not in (None, "ok"):
             raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")

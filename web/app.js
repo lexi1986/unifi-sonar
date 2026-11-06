@@ -216,6 +216,32 @@
 
   // ------------------------------------------------------------------ issue rendering
   const reconnectBtn = (mac) => `<button class="linkbtn" data-reconnect="${esc(mac)}">Opnieuw verbinden</button>`;
+  // ---- internet pauzeren: blokkeert het apparaat in UniFi tot een tijdstip
+  const PAUSES = [["30", "30 minuten"], ["60", "1 uur"], ["120", "2 uur"], ["morning", "Tot morgen 07:00"], ["", "Tot ik hervat"]];
+  const pauseMenu = (mac) => `<details class="mute pause"><summary class="btn">${icon("power")}Pauzeren</summary><div class="mute-menu" role="group" aria-label="Pauzeren voor">
+      ${PAUSES.map(([v, l]) => `<button data-pause="${esc(mac)}" data-for="${v}">${l}</button>`).join("")}</div></details>`;
+  function pauseUntil(v) {
+    if (!v) return null;
+    if (v === "morning") { const d = new Date(); d.setDate(d.getDate() + (d.getHours() >= 7 ? 1 : 0)); d.setHours(7, 0, 0, 0); return Math.floor(d / 1000); }
+    return Math.floor(Date.now() / 1000) + +v * 60;
+  }
+  async function pauseAction(e) {
+    const b = e.target.closest("[data-pause]"), r = e.target.closest("[data-resume]");
+    if (!b && !r) return false;
+    e.preventDefault();
+    try {
+      if (b) {
+        await post(`/api/clients/${encodeURIComponent(b.dataset.pause)}/pause`, { until: pauseUntil(b.dataset.for) });
+        if (state.drawer) closeDrawer();
+      } else {
+        r.disabled = true;
+        await post(`/api/clients/${encodeURIComponent(r.dataset.resume)}/resume`, {});
+      }
+    } catch (err) { alert(err.message); }
+    await refresh();
+    if (current === "clients") loadPauses();
+    return true;
+  }
   async function reconnectAction(e) {
     const b = e.target.closest("[data-reconnect]");
     if (!b) return false;
@@ -494,12 +520,96 @@
   };
 
   // ------------------------------------------------------------------ apparaten
+  const devView = { mode: store.get("dv.mode", "map"), clients: store.get("dv.clients", false) };
   function mountDevices() {
-    mount("apparaten", `<div class="page-head"><div><h1>Apparaten</h1><p class="subtitle">Gateway, switches en access points. Klik voor details en historie.</p></div></div><div id="dv-list"></div>`);
-    $("#dv-list").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("device", n.dataset.id, n); });
-    $("#dv-list").addEventListener("keydown", (e) => { const n = e.target.closest("[data-open]"); if (n && e.key === "Enter") openDrawer("device", n.dataset.id, n); });
+    mount("apparaten", `<div class="page-head"><div><h1>Apparaten</h1><p class="subtitle">Gateway, switches en access points. Klik voor details en historie.</p></div>
+        <div class="w-head-r"><button class="chip" id="dv-cl" aria-pressed="${devView.clients}" ${devView.mode === "map" ? "" : "hidden"}>${icon("users")}Clients tonen</button>
+        <div class="seg" role="group" aria-label="Weergave" id="dv-mode">${[["map", "Kaart"], ["list", "Lijst"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${devView.mode === k}">${l}</button>`).join("")}</div></div></div>
+      <div id="dv-map" class="topo-scroll"></div><div id="dv-list"></div>`);
+    for (const id of ["#dv-list", "#dv-map"]) {
+      $(id).addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer(n.dataset.open === "client" ? "client" : "device", n.dataset.id, n); });
+      $(id).addEventListener("keydown", (e) => { const n = e.target.closest("[data-open]"); if (n && e.key === "Enter") openDrawer(n.dataset.open === "client" ? "client" : "device", n.dataset.id, n); });
+    }
+    $("#dv-mode").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-m]"); if (!b) return;
+      devView.mode = b.dataset.m; store.set("dv.mode", devView.mode);
+      $("#dv-mode").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+      $("#dv-cl").hidden = devView.mode !== "map";
+      UPDATERS.apparaten();
+    });
+    $("#dv-cl").addEventListener("click", () => {
+      devView.clients = !devView.clients; store.set("dv.clients", devView.clients);
+      $("#dv-cl").setAttribute("aria-pressed", devView.clients);
+      renderTopo();
+    });
+  }
+  // ---- netwerkkaart: boom vanaf de gateway, per verbinding de poort en snelheid
+  const linkTxt = (mb) => (!mb ? "" : mb >= 1000 ? `${mb % 1000 ? (mb / 1000).toFixed(1) : mb / 1000}G` : `${mb}M`);
+  function renderTopo() {
+    const el = $("#dv-map");
+    if (!el || !state.snap) return;
+    const devs = state.snap.devices, byMac = devByMac();
+    const kids = {}, roots = [];
+    devs.forEach((d) => { if (d.uplink_mac && byMac[d.uplink_mac] && d.uplink_mac !== d.mac) (kids[d.uplink_mac] ||= []).push(d); else roots.push(d); });
+    Object.values(kids).forEach((a) => a.sort((x, y) => (x.uplink_port || 99) - (y.uplink_port || 99) || x.name.localeCompare(y.name)));
+    roots.sort((a, b) => (a.type === "gateway" ? -1 : b.type === "gateway" ? 1 : 0));
+    const cl = {};
+    if (devView.clients) state.snap.clients.forEach((c) => { const m = c.wired ? c.sw_mac : c.ap_mac; if (m) (cl[m] ||= []).push(c); });
+    const NW = 158, NH = 60, PER = 9, DOT = 12, MAXC = 36;
+    let slot = 0, maxDepth = 0;
+    const pos = {}, rows = {};
+    const walk = (d, depth) => {
+      maxDepth = Math.max(maxDepth, depth);
+      const ch = kids[d.mac] || [];
+      if (!ch.length) pos[d.mac] = { s: slot++, depth };
+      else { ch.forEach((c) => walk(c, depth + 1)); const xs = ch.map((c) => pos[c.mac].s); pos[d.mac] = { s: (Math.min(...xs) + Math.max(...xs)) / 2, depth }; }
+      const n = Math.min((cl[d.mac] || []).length, MAXC);
+      rows[depth] = Math.max(rows[depth] || 0, Math.ceil(n / PER));
+    };
+    roots.forEach((r) => walk(r, 0));
+    const ys = [];
+    let yy = 8;
+    for (let k = 0; k <= maxDepth; k++) { ys[k] = yy; yy += NH + 64 + (rows[k] ? rows[k] * (DOT + 4) + 8 : 0); }
+    const W = Math.max(el.clientWidth - 2, slot * (NW + 26)), H = yy - 40;
+    const colW = W / Math.max(1, slot);
+    const X = (m) => colW * (pos[m].s + 0.5), Y = (m) => ys[pos[m].depth];
+    const dotsH = (m) => { const n = Math.min((cl[m] || []).length, MAXC); return n ? Math.ceil(n / PER) * (DOT + 4) + 10 : 0; };
+    const links = [], labels = [];
+    for (const d of devs) {
+      const p = d.uplink_mac && pos[d.uplink_mac] && pos[d.mac] ? byMac[d.uplink_mac] : null;
+      if (!p) continue;
+      const x1 = X(p.mac), y1 = Y(p.mac) + NH + dotsH(p.mac), x2 = X(d.mac), y2 = Y(d.mac), my = (y1 + y2) / 2;
+      const wireless = d.uplink_type === "wireless";
+      const slow = !wireless && d.uplink_speed && d.uplink_speed < 1000;
+      const cls = d.state !== "online" ? "down" : slow ? "slow" : wireless ? "mesh" : "";
+      links.push(`<path class="tl ${cls}" d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}"/>`);
+      const txt = [d.uplink_port ? `poort ${d.uplink_port}` : "", wireless ? "draadloos" : linkTxt(d.uplink_speed)].filter(Boolean).join(" · ");
+      if (txt) labels.push(`<div class="tlabel ${cls}" style="left:${x2}px;top:${y2 - 22}px">${esc(txt)}</div>`);
+    }
+    const sevCls = (d) => (d.state !== "online" ? "critical" : d.issue_count ? worstSev(d.mac) : "ok");
+    const nodes = devs.filter((d) => pos[d.mac]).map((d) => {
+      const x = X(d.mac) - NW / 2, y = Y(d.mac);
+      const sub = d.type === "ap" ? `${d.num_clients} clients` : d.type === "switch" ? `${d.ports.filter((p) => p.up).length}/${d.ports.length} poorten · ${d.num_clients} clients` : d.model;
+      const cs = (cl[d.mac] || []).slice().sort((a, b) => (a.signal ?? 0) - (b.signal ?? 0));
+      const dots = cs.slice(0, MAXC).map((c, i) => {
+        const lv = c.wired ? "wired" : level("signal", c.signal, c.band);
+        const left = (i % PER) * (DOT + 4) - ((Math.min(cs.length, PER) * (DOT + 4) - 4) / 2) + NW / 2;
+        return `<button class="tdot ${lv}" style="left:${left}px;top:${NH + 10 + Math.floor(i / PER) * (DOT + 4)}px" data-open="client" data-id="${esc(c.mac)}" title="${esc(c.name)}${c.wired ? " · bedraad" : ` · ${nf(c.signal)} dBm`}" aria-label="${esc(c.name)}"></button>`;
+      }).join("") + (cs.length > MAXC ? `<span class="tmore" style="top:${NH + 10 + Math.ceil(MAXC / PER) * (DOT + 4)}px">+${cs.length - MAXC}</span>` : "");
+      return `<div class="tnode sev-${sevCls(d)}" style="left:${x}px;top:${y}px;width:${NW}px">
+        <button class="tcard" data-open="device" data-id="${esc(d.mac)}" aria-label="${esc(d.name)}"><span class="ico">${icon(devIcon(d.type))}</span>
+          <span class="tt"><b>${esc(d.name)}</b><small>${esc(sub)}</small></span></button>${dots}</div>`;
+    }).join("");
+    el.innerHTML = `<div class="topo-map" style="width:${W}px;height:${H}px"><svg width="${W}" height="${H}" aria-hidden="true">${links.join("")}</svg>${labels.join("")}${nodes}</div>
+      <div class="legend-row topo-legend"><span><i class="sw" style="background:var(--me-border-strong)"></i>bedraad</span><span><i class="sw" style="background:var(--me-warning)"></i>trager dan 1 Gbit/s</span>
+        <span><i class="sw" style="background:var(--me-violet)"></i>draadloos (mesh)</span><span><i class="sw" style="background:var(--me-danger)"></i>offline</span>
+        ${devView.clients ? `<span><i class="sw" style="background:var(--me-success)"></i>goed signaal</span><span><i class="sw" style="background:var(--me-warning)"></i>matig</span><span><i class="sw" style="background:var(--me-danger)"></i>zwak</span>` : ""}</div>`;
+    hydrateIcons(el);
   }
   UPDATERS.apparaten = function () {
+    const map = devView.mode === "map";
+    $("#dv-map").hidden = !map; $("#dv-list").hidden = map;
+    if (map) { renderTopo(); return; }
     const groups = [["gateway", "Gateway"], ["switch", "Switches"], ["ap", "Access points"]];
     $("#dv-list").innerHTML = groups.map(([t, label]) => {
       const ds = state.snap.devices.filter((d) => d.type === t);
@@ -550,6 +660,7 @@
     const uplinks = state.snap.devices.filter((d) => d.type !== "gateway");
     mount("clients", `
       <div class="page-head"><div><h1>Clients</h1><p class="subtitle" id="cl-sub"></p></div></div>
+      <section class="card paused-card" id="cl-paused" hidden></section>
       <div class="toolbar">
         <label class="search"><span class="sr-only">Zoeken</span>${icon("search")}<input class="input" id="cl-q" placeholder="Zoek op naam, IP, MAC of fabrikant" value="${esc(state.cq)}"></label>
         <div class="chips" role="group" aria-label="Type" id="cl-kind">${[["all", "Alle"], ["wifi", "Wifi"], ["wired", "Bedraad"], ["issues", "Met problemen"]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ckind === v}">${l}</button>`).join("")}</div>
@@ -571,7 +682,19 @@
     });
     $("#cl-table").addEventListener("keydown", (e) => { const r = e.target.closest("tr[data-id]"); if (r && e.key === "Enter") openDrawer("client", r.dataset.id, r); });
   }
+  async function loadPauses() {
+    let d;
+    try { d = await api("/api/pauses"); } catch (e) { return; }
+    const el = $("#cl-paused");
+    if (!el || current !== "clients") return;
+    el.hidden = !d.pauses.length;
+    el.innerHTML = `<div class="card-head"><h2 style="margin:0">${icon("power")}Gepauzeerd</h2><span class="muted">geen internet of netwerk tot de tijd om is</span></div>
+      ${d.pauses.map((p) => `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(p.name)}</div>
+        <div class="cell-sub">${p.until ? `tot ${stamp(p.until)} · nog ${dur(p.until - d.now)}` : "tot je hervat"} · sinds ${stamp(p.created)}</div></div>
+        <button class="btn small" data-resume="${esc(p.mac)}">${icon("check")}Hervatten</button></div>`).join("")}`;
+  }
   UPDATERS.clients = function () {
+    loadPauses();
     const dm = devByMac();
     const q = state.cq.trim().toLowerCase();
     const uplinkName = (c) => (c.wired ? `${dm[c.sw_mac]?.name || "–"} · poort ${c.sw_port ?? "?"}`
@@ -829,6 +952,7 @@
     });
     $("#sec-ignored").onclick = (e) => { secState.ignored = !secState.ignored; e.currentTarget.setAttribute("aria-pressed", secState.ignored); UPDATERS.beveiliging(); };
   }
+  $("#view").addEventListener("click", async (e) => { if (current === "clients") await pauseAction(e); });
   $("#view").addEventListener("click", async (e) => {   // één keer gebonden; #view blijft bestaan
     const g = e.target.closest("[data-ign]"), u = e.target.closest("[data-unign]");
     if ((!g && !u) || current !== "beveiliging") return;
@@ -1034,6 +1158,8 @@
         <section class="card" aria-labelledby="h-conn"><h2 id="h-conn">Koppeling</h2><div id="set-conn"></div></section>
         <section class="card" aria-labelledby="h-notify"><h2 id="h-notify">Meldingen versturen</h2>
           <p class="help" style="margin:-4px 0 4px">Krijg een bericht als er iets misgaat: via Home Assistant, ntfy, Discord, Slack of een eigen webhook.</p><div id="set-notify"></div></section>
+        <section class="card" aria-labelledby="h-mqtt"><h2 id="h-mqtt">Home Assistant (MQTT)</h2>
+          <p class="help" style="margin:-4px 0 4px">Zet de netwerkscore, meldingen, internetsnelheid, datagebruik en een speedtest-knop in Home Assistant. HA herkent alles vanzelf via MQTT-discovery.</p><div id="set-mqtt"></div></section>
         <section class="card" aria-labelledby="h-access"><h2 id="h-access">Toegang</h2><div id="set-access"></div></section>
         <section class="card" aria-labelledby="h-debug"><h2 id="h-debug">Probleemoplossing</h2><div id="set-debug"></div></section>
       </div>
@@ -1044,7 +1170,8 @@
       if (b.dataset.act === "change") { wiz.step = 2; wiz.address = ""; showWizard(2); }
       if (b.dataset.act === "demo") { wiz.step = 1; showWizard(1); }
     });
-    loadNotify(); loadAccess(); loadDebug();
+    loadNotify(); loadMqtt(); loadAccess(); loadDebug();
+    $("#set-mqtt").addEventListener("click", (e) => { const b = e.target.closest("[data-mq]"); if (b) mqttAction(b.dataset.mq, b); });
   }
   UPDATERS.instellingen = async function () {   // alleen de koppeling ververst; formulieren blijven staan
     const info = await api("/api/setup").catch(() => ({}));
@@ -1074,6 +1201,42 @@
       "Krijgt een POST met JSON: <code>event</code>, <code>severity</code>, <code>title</code>, <code>message</code>, <code>url</code> en <code>key</code>. Handig voor n8n of Node-RED."],
   };
   const nfy = { cfg: null, msg: {}, saving: false, banner: null };
+  // ---- Home Assistant via MQTT
+  async function loadMqtt() {
+    let m;
+    try { m = await api("/api/mqtt"); } catch (e) { return; }
+    const el = $("#set-mqtt");
+    if (!el) return;
+    const st = m.status || {};
+    const stTxt = !m.enabled ? "" : st.connected ? `<span class="badge ok">${icon("check")}Verbonden${st.last_publish ? ` · bijgewerkt ${ago(st.last_publish)} geleden` : ""}</span>`
+      : st.error ? `<span class="badge critical">${icon("octagon")}${esc(st.error)}</span>` : `<span class="badge info">verbinden…</span>`;
+    el.innerHTML = `<form class="form-grid" id="mq-form" onsubmit="return false">
+        <div class="field" style="grid-column:1/-1"><label class="check"><input type="checkbox" name="enabled" ${m.enabled ? "checked" : ""}> Koppeling aan</label></div>
+        <div class="field"><label for="mq-host">Broker</label><input class="input" id="mq-host" name="host" value="${esc(m.host)}" placeholder="bijv. 192.168.1.20 of homeassistant.local"></div>
+        <div class="field"><label for="mq-port">Poort</label><input class="input" id="mq-port" name="port" type="number" min="1" max="65535" value="${esc(m.port)}"></div>
+        <div class="field"><label for="mq-user">Gebruikersnaam</label><input class="input" id="mq-user" name="username" autocomplete="off" value="${esc(m.username)}"></div>
+        <div class="field"><label for="mq-pw">Wachtwoord</label><input class="input" id="mq-pw" name="password" type="password" autocomplete="new-password" placeholder="${m.has_password ? "opgeslagen (leeg laten = behouden)" : ""}"></div>
+      </form>
+      <div class="wiz-actions" style="margin-top:14px;align-items:center"><button class="btn primary" data-mq="save">Opslaan</button><button class="btn" data-mq="test">Verbinding testen</button><span id="mq-msg">${stTxt}</span></div>
+      <p class="help">Gebruik je de Mosquitto-add-on, maak dan in Home Assistant een gewone gebruiker aan voor Sonar en vul die hier in. Na het opslaan verschijnt <b>UniFi Sonar</b> als apparaat onder Instellingen → Apparaten → MQTT.</p>`;
+    hydrateIcons(el);
+  }
+  async function mqttAction(act, b) {
+    const f = $("#mq-form"), msg = $("#mq-msg");
+    const body = { enabled: f.enabled.checked, host: f.host.value, port: +f.port.value || 1883, username: f.username.value, password: f.password.value || null };
+    b.disabled = true;
+    try {
+      if (act === "test") {
+        const r = await post("/api/mqtt/test", body);
+        msg.innerHTML = r.ok ? `<span class="badge ok">${icon("check")}Broker bereikbaar en inloggen gelukt</span>` : `<span class="badge critical">${icon("octagon")}${esc(r.error)}</span>`;
+      } else {
+        await post("/api/mqtt/save", body);
+        msg.innerHTML = `<span class="badge ok">${icon("check")}Opgeslagen</span>`;
+        setTimeout(loadMqtt, 3000);
+      }
+    } catch (err) { msg.innerHTML = `<span class="badge critical">${icon("octagon")}${esc(err.message)}</span>`; }
+    b.disabled = false;
+  }
   async function loadNotify() {
     try { nfy.cfg = await api("/api/notify"); } catch (e) { nfy.cfg = null; }
     if (nfy.cfg && !nfy.cfg.base_url) nfy.cfg.base_url = location.origin;
@@ -1210,8 +1373,9 @@
   const EV = {
     device_offline: ["octagon", "bad"], device_online: ["check", "good"], device_reboot: ["power", "bad"], device_upgrade: ["check", "good"],
     port_down: ["plug", "bad"], port_up: ["plug", "good"], roam: ["roam", "roam"], client_join: ["wifi", "good"], client_leave: ["wifi", ""],
+    config: ["settings", "cfg"],
   };
-  const EKIND = { all: null, device: ["device_offline", "device_online", "device_reboot", "device_upgrade"], port: ["port_down", "port_up"], roam: ["roam"], client: ["client_join", "client_leave"] };
+  const EKIND = { all: null, config: ["config"], device: ["device_offline", "device_online", "device_reboot", "device_upgrade"], port: ["port_down", "port_up"], roam: ["roam"], client: ["client_join", "client_leave"] };
   function eventsHTML(evts) {
     let day = "", out = "";
     evts.forEach((e) => {
@@ -1225,7 +1389,7 @@
   function mountTimeline() {
     mount("tijdlijn", `
       <div class="page-head"><div><h1>Tijdlijn</h1><p class="subtitle">Wat er in je netwerk gebeurde: herstarts, links die wegvallen, roaming en clients die komen en gaan.</p></div>${rangeSeg("tl-range")}</div>
-      <div class="toolbar"><div class="chips" role="group" aria-label="Soort" id="tl-kind">${[["all", "Alles"], ["device", "Apparaten"], ["port", "Poorten"], ["roam", "Roaming"], ["client", "Clients"]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ekind === v}">${l}</button>`).join("")}</div></div>
+      <div class="toolbar"><div class="chips" role="group" aria-label="Soort" id="tl-kind">${[["all", "Alles"], ["config", "Instellingen"], ["device", "Apparaten"], ["port", "Poorten"], ["roam", "Roaming"], ["client", "Clients"]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ekind === v}">${l}</button>`).join("")}</div></div>
       <div class="card"><div class="events" id="tl-list"></div></div>`);
     bindRange("tl-range", UPDATERS.tijdlijn);
     $("#tl-kind").addEventListener("click", (e) => {
@@ -1430,7 +1594,9 @@
       : [["Verbonden met", conn], ["Band", `${c.band} GHz · kanaal ${c.channel}`], ["Standaard", proto(c.proto)], ["Signaal", signalBars(c.signal, c.band)], ["Ruis", `${nf(c.noise)} dBm`],
         ["Retries", `${nf(c.retry_pct, 1)}%`], ["Ervaring", nf(c.satisfaction)], ["Snelheid", `${nf(c.tx_rate_mbps)} / ${nf(c.rx_rate_mbps)} Mbit/s`],
         ["Met deze AP sinds", c.assoc_ts ? new Date(c.assoc_ts * 1000).toLocaleString("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : dur(c.uptime)]])}
-      ${c.wired ? "" : `<div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">${reconnectBtn(c.mac).replace('class="linkbtn"', 'class="btn"')}<span class="muted" style="font-size:12px">Koppelt het apparaat kort los; het kiest daarna zelf de beste AP.</span></div>`}</div>`;
+      <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        ${c.wired ? "" : reconnectBtn(c.mac).replace('class="linkbtn"', 'class="btn"')}${pauseMenu(c.mac)}
+        <span class="muted" style="font-size:12px">${c.wired ? "" : "Opnieuw verbinden: kort los, daarna kiest het zelf de beste AP. "}Pauzeren: geen internet of netwerk tot de tijd om is.</span></div></div>`;
     body += relatedIssues((i) => i.client_mac === c.mac);
     if (!c.wired) {
       body += `<div class="card"><div class="card-head"><h3>Signaalsterkte</h3>${rangeSeg("dr-range")}</div><div id="dr-ch-sig"></div></div>
@@ -1956,6 +2122,7 @@
   $("#drawer-close").onclick = closeDrawer;
   $("#scrim").onclick = closeDrawer;
   $("#drawer-body").addEventListener("click", async (e) => {
+    if (await pauseAction(e)) return;
     if (await approveAction(e)) return;
     if (await reconnectAction(e)) return;
     if (await muteAction(e)) return;
@@ -1976,7 +2143,7 @@
     }
   });
   let rt;
-  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); renderUsage(); } if (current === "wereld") renderWorld(); if (state.drawer) renderDrawer(); }, 250); });
+  window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); renderUsage(); } if (current === "wereld") renderWorld(); if (current === "apparaten" && devView.mode === "map") renderTopo(); if (state.drawer) renderDrawer(); }, 250); });
   window.addEventListener("hashchange", route);
   route();
   refresh();
