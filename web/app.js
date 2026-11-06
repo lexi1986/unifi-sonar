@@ -2196,6 +2196,11 @@
     svg.addEventListener("pointerup", end);
     svg.addEventListener("pointercancel", end);
   }
+  function globeButtons(z) {   // de knoppen volgen in globe-modus de globe, niet de platte kaart
+    const q = (k) => $(`#w-map [data-z=${k}]`);
+    if (!q("in")) return;
+    q("out").disabled = z <= 1.01; q("in").disabled = z >= 4.99; q("reset").disabled = false;   // reset draait ook terug
+  }
   function setFocus(cc) {
     if (world.focus === cc) return;
     world.focus = cc;
@@ -2335,7 +2340,9 @@
       },
       onLeave() { tip.classList.remove("show"); setFocus(null); },
       onClick(cc) { if (world.byCc?.[cc]) { tip.classList.remove("show"); setConn({ cc }, true); } },
+      onZoom: globeButtons,
     });
+    globeButtons(1);
     renderWorld();
   }
   function renderWorldLists() {

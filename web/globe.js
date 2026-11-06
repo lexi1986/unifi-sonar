@@ -6,6 +6,11 @@
   "use strict";
   const COL = { out: "#39D8F4", in: "#9C84FF", blocked: "#FB7185", text: "#F3F7FC", border: "#090E18", land: "#1D2A3D" };
   const LIFT = { out: 1, in: 0.8, blocked: 1.25 };   // verschillende hoogte zodat bogen niet samenvallen
+  const RGB = { out: "57,216,244", in: "156,132,255", blocked: "251,113,133" };
+  const SHIELD = 0.86;   // waar geblokkeerd verkeer op het schild vóór thuis stukloopt (deel van de boog)
+  const RIPPLE = 750;    // ms: rimpeling of uiteenspatten na een live puls
+  const seedOf = (s) => { let h = 7; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 9973; return h / 9973; };
+  const fade = (f) => Math.max(0, Math.min(1, f / 0.08, (1 - f) / 0.08));   // komeet komt zacht op en verdwijnt zacht
   const rad = Math.PI / 180;
   const reduce = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
@@ -101,6 +106,64 @@
       return { x, y, vis: !behind };
     }
 
+    // ------------------------------------------------------------ datastroom
+    function at(sp, f) {   // schermpunt op deel f (0–1) van een boog, of null achter de bol
+      const fi = Math.max(0, Math.min(1, f)) * (sp.length - 1), i = Math.floor(fi);
+      const a = sp[i], b = sp[Math.min(sp.length - 1, i + 1)];
+      if (!a.vis || !b.vis) return null;
+      const u = fi - i;
+      return [a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u];
+    }
+    function comet(sp, f, kind, size, alpha = 1, tail = 1) {
+      const rgb = RGB[kind], len = 0.1 * tail, N = 12;
+      let prev = null;
+      for (let j = N; j >= 0; j--) {   // staart: van dun en vaag naar dik en fel
+        const p = at(sp, f - (j / N) * len);
+        if (p && prev) {
+          const q = 1 - j / N;
+          ctx.strokeStyle = `rgba(${rgb},${(0.6 * q * q * alpha).toFixed(3)})`;
+          ctx.lineWidth = size * (0.2 + 0.8 * q);
+          ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(p[0], p[1]); ctx.stroke();
+        }
+        prev = p;
+      }
+      const h = at(sp, f);
+      if (!h) return;
+      const g = ctx.createRadialGradient(h[0], h[1], 0, h[0], h[1], size * 4.5);
+      g.addColorStop(0, `rgba(${rgb},${(0.6 * alpha).toFixed(3)})`); g.addColorStop(1, `rgba(${rgb},0)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(h[0], h[1], size * 4.5, 0, 6.283); ctx.fill();
+      ctx.fillStyle = `rgba(255,255,255,${(0.9 * alpha).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(h[0], h[1], size * 0.5, 0, 6.283); ctx.fill();
+    }
+    function burst(sp, q, alpha, scale) {   // geblokkeerd: schild licht op, vonken spatten weg
+      const p = at(sp, SHIELD), b = at(sp, SHIELD - 0.03);
+      if (!p || !b) return;
+      const dir = Math.atan2(p[1] - b[1], p[0] - b[0]), a = (1 - q) * alpha, rgb = RGB.blocked;
+      ctx.strokeStyle = `rgba(${rgb},${(0.9 * a).toFixed(3)})`; ctx.lineWidth = 1.6 * scale;
+      ctx.beginPath(); ctx.arc(p[0] + Math.cos(dir) * 5 * scale, p[1] + Math.sin(dir) * 5 * scale, 8 * scale, dir + Math.PI - 0.9, dir + Math.PI + 0.9); ctx.stroke();
+      ctx.lineWidth = scale;
+      for (let i = 0; i < 6; i++) {
+        const ang = dir + Math.PI + (i - 2.5) * 0.45, r1 = (3 + 9 * q) * scale, r2 = r1 + 4 * scale * (1 - q);
+        ctx.beginPath();
+        ctx.moveTo(p[0] + Math.cos(ang) * r1, p[1] + Math.sin(ang) * r1);
+        ctx.lineTo(p[0] + Math.cos(ang) * r2, p[1] + Math.sin(ang) * r2);
+        ctx.stroke();
+      }
+      const g = ctx.createRadialGradient(p[0], p[1], 0, p[0], p[1], 10 * scale);
+      g.addColorStop(0, `rgba(${rgb},${(0.5 * a).toFixed(3)})`); g.addColorStop(1, `rgba(${rgb},0)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p[0], p[1], 10 * scale, 0, 6.283); ctx.fill();
+    }
+    function ripple(sp, q, kind) {   // aankomst: twee ringen die uitdijen en vervagen
+      const p = at(sp, 1);
+      if (!p) return;
+      for (const [d, r] of [[0, 16], [0.25, 10]]) {
+        const u = Math.max(0, Math.min(1, (q - d) / (1 - d)));
+        if (!u) continue;
+        ctx.strokeStyle = `rgba(${RGB[kind]},${(0.8 * (1 - u)).toFixed(3)})`; ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.arc(p[0], p[1], 3 + r * u, 0, 6.283); ctx.stroke();
+      }
+    }
+
     // ------------------------------------------------------------ tekenen
     function draw(now = performance.now()) {
       const { w, h, dpr, R } = st;
@@ -149,21 +212,47 @@
       const homeLL = D && G.labels[D.home];
       // bogen
       if (D && homeLL) {
+        const anim = !reduce();
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";   // licht telt op: gloed zonder grijze randen
+        ctx.lineCap = "round"; ctx.lineJoin = "round";
         for (const a of D.arcs) {
           const pts = a.pts || (a.pts = arcPoints(a.kind === "out" ? homeLL : G.labels[a.cc], a.kind === "out" ? G.labels[a.cc] : homeLL, a.kind));
-          if (!pts) continue;
-          ctx.strokeStyle = COL[a.kind]; ctx.lineWidth = a.w; ctx.lineCap = "round";
-          ctx.globalAlpha = st.focus && st.focus !== a.cc ? 0.25 : 0.7;
-          if (a.kind === "blocked") ctx.setLineDash([4, 4]); else ctx.setLineDash([]);
+          a.sp = pts && pts.map((p) => screen(p, rotf));   // de punten lopen altijd in de stroomrichting
+          if (!a.sp) continue;
+          const sp = a.sp, rgb = RGB[a.kind], k = st.focus && st.focus !== a.cc ? 0.25 : 1;
           ctx.beginPath();
           let pen = false;
-          for (const p of pts) {
-            const s = screen(p, rotf);
+          for (const s of sp) {
             if (!s.vis) { pen = false; continue; }
             if (pen) ctx.lineTo(s.x, s.y); else { ctx.moveTo(s.x, s.y); pen = true; }
           }
+          // buitenste gloed, dan een kern die naar de bestemming toe feller wordt
+          ctx.strokeStyle = `rgba(${rgb},${(0.06 * k).toFixed(3)})`; ctx.lineWidth = a.w + 6; ctx.stroke();
+          const s0 = sp[0], s1 = sp[sp.length - 1], g = ctx.createLinearGradient(s0.x, s0.y, s1.x, s1.y);
+          g.addColorStop(0, `rgba(${rgb},${(0.06 * k).toFixed(3)})`); g.addColorStop(1, `rgba(${rgb},${(0.5 * k).toFixed(3)})`);
+          ctx.strokeStyle = g; ctx.lineWidth = Math.max(0.8, a.w * 0.7);
+          if (a.kind === "blocked") { ctx.setLineDash([3, 6]); ctx.lineDashOffset = anim ? -t * 14 : 0; }
           ctx.stroke();
+          ctx.setLineDash([]);
         }
+        // de datastroom: kometen die continu over elke boog lopen, meer naarmate er meer verkeer is
+        if (anim) {
+          for (const a of D.arcs) {
+            if (!a.sp) continue;
+            const dim = st.focus && st.focus !== a.cc;
+            const n = dim ? 1 : Math.max(1, Math.min(5, Math.round(a.w * 1.3)));
+            const dur = 2.4 + a.sp.length / 30;   // langere bogen duren langer: overal ongeveer even snel
+            for (let i = 0; i < n; i++) {
+              const f = (t / dur + i / n + (a.seed ??= seedOf(a.cc + a.kind))) % 1;
+              if (a.kind === "blocked") {   // loopt op het schild vóór thuis stuk
+                if (f < 0.8) comet(a.sp, (f / 0.8) * SHIELD, a.kind, 1.9, dim ? 0.3 : 1);
+                else burst(a.sp, (f - 0.8) / 0.2, dim ? 0.3 : 1, 0.7);
+              } else comet(a.sp, f, a.kind, 1.6 + a.w * 0.35, dim ? 0.3 : fade(f));
+            }
+          }
+        }
+        ctx.restore();
         ctx.setLineDash([]); ctx.globalAlpha = 1;
         // kleine landen zonder vorm: een stip
         for (const cc of D.dots) {
@@ -184,18 +273,20 @@
           ctx.beginPath(); ctx.arc(hs.x, hs.y, 4 + 10 * ph, 0, 6.283); ctx.stroke();
           ctx.fillStyle = COL.out; ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, 6.283); ctx.fill();
         }
-        // pulsen
-        st.pulses = st.pulses.filter((p) => now - p.t0 < p.dur);
+        // pulsen: een live verbinding als felle komeet, met een rimpeling waar hij aankomt
+        st.pulses = st.pulses.filter((p) => now - p.t0 < p.dur + RIPPLE);
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
         for (const p of st.pulses) {
-          const pts = arcPoints(p.dir === "out" ? homeLL : G.labels[p.cc], p.dir === "out" ? G.labels[p.cc] : homeLL, p.dir);
-          if (!pts) continue;
-          const f = Math.min(1, (now - p.t0) / p.dur), i = Math.min(pts.length - 1, Math.round(f * (pts.length - 1)));
-          const s = screen(pts[i], rotf);
-          if (!s.vis) continue;
-          ctx.shadowColor = COL[p.dir]; ctx.shadowBlur = 8; ctx.fillStyle = COL[p.dir];
-          ctx.beginPath(); ctx.arc(s.x, s.y, 2.6, 0, 6.283); ctx.fill();
-          ctx.shadowBlur = 0;
+          p.pts ||= arcPoints(p.dir === "out" ? homeLL : G.labels[p.cc], p.dir === "out" ? G.labels[p.cc] : homeLL, p.dir);
+          if (!p.pts) continue;
+          const sp = p.pts.map((x) => screen(x, rotf)), end = p.dir === "blocked" ? SHIELD : 1;
+          const f = (now - p.t0) / p.dur;
+          if (f < 1) comet(sp, f * end, p.dir, 3.2, 1, 2.2);
+          else if (p.dir === "blocked") burst(sp, (now - p.t0 - p.dur) / RIPPLE, 1, 1.4);
+          else ripple(sp, (now - p.t0 - p.dur) / RIPPLE, p.dir);
         }
+        ctx.restore();
         // namen bij ingezoomd
         if (R > st.R0 * 1.5) {
           ctx.font = "500 11px Inter, system-ui, sans-serif"; ctx.textAlign = "center";
