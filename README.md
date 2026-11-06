@@ -6,6 +6,8 @@ UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en a
 
 > Onofficieel hobbyproject. Niet verbonden aan of goedgekeurd door Ubiquiti. "UniFi" is een merk van Ubiquiti Inc.
 
+> **English:** UniFi Sonar is also available in English. Switch with **NL | EN** in the top bar or under *Settings → Language*. On first use it follows your browser language. The dashboard, the issues and advice, notifications and the sensor names in Home Assistant all switch along.
+
 ![Netwerkoverzicht van UniFi Sonar (demodata)](docs/screenshots/overzicht.png)
 
 ## Wat het kan
@@ -37,6 +39,7 @@ UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en a
 - **Pagina's** voor apparaten (radio's, poortenraster, PoE, historie), clients (signaal, retries, ervaring en roaming per apparaat), beveiliging (IPS, netwerkscheiding, wat er openstaat naar internet en VPN-servers die zichtbaar zijn voor scanners) en een tijdlijn met gebeurtenissen.
 - **Probleemoplossing:** één knop kopieert de versie, het controllertype en de laatste fouten, zonder adressen, namen of sleutels, zodat je die in een GitHub-issue kunt plakken.
 - **Demomodus** met een nagebootst netwerk, zodat je zonder controller kunt rondkijken.
+- **Nederlands of Engels:** wissel met **NL | EN** in de bovenbalk of onder *Instellingen → Taal*. De taal geldt voor het dashboard, alle meldingen en adviezen, berichten naar je telefoon en de sensornamen in Home Assistant. Meldingen en de tijdlijn worden in beide talen bewaard, dus ook de historie wisselt mee. Bij de eerste start volgt Sonar de taal van je browser.
 
 ## Screenshots
 

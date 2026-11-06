@@ -6,10 +6,16 @@ met per instelling een leesbare waarde. Door de vorige en de nieuwe vingerafdruk
 gebeurtenissen voor de tijdlijn, zoals "Wifi 'Thuis': Fast Roaming uit → aan".
 
 Wachtwoorden worden nooit opgeslagen: alleen een gezouten hash, zodat "Wachtwoord gewijzigd" kan.
+
+De vingerafdruk zelf is altijd Nederlands (anders zou wisselen van taal als wijziging tellen); de berichten
+op de tijdlijn worden in beide talen gemaakt.
 """
 from __future__ import annotations
 
 import hashlib
+import re
+
+from . import i18n
 
 SEP = "\t"
 SECRET = "#"   # waarden die met # beginnen zijn hashes: alleen 'gewijzigd' tonen
@@ -146,8 +152,37 @@ def device_fingerprint(devices: list[dict]) -> dict[str, str]:
     return fp
 
 
+SECTION_EN = {"VPN-server": "VPN server", "Netwerk": "Network", "Firewallregel": "Firewall rule", "Instelling": "Setting"}
+WORD_EN = {
+    "ingeschakeld": "enabled", "beveiliging": "security", "wachtwoord": "password", "banden": "bands",
+    "verborgen": "hidden", "gastnetwerk": "guest network", "netwerk": "network",
+    "handoff-suggesties (802.11v)": "handoff suggestions (802.11v)", "beveiligde beheerframes (PMF)":
+    "protected management frames (PMF)", "client-isolatie": "client isolation", "multicast-verbetering":
+    "multicast enhancement", "poort": "port", "IGMP-snooping": "IGMP snooping", "internettoegang": "internet access",
+    "regel": "rule", "bron": "source", "actie": "action", "automatische edge-detectie": "automatic edge detection",
+    "IPS-modus": "IPS mode", "SSH op apparaten": "SSH on devices", "status-ledjes": "status LEDs", "naam": "name",
+    "aan": "on", "uit": "off", "bestaat": "exists", "geen": "none", "iedereen": "anyone",
+    "voorkeur 5 GHz": "prefer 5 GHz", "gelijk verdelen": "balance equally",
+}
+_PARTS_EN = [("minimale snelheid", "minimum rate"), ("roaming-assistent", "roaming assistant"), ("kanaal", "channel"),
+             ("breedte", "width"), ("zendvermogen", "transmit power"), ("minimum-RSSI", "minimum RSSI")]
+
+
+def _en(text: str | None) -> str | None:
+    """Een label of waarde uit de (Nederlandse) vingerafdruk in het Engels."""
+    if not text:
+        return text
+    if text in WORD_EN:
+        return WORD_EN[text]
+    if text in SECTION_EN:
+        return SECTION_EN[text]
+    for nl, en in _PARTS_EN:
+        text = re.sub(rf"\b{re.escape(nl)}\b", en, text)
+    return text
+
+
 def diff(old: dict[str, str], new: dict[str, str], devnames: dict[str, str] | None = None) -> list[dict]:
-    """Verschillen als gebeurtenissen: [{entity_type, entity_id, message}]."""
+    """Verschillen als gebeurtenissen: [{entity_type, entity_id, message}], met message in beide talen."""
     devnames = devnames or {}
     out: list[dict] = []
     gone_entities = {k.rsplit(SEP, 1)[0] for k in old if k.endswith(SEP) and k not in new}
@@ -162,27 +197,38 @@ def diff(old: dict[str, str], new: dict[str, str], devnames: dict[str, str] | No
                 continue
             who = devnames.get(name, name)
             if label == "naam":
-                msg = f"Apparaat hernoemd: {a} → {b}"
+                msg = i18n.bi(f"Apparaat hernoemd: {a} → {b}", f"Device renamed: {a} → {b}")
             else:
-                msg = f"{who} · {label}: {a} → {b}"
+                msg = i18n.bi(f"{who} · {label}: {a} → {b}", f"{who} · {_en(label)}: {_en(a)} → {_en(b)}")
             out.append({"entity_type": "device", "entity_id": name, "message": msg})
             continue
         ent = f"{section}{SEP}{name}"
-        title = f"{section} '{name}'" if name not in ("", "?") and label else f"{section}: {name}" if not label else section
+        sec_en, name_en = _en(section), (_en(name) if section == "Instelling" else name)
+
+        def title(sec: str, nm: str) -> str:
+            return f"{sec} '{nm}'" if nm not in ("", "?") and label else f"{sec}: {nm}" if not label else sec
         if not label:   # het ding zelf
-            if ent in new_entities or (a is None and b):
-                msg = f"{section} '{name}' toegevoegd" if section != "Instelling" else f"{section} {name}: {b}"
+            if section == "Instelling":
+                if ent in new_entities or (a is None and b):
+                    msg = i18n.bi(f"{section} {name}: {b}", f"{sec_en} {name_en}: {_en(b)}")
+                elif ent in gone_entities or (b is None and a):
+                    msg = i18n.bi(f"{section} {name}: {a} → –", f"{sec_en} {name_en}: {_en(a)} → –")
+                else:
+                    msg = i18n.bi(f"{section} {name}: {a} → {b}", f"{sec_en} {name_en}: {_en(a)} → {_en(b)}")
+            elif ent in new_entities or (a is None and b):
+                msg = i18n.bi(f"{section} '{name}' toegevoegd", f"{sec_en} '{name}' added")
             elif ent in gone_entities or (b is None and a):
-                msg = f"{section} '{name}' verwijderd" if section != "Instelling" else f"{section} {name}: {a} → –"
+                msg = i18n.bi(f"{section} '{name}' verwijderd", f"{sec_en} '{name}' removed")
             else:
-                msg = f"{section} {name}: {a} → {b}"
+                msg = i18n.bi(f"{section} {name}: {a} → {b}", f"{sec_en} {name}: {_en(a)} → {_en(b)}")
             out.append({"entity_type": "site", "entity_id": ent, "message": msg})
             continue
         if ent in new_entities or ent in gone_entities:
             continue   # nieuwe/verwijderde dingen: één regel is genoeg
         if (a or "").startswith(SECRET) or (b or "").startswith(SECRET):
-            msg = f"{title}: {label} gewijzigd"
+            msg = i18n.bi(f"{title(section, name)}: {label} gewijzigd", f"{title(sec_en, name_en)}: {_en(label)} changed")
         else:
-            msg = f"{title}: {label} {a or '–'} → {b or '–'}"
+            msg = i18n.bi(f"{title(section, name)}: {label} {a or '–'} → {b or '–'}",
+                          f"{title(sec_en, name_en)}: {_en(label)} {_en(a) or '–'} → {_en(b) or '–'}")
         out.append({"entity_type": "site", "entity_id": ent, "message": msg})
     return out

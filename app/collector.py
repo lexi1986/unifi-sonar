@@ -12,7 +12,8 @@ from .config import Settings
 from .db import DB
 from .mock import MockNetwork
 from .notify import Notifier
-from . import changes
+from . import changes, i18n
+from .i18n import L
 from .ha_mqtt import HAMqtt
 from .unifi_client import (UnifiClient, config_from_raw, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
                            normalize_speedtests, wan_rates)
@@ -85,20 +86,21 @@ class Collector:
         pdev = {d["mac"]: d for d in prev["devices"]} if prev else {}
         pcli = {c["mac"]: c for c in prev["clients"]} if prev else {}
 
-        def ev(kind: str, etype: str, eid: str, msg: str) -> None:
-            events.append({"ts": ts, "kind": kind, "entity_type": etype, "entity_id": eid, "message": msg})
+        def ev(kind: str, etype: str, eid: str, nl: str, en: str) -> None:
+            events.append({"ts": ts, "kind": kind, "entity_type": etype, "entity_id": eid, "message": i18n.bi(nl, en)})
 
         for d in snap["devices"]:
             p = pdev.get(d["mac"])
             if p:
                 if p["state"] == "online" and d["state"] != "online":
-                    ev("device_offline", "device", d["mac"], f"{d['name']} is {d['state']}")
+                    ev("device_offline", "device", d["mac"], f"{d['name']} is {d['state']}", f"{d['name']} is {d['state']}")
                 elif p["state"] != "online" and d["state"] == "online":
-                    ev("device_online", "device", d["mac"], f"{d['name']} is weer online")
+                    ev("device_online", "device", d["mac"], f"{d['name']} is weer online", f"{d['name']} is back online")
                 if d["uptime"] and p["uptime"] and d["uptime"] + 120 < p["uptime"]:
-                    ev("device_reboot", "device", d["mac"], f"{d['name']} is herstart")
+                    ev("device_reboot", "device", d["mac"], f"{d['name']} is herstart", f"{d['name']} restarted")
                 if p.get("version") and d.get("version") and p["version"] != d["version"]:
-                    ev("device_upgrade", "device", d["mac"], f"{d['name']} bijgewerkt naar {d['version']}")
+                    ev("device_upgrade", "device", d["mac"], f"{d['name']} bijgewerkt naar {d['version']}",
+                       f"{d['name']} updated to {d['version']}")
             prad = {r["radio"]: r for r in (p or {}).get("radios", [])}
             for r in d["radios"]:
                 if r.get("retry_pct") is None:
@@ -116,10 +118,12 @@ class Collector:
                     port["rx_bps"] = rx * 8 / dt if rx is not None else None
                     port["tx_bps"] = tx * 8 / dt if tx is not None else None
                     if pp["up"] and not port["up"]:
-                        ev("port_down", "port", f"{d['mac']}#{port['idx']}", f"{d['name']} · {port['name']}: link weg")
+                        ev("port_down", "port", f"{d['mac']}#{port['idx']}", f"{d['name']} · {port['name']}: link weg",
+                           f"{d['name']} · {port['name']}: link lost")
                     elif not pp["up"] and port["up"]:
                         ev("port_up", "port", f"{d['mac']}#{port['idx']}",
-                           f"{d['name']} · {port['name']}: link op {int(port['speed'])} Mbit")
+                           f"{d['name']} · {port['name']}: link op {int(port['speed'])} Mbit",
+                           f"{d['name']} · {port['name']}: link up at {int(port['speed'])} Mbit")
         # Generieke poortnamen ("Port 7") aanvullen met wat erop aangesloten zit.
         attached = {(c["sw_mac"], c["sw_port"]): c["name"] for c in snap["clients"] if c["wired"]}
         attached.update({(d["uplink_mac"], d["uplink_port"]): d["name"] for d in snap["devices"] if d["uplink_mac"]})
@@ -127,7 +131,7 @@ class Collector:
             for port in d["ports"]:
                 who = attached.get((d["mac"], port["idx"]))
                 if who and port["name"].lower().startswith("port"):
-                    port["name"] = f"poort {port['idx']} ({who})"
+                    port["name"] = L(f"poort {port['idx']} ({who})", f"port {port['idx']} ({who})")
         devnames = {d["mac"]: d["name"] for d in snap["devices"]}
         for c in snap["clients"]:
             p = pcli.get(c["mac"], {})
@@ -136,17 +140,17 @@ class Collector:
                     c["retry_pct"] = _retry_pct(c["tx_packets"], c["tx_retries"],
                                                 p.get("tx_packets"), p.get("tx_retries"))
                 if p and p.get("ap_mac") and c["ap_mac"] and c["ap_mac"] != p["ap_mac"]:
-                    ev("roam", "client", c["mac"],
-                       f"{c['name']}: {devnames.get(p['ap_mac'], '?')} → {devnames.get(c['ap_mac'], '?')}")
+                    msg = f"{c['name']}: {devnames.get(p['ap_mac'], '?')} → {devnames.get(c['ap_mac'], '?')}"
+                    ev("roam", "client", c["mac"], msg, msg)
             else:
                 c["retry_pct"] = None
             if prev and not p:
-                ev("client_join", "client", c["mac"], f"{c['name']} verbonden")
+                ev("client_join", "client", c["mac"], f"{c['name']} verbonden", f"{c['name']} connected")
         if prev:
             cur = {c["mac"] for c in snap["clients"]}
             for mac, c in pcli.items():
                 if mac not in cur:
-                    ev("client_leave", "client", mac, f"{c['name']} niet meer verbonden")
+                    ev("client_leave", "client", mac, f"{c['name']} niet meer verbonden", f"{c['name']} disconnected")
         return events
 
     async def _collect_ips(self, ts: int, dt: float) -> None:
@@ -165,7 +169,7 @@ class Collector:
             self.optional["ips"] = str(e)
             return
         self.ips_available = rows is not None
-        self.optional["ips"] = None if rows is not None else "alleen via de uitgebreide API"
+        self.optional["ips"] = None if rows is not None else L("alleen via de uitgebreide API", "only via the extended API")
         if rows:
             n = self.db.store_ips(rows)
             if n:
@@ -187,7 +191,7 @@ class Collector:
             self.optional["flows"] = str(e)
             return
         self.flows_available = rows is not None
-        self.optional["flows"] = None if rows is not None else "alleen via de uitgebreide API"
+        self.optional["flows"] = None if rows is not None else L("alleen via de uitgebreide API", "only via the extended API")
         if rows:
             self.db.store_flows(rows)
 
@@ -206,7 +210,7 @@ class Collector:
             if raw is not None:
                 self.config = config_from_raw(raw)
                 self._track("fp_config", changes.config_fingerprint(raw, self._salt()), ts)
-            self.optional["config"] = None if raw is not None else "alleen via de uitgebreide API"
+            self.optional["config"] = None if raw is not None else L("alleen via de uitgebreide API", "only via the extended API")
         except Exception as e:  # noqa: BLE001 – optioneel
             log.warning("Instellingen ophalen: %s", e)
             self.optional["config"] = str(e)
@@ -235,7 +239,8 @@ class Collector:
                     continue
                 self.db.clear_pause(p["mac"])
                 self.db.add_events([{"ts": ts, "kind": "client_join", "entity_type": "client", "entity_id": p["mac"],
-                                     "message": f"{p['name']}: pauze voorbij, mag weer online"}])
+                                     "message": i18n.bi(f"{p['name']}: pauze voorbij, mag weer online",
+                                                        f"{p['name']}: pause over, back online")}])
 
     # ------------------------------------------------------------ wijzigingslog
     def _salt(self) -> str:
@@ -256,7 +261,7 @@ class Collector:
             evs = changes.diff(old, fp, names)
             self.db.add_events([{"ts": ts, "kind": "config", **e} for e in evs])
             if evs:
-                log.info("Wijzigingslog: %s", "; ".join(e["message"] for e in evs[:5]))
+                log.info("Wijzigingslog: %s", "; ".join(i18n.pick(e["message"], "nl") for e in evs[:5]))
         if old != fp:
             self.db.set_kv(key, fp)
 
@@ -270,7 +275,7 @@ class Collector:
             return self.mock.stat_device(0, [])[0]
         mac = self._gateway_mac()
         if not mac:
-            raise RuntimeError("Geen gateway gevonden")
+            raise RuntimeError(L("Geen gateway gevonden", "No gateway found"))
         return await self.client.gateway(mac)
 
     async def live_wan(self) -> dict:
@@ -300,20 +305,20 @@ class Collector:
                 self.db.store_speedtests([{"ts": st["rundate"], "down": st["down"], "up": st["up"],
                                            "latency": st["latency"], "server": ""}])
         elif s["running"] and s["started"] and time.time() - s["started"] > 180:
-            s.update(running=False, error="De test duurde te lang en is afgebroken.")
+            s.update(running=False, error=L("De test duurde te lang en is afgebroken.", "The test took too long and was stopped."))
 
     async def start_speedtest(self) -> None:
         s = self.speedtest
         if s["running"]:
-            raise RuntimeError("Er loopt al een speedtest.")
+            raise RuntimeError(L("Er loopt al een speedtest.", "A speed test is already running."))
         if s["started"] and time.time() - s["started"] < 60:
-            raise RuntimeError("Wacht een minuut tussen twee tests.")
+            raise RuntimeError(L("Wacht een minuut tussen twee tests.", "Wait a minute between two tests."))
         if self.mock:
             self.mock.start_speedtest(time.time())
         else:
             mac = self._gateway_mac()
             if not mac:
-                raise RuntimeError("Geen gateway gevonden")
+                raise RuntimeError(L("Geen gateway gevonden", "No gateway found"))
             await self.client.speedtest_start(mac)
         s.update(running=True, started=time.time(), error=None)
         self._live = None
@@ -376,7 +381,9 @@ class Collector:
         if not self.mock or ts >= time.time() - 120:   # demo: alleen bij echte metingen, niet tijdens het vullen
             await self.sync_speedtests()
             await self.sync_usage()
-        issues = rules.evaluate(snap, self.db, self.s.thresholds, ts)
+        # In beide talen, zodat wisselen van taal direct werkt en ook opgeloste meldingen meegaan.
+        tr = i18n.both(lambda: rules.evaluate(snap, self.db, self.s.thresholds, ts))
+        issues = i18n.merge_issues(tr["nl"], tr["en"])
         self.db.sync_issues(issues, ts)
         snap["issues"] = issues
         self.apply_mutes(snap, ts)
@@ -385,6 +392,12 @@ class Collector:
         self.last_ok = ts
         self.last_error = None
         return snap
+
+    async def language_changed(self) -> None:
+        """Andere taal gekozen: Home Assistant krijgt de sensornamen opnieuw in die taal."""
+        if self.ha.cfg.get("enabled"):
+            await self.ha.stop()
+            self.ha.start()
 
     def apply_mutes(self, snap: dict | None = None, now: int | None = None) -> None:
         """Markeer genegeerde issues en herbereken scores (ook direct na (de)negeren)."""

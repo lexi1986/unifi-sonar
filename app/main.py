@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,12 +35,14 @@ if not os.environ.get("NO_DOTENV"):   # tests/verse installaties: .env overslaan
     load_dotenv(ROOT / ".env")
 
 from . import VERSION  # noqa: E402
+from . import i18n  # noqa: E402
 from . import notify as notify_mod  # noqa: E402
 from . import ha_mqtt  # noqa: E402
 from . import setup as setup_mod  # noqa: E402
 from .collector import Collector  # noqa: E402
 from .config import Settings, Thresholds  # noqa: E402
 from .db import DB  # noqa: E402
+from .i18n import L  # noqa: E402
 from .rules import ips_ignored  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -54,6 +56,7 @@ class Runtime:
 
     def __init__(self) -> None:
         self.settings = Settings.load(DATA_DIR)
+        i18n.set_server(self.settings.language)
         self.db: DB | None = None
         self.collector: Collector | None = None
         self.task: asyncio.Task | None = None
@@ -141,15 +144,18 @@ def host_allowed(host: str) -> bool:
 async def guard(request: Request, call_next):
     host = request.headers.get("host", "")
     if not host_allowed(host):
-        return PlainTextResponse(
+        return PlainTextResponse(L(
             f"UniFi Sonar: onbekende hostnaam '{_hostname(host)}'.\n\nOpen het dashboard via het IP-adres en voeg deze "
-            "naam toe onder Instellingen → Toegang, of zet ALLOWED_HOSTS in de service (systemctl edit unifi-sonar).", 421)
+            "naam toe onder Instellingen → Toegang, of zet ALLOWED_HOSTS in de service (systemctl edit unifi-sonar).",
+            f"UniFi Sonar: unknown host name '{_hostname(host)}'.\n\nOpen the dashboard via its IP address and add this "
+            "name under Settings → Access, or set ALLOWED_HOSTS in the service (systemctl edit unifi-sonar)."), 421)
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         # Acties alleen vanaf het dashboard zelf, niet vanaf een andere website in dezelfde browser.
         origin = request.headers.get("origin")
         if request.headers.get("sec-fetch-site") == "cross-site" or (
                 origin and origin != "null" and urlsplit(origin).netloc.lower() != host.lower()):
-            return JSONResponse({"detail": "Verzoek van een andere website geweigerd."}, 403)
+            return JSONResponse({"detail": L("Verzoek van een andere website geweigerd.",
+                                             "Request from another website refused.")}, 403)
     return await call_next(request)
 
 
@@ -166,13 +172,31 @@ def _bucket(hours: float) -> int:
 @app.get("/api/status")
 def status():
     s = rt.settings
+    lang = {"language": i18n.current(), "language_set": bool(s.language)}
     if not s.configured or not rt.collector:
-        return {"setup_required": True, "mode": s.mode, "now": int(time.time())}
+        return {"setup_required": True, "mode": s.mode, "now": int(time.time()), **lang}
     c = rt.collector
-    return {"setup_required": False, "mode": s.mode, "source": (c.latest or {}).get("source"),
+    return {"setup_required": False, "mode": s.mode, "source": (c.latest or {}).get("source"), **lang,
             "last_ok": c.last_ok, "last_error": c.last_error,
             "poll_seconds": s.poll_seconds, "now": int(time.time()),
             "thresholds": vars(s.thresholds)}
+
+
+# ----------------------------------------------------------------------- taal
+class LanguageRequest(BaseModel):
+    language: Literal["nl", "en"]
+
+
+@app.post("/api/language")
+async def language_save(req: LanguageRequest):
+    """Taal van de app, ook voor meldingen naar buiten en de namen in Home Assistant."""
+    s = Settings.load(DATA_DIR)
+    s.language = rt.settings.language = req.language
+    s.save()
+    i18n.set_server(req.language)
+    if rt.collector:
+        await rt.collector.language_changed()
+    return {"ok": True, "language": req.language}
 
 
 # ----------------------------------------------------------------------- setup-wizard
@@ -195,7 +219,8 @@ async def _authorized(req: SetupRequest) -> None:
     if {req.api_key, req.current_api_key, req.password} & secrets:
         return
     await asyncio.sleep(1.5)   # raden ontmoedigen
-    raise HTTPException(403, "Vul ter bevestiging de huidige API-key (of het huidige wachtwoord) in.")
+    raise HTTPException(403, L("Vul ter bevestiging de huidige API-key (of het huidige wachtwoord) in.",
+                               "To confirm, enter the current API key (or the current password)."))
 
 
 @app.get("/api/setup")
@@ -219,7 +244,7 @@ async def setup_save(req: SetupRequest):
     result = await setup_mod.test_connection(req.address, req.api_key, req.username, req.password,
                                              req.site, req.verify_tls)
     if not result["ok"]:
-        raise HTTPException(400, result.get("error") or "Verbindingstest mislukt")
+        raise HTTPException(400, result.get("error") or L("Verbindingstest mislukt", "Connection test failed"))
     s = Settings.load(DATA_DIR)
     s.mode, s.controller_url, s.site, s.verify_tls = "live", result["url"], req.site or "default", req.verify_tls
     s.api_key, s.username, s.password = req.api_key, req.username, req.password
@@ -257,7 +282,7 @@ def access_save(req: AccessRequest):
         if not h:
             continue
         if not HOSTNAME_RE.match(h):
-            raise HTTPException(400, f"Geen geldige hostnaam: {h}")
+            raise HTTPException(400, L(f"Geen geldige hostnaam: {h}", f"Not a valid host name: {h}"))
         if h not in hosts:
             hosts.append(h)
     s = Settings.load(DATA_DIR)
@@ -291,9 +316,10 @@ def _mqtt_cfg(req: MqttSave) -> dict:
     old = ha_mqtt.config(rt.settings)
     host = req.host.strip()
     if req.enabled and not host:
-        raise HTTPException(400, "Vul het adres van de MQTT-broker in.")
+        raise HTTPException(400, L("Vul het adres van de MQTT-broker in.", "Enter the address of the MQTT broker."))
     if re.search(r"[\s/:]", host):
-        raise HTTPException(400, "Alleen de naam of het IP-adres van de broker, zonder http:// of poort.")
+        raise HTTPException(400, L("Alleen de naam of het IP-adres van de broker, zonder http:// of poort.",
+                                   "Only the name or IP address of the broker, without http:// or a port."))
     return {"enabled": req.enabled, "host": host, "port": req.port, "username": req.username.strip(),
             "password": req.password if req.password else old.get("password", ""),
             "prefix": req.prefix.strip().strip("/") or "homeassistant"}
@@ -337,7 +363,8 @@ def _channel(c: ChannelIn, stored: dict[str, dict]) -> dict:
     old = stored.get(c.id, {})
     url = c.url.strip() or old.get("url", "")
     if url and not re.match(r"^https?://[^\s/]+", url):
-        raise HTTPException(400, "Een webhook-adres begint met http:// of https://")
+        raise HTTPException(400, L("Een webhook-adres begint met http:// of https://",
+                                   "A webhook address starts with http:// or https://"))
     token = old.get("token", "") if c.token is None else c.token.strip()
     return {"id": c.id if c.id in stored else notify_mod.new_id(), "kind": c.kind, "name": c.name.strip(), "url": url,
             "token": token, "min_severity": c.min_severity, "resolved": c.resolved, "enabled": c.enabled}
@@ -358,10 +385,11 @@ def notify_save(req: NotifySave):
     stored = {c["id"]: c for c in notify_mod.config(rt.settings)["channels"]}
     channels = [_channel(c, stored) for c in req.channels]
     if any(not c["url"] for c in channels):
-        raise HTTPException(400, "Vul bij elk kanaal een webhook-adres in.")
+        raise HTTPException(400, L("Vul bij elk kanaal een webhook-adres in.", "Enter a webhook address for each channel."))
     base = req.base_url.strip().rstrip("/")
     if base and not re.match(r"^https?://", base):
-        raise HTTPException(400, "Het dashboard-adres begint met http:// of https://")
+        raise HTTPException(400, L("Het dashboard-adres begint met http:// of https://",
+                                   "The dashboard address starts with http:// or https://"))
     s = Settings.load(DATA_DIR)
     s.notify = {"channels": channels, "delay_min": req.delay_min, "digest_hour": req.digest_hour, "base_url": base}
     s.save()
@@ -387,14 +415,14 @@ async def notify_test(req: NotifyTest):
     stored = {c["id"]: c for c in notify_mod.config(rt.settings)["channels"]}
     ch = _channel(req.channel, stored)
     if not ch["url"]:
-        raise HTTPException(400, "Vul een webhook-adres in.")
+        raise HTTPException(400, L("Vul een webhook-adres in.", "Enter a webhook address."))
     msg = collector.notifier.test_msg()
     if req.base_url:
         msg["url"] = req.base_url.rstrip("/") + "/#/issues"
     try:
         await collector.notifier.send(ch, msg)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"Versturen mislukt: {e}") from e
+        raise HTTPException(502, L(f"Versturen mislukt: {e}", f"Sending failed: {e}")) from e
     return {"ok": True}
 
 
@@ -430,15 +458,18 @@ def debug_info():
     s, c = rt.settings, rt.collector
     lines = [f"UniFi Sonar {VERSION} ({_git_version()}) · Python {platform.python_version()} · {platform.system()} {platform.machine()}"]
     if not c:
-        lines.append(f"Modus: {s.mode or 'nog niet ingesteld'}")
+        lines.append(L("Modus: ", "Mode: ") + (s.mode or L("nog niet ingesteld", "not set up yet")))
         return {"text": "\n".join(lines)}
     snap = c.latest or {}
     port = urlsplit(s.controller_url).port if s.controller_url else None
-    lines.append(f"Modus: {s.mode} · bron: {snap.get('source') or '?'} · elke {s.poll_seconds} s · bewaren {s.retention_days} d")
+    lines.append(L(f"Modus: {s.mode} · bron: {snap.get('source') or '?'} · elke {s.poll_seconds} s · bewaren {s.retention_days} d",
+                   f"Mode: {s.mode} · source: {snap.get('source') or '?'} · every {s.poll_seconds} s · keep {s.retention_days} d"))
     if s.mode == "live":
         host = urlsplit(s.controller_url).hostname or ""
-        kind = "IP-adres" if re.match(r"^[\d.]+$|:", host) else "hostnaam"
-        lines.append(f"Controller: {kind}, poort {port or 443}, certificaat controleren: {'ja' if s.verify_tls else 'nee'}")
+        kind = L("IP-adres", "IP address") if re.match(r"^[\d.]+$|:", host) else L("hostnaam", "host name")
+        yes = L("ja", "yes") if s.verify_tls else L("nee", "no")
+        lines.append(L(f"Controller: {kind}, poort {port or 443}, certificaat controleren: {yes}",
+                       f"Controller: {kind}, port {port or 443}, verify certificate: {yes}"))
     si = c.sysinfo or {}
     if si.get("network_version"):
         lines.append(f"UniFi Network: {si['network_version']}" + (f" (build {si['build']})" if si.get("build") else ""))
@@ -446,41 +477,45 @@ def debug_info():
     by_type: dict[str, list[str]] = {}
     for d in devs:
         by_type.setdefault(d["type"], []).append(d["model"] or "?")
-    lines.append("Apparaten: " + (" · ".join(f"{len(v)} {k} ({', '.join(sorted(set(v)))})" for k, v in sorted(by_type.items())) or "geen"))
+    lines.append(L("Apparaten: ", "Devices: ") + (" · ".join(f"{len(v)} {k} ({', '.join(sorted(set(v)))})"
+                                                       for k, v in sorted(by_type.items())) or L("geen", "none")))
     states = {d["state"] for d in devs if d["state"] != "online"}
     if states:
-        lines.append("Niet online: " + ", ".join(sorted(states)))
+        lines.append(L("Niet online: ", "Not online: ") + ", ".join(sorted(states)))
     cl = snap.get("clients", [])
-    lines.append(f"Clients: {sum(not x['wired'] for x in cl)} wifi · {sum(x['wired'] for x in cl)} bedraad")
-    opt = {"IPS": c.optional.get("ips", "nog niet geprobeerd" if c.ips_available is None else None),
-           "instellingen": c.optional.get("config", None if c.config else "nog niet geprobeerd")}
-    lines.append("Extra gegevens: " + " · ".join(f"{k} {'ok' if v is None else scrub(v)[:80]}" for k, v in opt.items()))
+    lines.append(f"Clients: {sum(not x['wired'] for x in cl)} wifi · {sum(x['wired'] for x in cl)} " + L("bedraad", "wired"))
+    untried = L("nog niet geprobeerd", "not tried yet")
+    opt = {"IPS": c.optional.get("ips", untried if c.ips_available is None else None),
+           L("instellingen", "settings"): c.optional.get("config", None if c.config else untried)}
+    lines.append(L("Extra gegevens: ", "Extra data: ") + " · ".join(f"{k} {'ok' if v is None else scrub(v)[:80]}" for k, v in opt.items()))
     errs = {k: scrub(v)[:160] for k, v in (getattr(c.client, "errors", {}) or {}).items()} if c.client else {}
     if c.last_error:
-        lines.append(f"Laatste fout: {scrub(c.last_error)[:200]}")
+        lines.append(L("Laatste fout: ", "Last error: ") + scrub(c.last_error)[:200])
     for k, v in errs.items():
-        lines.append(f"Fout bron {k}: {v}")
+        lines.append(L(f"Fout bron {k}: {v}", f"Error source {k}: {v}"))
     if c.last_ok:
-        lines.append(f"Laatste meting: {int(time.time() - c.last_ok)} s geleden")
+        lines.append(L(f"Laatste meting: {int(time.time() - c.last_ok)} s geleden", f"Last poll: {int(time.time() - c.last_ok)} s ago"))
     iss = [i for i in snap.get("issues", []) if not i.get("group")]
     kinds: dict[str, int] = {}
     for i in iss:
         kinds[i["key"].split(":")[0]] = kinds.get(i["key"].split(":")[0], 0) + 1
     h = snap.get("health") or {}
-    lines.append(f"Meldingen: {len(iss)} (score {h.get('score', '?')}) · " + ", ".join(f"{k} {n}" for k, n in sorted(kinds.items())))
+    lines.append(L("Meldingen: ", "Issues: ") + f"{len(iss)} (score {h.get('score', '?')}) · "
+                 + ", ".join(f"{k} {n}" for k, n in sorted(kinds.items())))
     default = vars(Thresholds())
     changed = [f"{k}={v:g}" for k, v in vars(s.thresholds).items() if v != default[k]]
-    lines.append("Aangepaste drempels: " + (", ".join(changed) if changed else "geen"))
+    lines.append(L("Aangepaste drempels: ", "Changed thresholds: ") + (", ".join(changed) if changed else L("geen", "none")))
     ncfg = notify_mod.config(s)
     if ncfg["channels"]:
         st = c.notifier.status
-        lines.append("Meldingen versturen: " + ", ".join(
-            f"{ch['kind']} ({'fout: ' + scrub(st[ch['id']]['error'])[:60] if st.get(ch['id'], {}).get('error') else 'ok'})"
+        lines.append(L("Meldingen versturen: ", "Sending notifications: ") + ", ".join(
+            f"{ch['kind']} ({L('fout: ', 'error: ') + scrub(st[ch['id']]['error'])[:60] if st.get(ch['id'], {}).get('error') else 'ok'})"
             for ch in ncfg["channels"]))
     try:
         size = Path(s.database).stat().st_size / 1e6
         oldest = rt.db.q("SELECT MIN(ts) t FROM wan_samples")[0]["t"]
-        lines.append(f"Database: {size:.0f} MB, historie van {round((time.time() - oldest) / 86400, 1) if oldest else 0} dagen")
+        days = round((time.time() - oldest) / 86400, 1) if oldest else 0
+        lines.append(L(f"Database: {size:.0f} MB, historie van {days} dagen", f"Database: {size:.0f} MB, {days} days of history"))
     except (OSError, TypeError):
         pass
     return {"text": "\n".join(lines)}
@@ -527,7 +562,7 @@ def me(request: Request, ip: str | None = Query(None, max_length=45)):
     up = devs.get(c.get("ap_mac") or c.get("sw_mac") or "", {})
     lt = time.localtime()
     day0 = int(time.mktime(lt[:3] + (0, 0, 0, 0, 0, -1)))
-    issues = [{"title": i["title"], "severity": i["severity"]} for i in snap.get("issues", [])
+    issues = [{"title": i18n.issue(i)["title"], "severity": i["severity"]} for i in snap.get("issues", [])
               if i.get("client_mac") == c["mac"] and not i.get("muted")]
     return {"found": True, "ip": addr, "demo": collector.mock is not None and addr != c.get("ip"),
             "client": {k: c.get(k) for k in ("mac", "name", "ip", "vendor", "wired", "ssid", "band", "channel", "proto",
@@ -557,7 +592,7 @@ async def live_wan():
     try:
         live = await collector.live_wan()
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(503, f"Live-meting niet beschikbaar: {e}") from e
+        raise HTTPException(503, L(f"Live-meting niet beschikbaar: {e}", f"Live reading not available: {e}")) from e
     return {**live, "now": time.time(), "test": collector.speedtest}
 
 
@@ -596,14 +631,14 @@ def patterns_device(mac: str, days: int = Query(7, ge=1, le=31)):
 def snapshot():
     collector, db = _need()
     if not collector.latest:
-        raise HTTPException(503, collector.last_error or "Nog geen data opgehaald")
-    return collector.latest
+        raise HTTPException(503, collector.last_error or L("Nog geen data opgehaald", "No data fetched yet"))
+    return {**collector.latest, "issues": i18n.issues(collector.latest.get("issues", []))}
 
 
 @app.get("/api/issues")
 def issues(state: str = Query("open", pattern="^(open|all)$")):
     collector, db = _need()
-    return db.issues(open_only=state == "open", now=int(time.time()))
+    return i18n.issues(db.issues(open_only=state == "open", now=int(time.time())))
 
 
 class MuteRequest(BaseModel):
@@ -616,9 +651,10 @@ def mute(req: MuteRequest):
     collector, db = _need()
     now = int(time.time())
     known = {i["key"]: i for i in (collector.latest or {}).get("issues", [])}
-    title = known.get(req.key, {}).get("title") or next((i["title"] for i in db.issues(False, 1000) if i["key"] == req.key), None)
-    if title is None:
-        raise HTTPException(404, "Onbekende melding")
+    found = known.get(req.key) or next((i for i in db.issues(False, 1000) if i["key"] == req.key), None)
+    if found is None:
+        raise HTTPException(404, L("Onbekende melding", "Unknown issue"))
+    title = i18n.bi(found["title"], (found.get("en") or {}).get("title") or found["title"])
     db.mute(req.key, now + int(req.days * 86400) if req.days else None, now, title)
     collector.apply_mutes()
     return {"ok": True}
@@ -630,7 +666,7 @@ def approve(mac: str):
     collector, db = _need()
     mac = mac.lower()
     if not db.approve_client(mac):
-        raise HTTPException(404, "Onbekend apparaat")
+        raise HTTPException(404, L("Onbekend apparaat", "Unknown device"))
     snap = collector.latest
     if snap:
         snap["issues"] = [i for i in snap["issues"] if i["key"] != f"new_device:{mac}"]
@@ -645,13 +681,13 @@ async def reconnect(mac: str):
     collector, db = _need()
     c = next((x for x in (collector.latest or {}).get("clients", []) if x["mac"] == mac.lower()), None)
     if not c or c["wired"]:
-        raise HTTPException(404, "Geen verbonden wifi-client met dit MAC-adres")
+        raise HTTPException(404, L("Geen verbonden wifi-client met dit MAC-adres", "No connected wifi client with this MAC address"))
     if collector.mock:
         return {"ok": True, "demo": True}
     try:
         await collector.client.reconnect(c["mac"])
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"UniFi weigerde: {e}") from e
+        raise HTTPException(502, L(f"UniFi weigerde: {e}", f"UniFi refused: {e}")) from e
     return {"ok": True}
 
 
@@ -672,17 +708,18 @@ async def pause(mac: str, req: PauseRequest):
     mac = mac.lower()
     now = int(time.time())
     if req.until is not None and req.until <= now:
-        raise HTTPException(400, "Het eindtijdstip ligt in het verleden")
+        raise HTTPException(400, L("Het eindtijdstip ligt in het verleden", "The end time is in the past"))
     c = next((x for x in (collector.latest or {}).get("clients", []) if x["mac"] == mac), None)
     name = c["name"] if c else next((p["name"] for p in db.pauses() if p["mac"] == mac), mac)
     try:
         await collector.set_blocked(mac, True)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"UniFi weigerde: {e}") from e
+        raise HTTPException(502, L(f"UniFi weigerde: {e}", f"UniFi refused: {e}")) from e
     db.set_pause(mac, req.until, now, name)
-    until = time.strftime("%d-%m %H:%M", time.localtime(req.until)) if req.until else "je hervat"
+    until = time.strftime("%d-%m %H:%M", time.localtime(req.until)) if req.until else None
     db.add_events([{"ts": now, "kind": "client_leave", "entity_type": "client", "entity_id": mac,
-                    "message": f"{name}: internet gepauzeerd tot {until}"}])
+                    "message": i18n.bi(f"{name}: internet gepauzeerd tot {until or 'je hervat'}",
+                                       f"{name}: internet paused until {until or 'you resume'}")}])
     return {"ok": True, "demo": bool(collector.mock)}
 
 
@@ -694,11 +731,11 @@ async def resume(mac: str):
     try:
         await collector.set_blocked(mac, False)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"UniFi weigerde: {e}") from e
+        raise HTTPException(502, L(f"UniFi weigerde: {e}", f"UniFi refused: {e}")) from e
     db.clear_pause(mac)
     if p:
         db.add_events([{"ts": int(time.time()), "kind": "client_join", "entity_type": "client", "entity_id": mac,
-                        "message": f"{p['name']}: pauze opgeheven"}])
+                        "message": i18n.bi(f"{p['name']}: pauze opgeheven", f"{p['name']}: pause lifted")}])
     return {"ok": True}
 
 
@@ -738,12 +775,12 @@ class IpsIgnore(BaseModel):
 def ips_ignore(req: IpsIgnore):
     collector, db = _need()
     if req.ip is None and req.sid is None:
-        raise HTTPException(400, "Kies een adres, een regel of allebei.")
+        raise HTTPException(400, L("Kies een adres, een regel of allebei.", "Choose an address, a rule or both."))
     if req.ip:
         try:
             ipaddress.ip_address(req.ip)
         except ValueError as e:
-            raise HTTPException(400, "Geen geldig IP-adres") from e
+            raise HTTPException(400, L("Geen geldig IP-adres", "Not a valid IP address")) from e
     db.add_ips_ignore(req.ip or None, req.sid, req.label, int(time.time()))
     return {"ok": True}
 
@@ -777,6 +814,16 @@ def _exposure(collector, rows: list[dict]) -> dict | None:
 
 
 # ---------------------------------------------------------------- wereldkaart
+STORED_EN = {"Geblokkeerd": "Blocked", "Regioblokkade": "Region block", "Firewallregel": "Firewall rule",
+             "Onbekende regel": "Unknown rule", "Onbekend": "Unknown", "IPS-regel": "IPS rule"}
+
+
+def _st(v: str | None, default: str | None = None) -> str | None:
+    """Vaste teksten die zo in de database staan (blokkeerreden, onbekende IPS-regel) in de actieve taal."""
+    v = v or default
+    return STORED_EN.get(v, v) if v and i18n.current() == "en" else v
+
+
 def _flow_names(collector) -> dict:
     snap = collector.latest or {}
     return {c["mac"]: c["name"] for c in snap.get("clients", []) if c.get("name") and c["name"] != c["mac"]}
@@ -795,7 +842,7 @@ def _namer(collector):
             return name
         if ip and ip in by_ip:
             return by_ip[ip]
-        return ip if ip and _is_local_ip(ip) else "je gateway (WAN)"
+        return ip if ip and _is_local_ip(ip) else L("je gateway (WAN)", "your gateway (WAN)")
     return target
 
 
@@ -803,10 +850,10 @@ def _blocked_details(collector, db, since: int) -> dict[str, list[dict]]:
     """Per land: wat er tegengehouden werd, gericht op welk apparaat en welke poort, vanaf hoeveel adressen."""
     target = _namer(collector)
 
-    rows = [{"cc": f["cc"], "by": f["reason"] or "Geblokkeerd", "what": f["service"] or "Onbekend", "port": f["port"],
+    rows = [{"cc": f["cc"], "by": _st(f["reason"], "Geblokkeerd"), "what": _st(f["service"], "Onbekend"), "port": f["port"],
              "target": target(f["client_name"], f["client_ip"]), "src": f["remote_ip"], "ts": f["ts"]}
             for f in db.blocked_flows(since) if f["cc"]]
-    rows += [{"cc": e["src_country"], "by": "IPS", "what": e.get("signature") or "IPS-regel", "port": e.get("dst_port"),
+    rows += [{"cc": e["src_country"], "by": "IPS", "what": _st(e.get("signature"), "IPS-regel"), "port": e.get("dst_port"),
               "target": target(e.get("dst_name"), e.get("dst_ip")), "src": e.get("src_ip"), "ts": e["ts"]}
              for e in db.ips_events(since, "external") if e.get("src_country")]
     out: dict[str, dict[tuple, dict]] = {}
@@ -899,7 +946,7 @@ def world_connections(hours: float = Query(1, gt=0, le=48), dir: str = Query("al
     rows, total = db.connections(since, dirs, cc, q, sort, limit)
     target, names = _namer(collector), _flow_names(collector)
     for r in rows:
-        r["by"] = (r.pop("reason") or "Geblokkeerd") if r["dir"] == "blocked" else None
+        r["by"] = _st(r.pop("reason"), "Geblokkeerd") if r["dir"] == "blocked" else None
         r["client"] = names.get(r["client_mac"], r["client"]) if r["client_mac"] else r["client"]
         if r["dir"] in ("in", "blocked"):
             r["client"] = target(r["client"], r["client_ip"])
@@ -912,7 +959,7 @@ def world_connections(hours: float = Query(1, gt=0, le=48), dir: str = Query("al
             g = groups.setdefault((e.get("src_country"), e.get("signature"), e.get("dst_port"), e.get("dst_ip")), {
                 "dir": "blocked", "cc": e.get("src_country"), "client_mac": None,
                 "client": target(e.get("dst_name"), e.get("dst_ip")), "dest": None, "port": e.get("dst_port"),
-                "service": e.get("signature"), "by": "IPS", "n": 0, "up": 0, "down": 0, "bytes": 0,
+                "service": _st(e.get("signature")), "by": "IPS", "n": 0, "up": 0, "down": 0, "bytes": 0,
                 "first": e["ts"], "last": e["ts"], "remotes": set()})
             g["n"] += 1
             g["first"], g["last"] = min(g["first"], e["ts"]), max(g["last"], e["ts"])
@@ -941,7 +988,7 @@ def world_live(after: int = 0, limit: int = Query(40, ge=1, le=200)):
         r.pop("client_ip", None)
     for e in db.ips_events(after, "external")[:limit]:
         rows.append({"id": e["id"], "ts": e["ts"], "dir": "blocked", "action": "blocked", "cc": e.get("src_country"),
-                     "port": e.get("dst_port"), "domain": None, "service": e.get("signature"),
+                     "port": e.get("dst_port"), "domain": None, "service": _st(e.get("signature")),
                      "client_name": e.get("dst_name"), "up": 0, "down": 0})
     rows.sort(key=lambda r: -r["ts"])
     return {"flows": rows[:limit], "now": int(time.time())}
@@ -965,6 +1012,7 @@ def ips(hours: float = 24, scope: str = Query("all", pattern="^(all|internal|ext
     names.update({d["ip"]: d["name"] for d in (collector.latest or {}).get("devices", []) if d.get("ip")})
     from .unifi_client import _name
     for e in rows:   # namen opschonen en aanvullen uit de actuele snapshot
+        e["signature"] = _st(e["signature"])
         e["src_name"], e["dst_name"] = _name(e["src_name"], e["src_ip"]), _name(e["dst_name"], e["dst_ip"])
         if e["internal"] and e["src_name"] in (None, e["src_ip"]):
             e["src_name"] = names.get(e["src_ip"], e["src_ip"])
@@ -1043,8 +1091,15 @@ def history_client(mac: str, hours: float = 6):
 
 
 @app.get("/")
-def index():
-    return FileResponse(ROOT / "web" / "index.html")
+def index(request: Request):
+    """De pagina met de taal erin: de instelling, of (nog niet gekozen) die van de browser."""
+    lang = i18n.normalize(rt.settings.language)
+    if not lang:
+        accept = request.headers.get("accept-language", "").lower()
+        lang = "nl" if not accept or accept.startswith("nl") else "en"
+    html = (ROOT / "web" / "index.html").read_text()
+    html = html.replace('<html lang="nl">', f'<html lang="{lang}" data-lang-set="{1 if rt.settings.language else 0}">', 1)
+    return HTMLResponse(html)
 
 
 app.mount("/", StaticFiles(directory=ROOT / "web"), name="web")

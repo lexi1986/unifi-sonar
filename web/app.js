@@ -1,6 +1,13 @@
 /* UniFi Sonar — dashboard (vanilla JS, geen build-stap) */
 (function () {
   "use strict";
+  // ------------------------------------------------------------------ taal: L("Nederlands", "English")
+  const LANG = document.documentElement.lang === "en" ? "en" : "nl";
+  const L = (nl, en) => (LANG === "en" ? en : nl);
+  const LOC = L("nl-NL", "en-GB");
+  // Kiezen: in de bovenbalk (NL/EN) en bij Instellingen. Geldt voor de hele app, dus ook meldingen en Home Assistant.
+  const langSwitch = (full) => `<div class="seg lang-seg" role="group" aria-label="${L("Taal", "Language")}">${[["nl", "Nederlands", "NL"], ["en", "English", "EN"]]
+    .map(([k, name, code]) => `<button type="button" data-lang="${k}" lang="${k}" aria-pressed="${LANG === k}"${full ? "" : ` title="${name}" aria-label="${name}"`}>${full ? name : code}</button>`).join("")}</div>`;
   const C = { cyan: "#39D8F4", violet: "#9C84FF", mint: "#48E0B4", amber: "#FFBE5C", rose: "#FB7185" };
   const BAND_COLOR = { "2.4": C.cyan, "5": C.violet, "6": C.mint };
 
@@ -41,33 +48,35 @@
   };
   const icon = (n, cls = "") => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ""}</svg>`;
   const devIcon = (t) => ({ gateway: "router", switch: "switch", ap: "ap" }[t] || "router");
-  const SOURCE_LABEL = { "legacy-key": "uitgebreide API", "legacy-login": "uitgebreide API (account)", integration: "officiële API (beperkt)", mock: "demodata" };
-  const SEV = { critical: ["Kritiek", "octagon"], warning: ["Waarschuwing", "alert"], info: ["Info", "info"] };
-  const CAT = { wifi: "Wifi", switch: "Switch", device: "Apparaat", wan: "Internet", security: "Beveiliging", config: "Configuratie", new: "Nieuw apparaat" };
-  const DAYS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
+  const SOURCE_LABEL = { "legacy-key": L("uitgebreide API", "extended API"), "legacy-login": L("uitgebreide API (account)", "extended API (account)"),
+    integration: L("officiële API (beperkt)", "official API (limited)"), mock: L("demodata", "demo data") };
+  const SEV = { critical: [L("Kritiek", "Critical"), "octagon"], warning: [L("Waarschuwing", "Warning"), "alert"], info: ["Info", "info"] };
+  const CAT = { wifi: "Wifi", switch: "Switch", device: L("Apparaat", "Device"), wan: "Internet", security: L("Beveiliging", "Security"),
+    config: L("Configuratie", "Configuration"), new: L("Nieuw apparaat", "New device") };
+  const DAYS = L("ma di wo do vr za zo", "Mon Tue Wed Thu Fri Sat Sun").split(" ");
 
   // ------------------------------------------------------------------ helpers
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const nf = (v, d = 0) => (v == null || isNaN(v) ? "–" : Number(v).toLocaleString("nl-NL", { maximumFractionDigits: d, minimumFractionDigits: d }));
+  const nf = (v, d = 0) => (v == null || isNaN(v) ? "–" : Number(v).toLocaleString(LOC, { maximumFractionDigits: d, minimumFractionDigits: d }));
   function dur(sec) {
     if (sec == null) return "–";
     sec = Math.max(0, Math.round(sec));
     const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
-    if (d) return `${d} d ${h} u`;
-    if (h) return `${h} u ${m} m`;
+    if (d) return L(`${d} d ${h} u`, `${d} d ${h} h`);
+    if (h) return L(`${h} u ${m} m`, `${h} h ${m} m`);
     return m ? `${m} m` : `${sec} s`;
   }
   const ago = (ts) => (ts ? dur(Date.now() / 1000 - ts) : "–");
-  const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+  const hhmm = (ts) => new Date(ts * 1000).toLocaleTimeString(LOC, { hour: "2-digit", minute: "2-digit" });
   // "14:32", "gisteren 14:32" of "ma 3 nov 14:32"
   const stamp = (ts) => {
     const d = new Date(ts * 1000), day = (x) => new Date(x).setHours(0, 0, 0, 0);
     const diff = Math.round((day(Date.now()) - day(d)) / 86400000);
-    const pre = diff === 0 ? "" : diff === 1 ? "gisteren " : d.toLocaleDateString("nl-NL", { weekday: "short", day: "numeric", month: "short" }) + " ";
+    const pre = diff === 0 ? "" : diff === 1 ? L("gisteren ", "yesterday ") : d.toLocaleDateString(LOC, { weekday: "short", day: "numeric", month: "short" }) + " ";
     return pre + hhmm(ts);
   };
-  const fullStamp = (ts) => new Date(ts * 1000).toLocaleString("nl-NL", { dateStyle: "full", timeStyle: "short" });
+  const fullStamp = (ts) => new Date(ts * 1000).toLocaleString(LOC, { dateStyle: "full", timeStyle: "short" });
   function bps(v) {
     if (v == null) return "–";
     const u = ["bit/s", "kbit/s", "Mbit/s", "Gbit/s"];
@@ -102,7 +111,7 @@
     const sev = state.issues.filter((i) => !i.resolved_at && i.device_mac === mac && (withClients || !i.client_mac)).map((i) => i.severity);
     return sev.includes("critical") ? "critical" : sev.includes("warning") ? "warning" : "info";
   }
-  const scoreLabel = (s) => (s >= 85 ? ["Goed", "ok"] : s >= 60 ? ["Aandacht nodig", "warning"] : ["Slecht", "critical"]);
+  const scoreLabel = (s) => (s >= 85 ? [L("Goed", "Good"), "ok"] : s >= 60 ? [L("Aandacht nodig", "Needs attention"), "warning"] : [L("Slecht", "Poor"), "critical"]);
 
   async function api(path) {
     const r = await fetch(path, { cache: "no-store" });
@@ -139,8 +148,8 @@
       let snap;
       try { snap = await api("/api/snapshot"); }
       catch (e) {   // net gekoppeld: eerste meting loopt nog
-        $("#status").innerHTML = `<span class="dot warn"></span>Eerste meting wordt opgehaald…`;
-        if (current !== "instellingen") $("#view").innerHTML = `<div class="card empty" style="margin-top:40px">${icon("radar")}<div>Eerste meting wordt opgehaald…</div><div class="muted" style="font-size:13px;margin-top:4px">${esc(status.last_error || "Dit duurt meestal een paar seconden.")}</div></div>`;
+        $("#status").innerHTML = `<span class="dot warn"></span>${L("Eerste meting wordt opgehaald…", "Fetching first reading…")}`;
+        if (current !== "instellingen") $("#view").innerHTML = `<div class="card empty" style="margin-top:40px">${icon("radar")}<div>${L("Eerste meting wordt opgehaald…", "Fetching first reading…")}</div><div class="muted" style="font-size:13px;margin-top:4px">${esc(status.last_error || L("Dit duurt meestal een paar seconden.", "This usually takes a few seconds."))}</div></div>`;
         $("#view").dataset.mounted = "";
         setTimeout(refresh, 4000);
         return;
@@ -150,8 +159,8 @@
       renderStatus();
       update();
     } catch (e) {
-      $("#status").innerHTML = `<span class="dot err"></span>Geen data: ${esc(e.message)}`;
-      if (!state.snap) $("#view").innerHTML = `<div class="banner err">${icon("octagon")}Kan geen gegevens ophalen: ${esc(e.message)}</div>`;
+      $("#status").innerHTML = `<span class="dot err"></span>${L("Geen data", "No data")}: ${esc(e.message)}`;
+      if (!state.snap) $("#view").innerHTML = `<div class="banner err">${icon("octagon")}${L("Kan geen gegevens ophalen", "Cannot fetch data")}: ${esc(e.message)}</div>`;
     }
   }
 
@@ -159,8 +168,8 @@
     const s = state.status, h = state.snap?.health || {};
     const stale = s.last_ok && Date.now() / 1000 - s.last_ok > s.poll_seconds * 3;
     const dot = s.last_error || stale ? "err" : s.mode === "mock" ? "warn" : "";
-    const src = s.mode === "mock" ? "Demodata" : `Live · ${SOURCE_LABEL[s.source] || s.source || "?"}`;
-    $("#status").innerHTML = `<span class="dot ${dot}"></span>${esc(src)} · ${ago(s.last_ok)} geleden`;
+    const src = s.mode === "mock" ? L("Demodata", "Demo data") : `Live · ${SOURCE_LABEL[s.source] || s.source || "?"}`;
+    $("#status").innerHTML = `<span class="dot ${dot}"></span>${esc(src)} · ${L(`${ago(s.last_ok)} geleden`, `${ago(s.last_ok)} ago`)}`;
     const top = (state.issues || []).filter((i) => !i.group && !i.resolved_at && !i.muted);
     const cnt = $("#nav-issues");
     cnt.textContent = top.length;
@@ -205,7 +214,7 @@
   function hydrateIcons(root) {
     root.querySelectorAll("[data-icon]").forEach((n) => { n.innerHTML = icon(n.dataset.icon); n.removeAttribute("data-icon"); });
   }
-  const rangeSeg = (id) => `<div class="seg" role="group" aria-label="Periode" id="${id}">${[1, 6, 24].map((h) => `<button data-h="${h}" aria-pressed="${state.hours === h}">${h} u</button>`).join("")}</div>`;
+  const rangeSeg = (id) => `<div class="seg" role="group" aria-label="${L("Periode", "Period")}" id="${id}">${[1, 6, 24].map((h) => `<button data-h="${h}" aria-pressed="${state.hours === h}">${h} ${L("u", "h")}</button>`).join("")}</div>`;
   function bindRange(id, cb) {
     $("#" + id)?.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-h]");
@@ -217,10 +226,11 @@
   }
 
   // ------------------------------------------------------------------ issue rendering
-  const reconnectBtn = (mac) => `<button class="linkbtn" data-reconnect="${esc(mac)}">Opnieuw verbinden</button>`;
+  const reconnectBtn = (mac) => `<button class="linkbtn" data-reconnect="${esc(mac)}">${L("Opnieuw verbinden", "Reconnect")}</button>`;
   // ---- internet pauzeren: blokkeert het apparaat in UniFi tot een tijdstip
-  const PAUSES = [["30", "30 minuten"], ["60", "1 uur"], ["120", "2 uur"], ["morning", "Tot morgen 07:00"], ["", "Tot ik hervat"]];
-  const pauseMenu = (mac) => `<details class="mute pause"><summary class="btn">${icon("power")}Pauzeren</summary><div class="mute-menu" role="group" aria-label="Pauzeren voor">
+  const PAUSES = [["30", L("30 minuten", "30 minutes")], ["60", L("1 uur", "1 hour")], ["120", L("2 uur", "2 hours")],
+    ["morning", L("Tot morgen 07:00", "Until tomorrow 07:00")], ["", L("Tot ik hervat", "Until I resume")]];
+  const pauseMenu = (mac) => `<details class="mute pause"><summary class="btn">${icon("power")}${L("Pauzeren", "Pause")}</summary><div class="mute-menu" role="group" aria-label="${L("Pauzeren voor", "Pause for")}">
       ${PAUSES.map(([v, l]) => `<button data-pause="${esc(mac)}" data-for="${v}">${l}</button>`).join("")}</div></details>`;
   function pauseUntil(v) {
     if (!v) return null;
@@ -249,20 +259,20 @@
     if (!b) return false;
     e.preventDefault();
     b.disabled = true;
-    b.textContent = "Bezig…";
+    b.textContent = L("Bezig…", "Working…");
     try {
       const r = await fetch(`/api/clients/${encodeURIComponent(b.dataset.reconnect)}/reconnect`, { method: "POST" });
       const body = await r.json().catch(() => ({}));
-      b.textContent = r.ok ? (body.demo ? "Gedaan (demo)" : "Verbindt opnieuw…") : `Mislukt: ${body.detail || r.status}`;
+      b.textContent = r.ok ? (body.demo ? L("Gedaan (demo)", "Done (demo)") : L("Verbindt opnieuw…", "Reconnecting…")) : `${L("Mislukt", "Failed")}: ${body.detail || r.status}`;
       if (r.ok) setTimeout(async () => { await refresh(); if (state.drawer) renderDrawer(); }, 8000);
     } catch (err) {
-      b.textContent = "Mislukt";
+      b.textContent = L("Mislukt", "Failed");
     }
     return true;
   }
   function entityAction(i) {
-    if (i.client_mac) return `<button class="linkbtn" data-open="client" data-id="${esc(i.client_mac)}">Bekijk client</button>`;
-    if (i.device_mac) return `<button class="linkbtn" data-open="device" data-id="${esc(i.device_mac)}">Bekijk ${esc(devName(i.device_mac))}</button>`;
+    if (i.client_mac) return `<button class="linkbtn" data-open="client" data-id="${esc(i.client_mac)}">${L("Bekijk client", "View client")}</button>`;
+    if (i.device_mac) return `<button class="linkbtn" data-open="device" data-id="${esc(i.device_mac)}">${L("Bekijk", "View")} ${esc(devName(i.device_mac))}</button>`;
     return "";
   }
   // Wanneer kwam dit het laatst voor? Bij een voorval (herstart, blokkade, linkverlies) het tijdstip daarvan;
@@ -271,18 +281,18 @@
     const last = i.last_ts || (i.resolved_at ? i.last_seen : null);
     const at = (ts) => `<time datetime="${new Date(ts * 1000).toISOString()}" title="${esc(fullStamp(ts))}">${stamp(ts)}</time>`;
     const parts = [];
-    if (last) parts.push(`Laatst ${at(last)}${i.resolved_at ? "" : ` · ${ago(last)} geleden`}`);
-    else if (i.last_seen) parts.push(Date.now() / 1000 - i.last_seen < 180 ? "Speelt nu" : `Laatst gezien ${at(i.last_seen)}`);
-    if (i.resolved_at) parts.push(`opgelost ${at(i.resolved_at)}`);
-    else if (i.first_seen) parts.push(`melding sinds ${ago(i.first_seen)}`);
+    if (last) parts.push(`${L("Laatst", "Last")} ${at(last)}${i.resolved_at ? "" : ` · ${L(`${ago(last)} geleden`, `${ago(last)} ago`)}`}`);
+    else if (i.last_seen) parts.push(Date.now() / 1000 - i.last_seen < 180 ? L("Speelt nu", "Happening now") : `${L("Laatst gezien", "Last seen")} ${at(i.last_seen)}`);
+    if (i.resolved_at) parts.push(`${L("opgelost", "resolved")} ${at(i.resolved_at)}`);
+    else if (i.first_seen) parts.push(L(`melding sinds ${ago(i.first_seen)}`, `open for ${ago(i.first_seen)}`));
     return parts.map((p) => `<span>${p}</span>`).join("");
   }
   function muteCtlHTML(i) {
     const k = esc(i.key);
     return i.muted
-      ? `<button class="mutebtn" data-unmute="${k}">Niet meer negeren</button>`
-      : `<details class="mute"><summary class="mutebtn">Negeren</summary><div class="mute-menu" role="group" aria-label="Negeren voor">
-           ${[[1, "1 dag"], [7, "1 week"], [30, "30 dagen"], ["", "Altijd"]].map(([d, l]) => `<button data-mute="${k}" data-days="${d}">${l}</button>`).join("")}</div></details>`;
+      ? `<button class="mutebtn" data-unmute="${k}">${L("Niet meer negeren", "Stop ignoring")}</button>`
+      : `<details class="mute"><summary class="mutebtn">${L("Negeren", "Ignore")}</summary><div class="mute-menu" role="group" aria-label="${L("Negeren voor", "Ignore for")}">
+           ${[[1, L("1 dag", "1 day")], [7, L("1 week", "1 week")], [30, L("30 dagen", "30 days")], ["", L("Altijd", "Always")]].map(([d, l]) => `<button data-mute="${k}" data-days="${d}">${l}</button>`).join("")}</div></details>`;
   }
   function issueHTML(i, all, flat) {
     const members = all.filter((m) => m.group === i.key);
@@ -290,13 +300,13 @@
     const byClient = {};
     members.forEach((m) => (byClient[m.client_mac || m.key] ||= []).push(m));
     const memberHTML = members.length ? `
-      <button class="toggle" aria-expanded="${open}" data-expand="${esc(i.key)}">${icon("chevron")}${open ? "Verberg" : "Toon"} onderliggende meldingen (${members.length})</button>
-      ${open ? `<div class="members">${Object.values(byClient).map((ms) => `<div class="m">${sevBadge(ms[0].severity)}<div><b>${esc(ms[0].title.split(":")[0])}</b><span>${esc(ms.map((m) => m.detail.split(" op ")[0]).join(" · "))}</span></div><span class="m-act">${ms[0].reconnect ? reconnectBtn(ms[0].client_mac) : ""}${ms[0].client_mac ? `<button class="linkbtn" data-open="client" data-id="${esc(ms[0].client_mac)}">details</button>` : ""}</span></div>`).join("")}</div>` : ""}` : "";
+      <button class="toggle" aria-expanded="${open}" data-expand="${esc(i.key)}">${icon("chevron")}${open ? L("Verberg", "Hide") : L("Toon", "Show")} ${L("onderliggende meldingen", "underlying issues")} (${members.length})</button>
+      ${open ? `<div class="members">${Object.values(byClient).map((ms) => `<div class="m">${sevBadge(ms[0].severity)}<div><b>${esc(ms[0].title.split(":")[0])}</b><span>${esc(ms.map((m) => m.detail.split(L(" op ", " on "))[0]).join(" · "))}</span></div><span class="m-act">${ms[0].reconnect ? reconnectBtn(ms[0].client_mac) : ""}${ms[0].client_mac ? `<button class="linkbtn" data-open="client" data-id="${esc(ms[0].client_mac)}">details</button>` : ""}</span></div>`).join("")}</div>` : ""}` : "";
     const when = issueWhen(i);
     const k = esc(i.key);
-    const approveBtn = i.approve && !i.resolved_at ? `<button class="btn small" data-approve="${esc(i.approve)}">${icon("check")}Ken ik</button>` : "";
+    const approveBtn = i.approve && !i.resolved_at ? `<button class="btn small" data-approve="${esc(i.approve)}">${icon("check")}${L("Ken ik", "I know this")}</button>` : "";
     const muteCtl = flat || i.resolved_at || i.group || i.approve ? "" : muteCtlHTML(i);
-    const mutedBadge = i.muted ? badge("", i.muted_until ? `Genegeerd t/m ${new Date(i.muted_until * 1000).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}` : "Genegeerd (altijd)") : "";
+    const mutedBadge = i.muted ? badge("", i.muted_until ? `${L("Genegeerd t/m", "Ignored until")} ${new Date(i.muted_until * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short" })}` : L("Genegeerd (altijd)", "Ignored (always)")) : "";
     return `<article class="issue ${flat ? "flat" : ""} ${i.resolved_at ? "resolved" : ""} ${i.muted ? "muted" : ""}">
       <div class="sev ${i.severity}" aria-hidden="true">${icon(SEV[i.severity][1])}</div>
       <div>
@@ -305,7 +315,7 @@
         ${flat ? "" : `<div class="advice">${icon("bulb")}<span>${esc(i.advice)}</span></div>`}
         ${memberHTML}
       </div>
-      <div class="meta">${i.resolved_at ? badge("ok", "Opgelost", "check") : sevBadge(i.severity)}${mutedBadge}${when}${approveBtn}${entityAction(i)}${muteCtl}</div>
+      <div class="meta">${i.resolved_at ? badge("ok", L("Opgelost", "Resolved"), "check") : sevBadge(i.severity)}${mutedBadge}${when}${approveBtn}${entityAction(i)}${muteCtl}</div>
     </article>`;
   }
   async function muteAction(e) {
@@ -347,18 +357,18 @@
   // ------------------------------------------------------------------ overzicht
   function mountOverview() {
     mount("overzicht", `
-      <div class="page-head"><div><h1>Netwerkoverzicht</h1><p class="subtitle" id="ov-sub"></p></div>${rangeSeg("ov-range")}</div>
+      <div class="page-head"><div><h1>${L("Netwerkoverzicht", "Network overview")}</h1><p class="subtitle" id="ov-sub"></p></div>${rangeSeg("ov-range")}</div>
       <div id="ov-banner"></div>
-      <section class="grid kpis" id="ov-kpis" aria-label="Kerncijfers"></section>
-      <section class="card me-card" id="ov-me" hidden aria-label="Dit apparaat"></section>
+      <section class="grid kpis" id="ov-kpis" aria-label="${L("Kerncijfers", "Key figures")}"></section>
+      <section class="card me-card" id="ov-me" hidden aria-label="${L("Dit apparaat", "This device")}"></section>
       <section class="grid cols-main" style="margin-bottom:16px">
-        <div class="card"><div class="card-head"><h2 style="margin:0">Wat vraagt aandacht</h2><a href="#/issues" class="linkbtn">Alle issues</a></div><div class="issue-list" id="ov-issues"></div></div>
-        <div class="card"><div class="card-head"><h2 style="margin:0">Netwerk</h2><span class="muted" id="ov-topo-sub"></span></div><div class="topo" id="ov-topo"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">${L("Wat vraagt aandacht", "Needs attention")}</h2><a href="#/issues" class="linkbtn">${L("Alle issues", "All issues")}</a></div><div class="issue-list" id="ov-issues"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">${L("Netwerk", "Network")}</h2><span class="muted" id="ov-topo-sub"></span></div><div class="topo" id="ov-topo"></div></div>
       </section>
-      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">Wifi per access point</h2><span class="muted">gemiddelden over 15 minuten · drempel bezetting ${nf(state.th.radio_cu_warn)}%</span></div><div class="table-wrap" style="border:0;background:none" id="ov-aps"></div></section>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Wifi per access point", "Wifi per access point")}</h2><span class="muted">${L(`gemiddelden over 15 minuten · drempel bezetting ${nf(state.th.radio_cu_warn)}%`, `15-minute averages · utilization threshold ${nf(state.th.radio_cu_warn)}%`)}</span></div><div class="table-wrap" style="border:0;background:none" id="ov-aps"></div></section>
       <section class="grid cols-2">
-        <div class="card"><div class="card-head"><h3>Internetlatency</h3><span class="muted" id="ov-lat-sub"></span></div><div id="ch-lat"></div></div>
-        <div class="card"><div class="card-head"><h3>Gemiddelde wifi-ervaring</h3><span class="muted">satisfaction-score 0–100</span></div><div id="ch-sat"></div></div>
+        <div class="card"><div class="card-head"><h3>${L("Internetlatency", "Internet latency")}</h3><span class="muted" id="ov-lat-sub"></span></div><div id="ch-lat"></div></div>
+        <div class="card"><div class="card-head"><h3>${L("Gemiddelde wifi-ervaring", "Average wifi experience")}</h3><span class="muted">${L("satisfaction-score 0–100", "satisfaction score 0–100")}</span></div><div id="ch-sat"></div></div>
       </section>`);
     bindRange("ov-range", loadOverviewCharts);
     bindIssueActions($("#ov-issues"), () => UPDATERS.overzicht());
@@ -380,23 +390,23 @@
     const c = d.client, up = d.uplink || {};
     const stat = (k, v) => `<div class="me-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`;
     const where = c.wired
-      ? stat("Bedraad via", `${up.mac ? `<button class="linkbtn plain" data-open="device" data-id="${esc(up.mac)}">${esc(up.name || "–")}</button>` : "–"}${c.sw_port ? ` <span class="muted">poort ${c.sw_port}</span>` : ""}`)
-      : stat("Verbonden met", up.mac ? `<button class="linkbtn plain" data-open="device" data-id="${esc(up.mac)}">${esc(up.name || "–")}</button>` : "–") +
-        stat("Band", `${esc(c.band || "–")} GHz <span class="muted">· kanaal ${esc(c.channel ?? "–")}</span>`) +
-        stat("Signaal", signalBars(c.signal, c.band)) +
-        stat("Snelheid", `${nf(c.tx_rate_mbps)} <span class="muted">/ ${nf(c.rx_rate_mbps)} Mbit/s</span>`);
+      ? stat(L("Bedraad via", "Wired via"), `${up.mac ? `<button class="linkbtn plain" data-open="device" data-id="${esc(up.mac)}">${esc(up.name || "–")}</button>` : "–"}${c.sw_port ? ` <span class="muted">${L("poort", "port")} ${c.sw_port}</span>` : ""}`)
+      : stat(L("Verbonden met", "Connected to"), up.mac ? `<button class="linkbtn plain" data-open="device" data-id="${esc(up.mac)}">${esc(up.name || "–")}</button>` : "–") +
+        stat("Band", `${esc(c.band || "–")} GHz <span class="muted">· ${L("kanaal", "channel")} ${esc(c.channel ?? "–")}</span>`) +
+        stat(L("Signaal", "Signal"), signalBars(c.signal, c.band)) +
+        stat(L("Snelheid", "Speed"), `${nf(c.tx_rate_mbps)} <span class="muted">/ ${nf(c.rx_rate_mbps)} Mbit/s</span>`);
     const roams = d.roams_today || [];
     const tip = !c.wired && c.band === "2.4" && c.signal != null && c.signal >= -60
-      ? `<div class="me-hint">${icon("bulb")}<span>Je zit op 2.4 GHz terwijl het signaal sterk is. Kan dit apparaat ook 5 of 6 GHz, dan helpt <b>Opnieuw verbinden</b> vaak: het kiest dan opnieuw.</span></div>` : "";
+      ? `<div class="me-hint">${icon("bulb")}<span>${L("Je zit op 2.4 GHz terwijl het signaal sterk is. Kan dit apparaat ook 5 of 6 GHz, dan helpt <b>Opnieuw verbinden</b> vaak: het kiest dan opnieuw.", "You are on 2.4 GHz while the signal is strong. If this device can also do 5 or 6 GHz, <b>Reconnect</b> often helps: it then chooses again.")}</span></div>` : "";
     el.hidden = false;
     el.innerHTML = `<div class="me-row">
         <div class="me-id"><span class="me-ic">${icon(c.wired ? "cable" : "wifi")}</span><div>
-          <div class="me-label">Dit apparaat${d.demo ? ` <span class="badge">demo</span>` : ""}</div>
+          <div class="me-label">${L("Dit apparaat", "This device")}${d.demo ? ` <span class="badge">demo</span>` : ""}</div>
           <div class="me-name">${esc(c.name)}</div>
-          <div class="cell-sub">${esc(c.ip)}${c.ssid ? ` · ${esc(c.ssid)}` : ""}${c.assoc_ts ? ` · verbonden sinds ${stamp(c.assoc_ts)}` : ""}</div></div></div>
-        <div class="me-stats">${where}${stat("Ervaring", c.satisfaction == null ? "–" : nf(c.satisfaction))}
-          ${c.wired ? "" : stat("AP-wissels vandaag", `${roams.length}${roams[0] ? ` <span class="muted" title="${esc(roams.slice(0, 5).map((r) => `${hhmm(r.ts)} ${r.message.split(": ").pop()}`).join("\n"))}">laatst ${hhmm(roams[0].ts)}</span>` : ""}`)}</div>
-        <div class="me-act"><button class="btn" data-open="client" data-id="${esc(c.mac)}">Details</button>${c.wired ? "" : `<button class="btn" data-reconnect="${esc(c.mac)}">Opnieuw verbinden</button>`}</div>
+          <div class="cell-sub">${esc(c.ip)}${c.ssid ? ` · ${esc(c.ssid)}` : ""}${c.assoc_ts ? ` · ${L("verbonden sinds", "connected since")} ${stamp(c.assoc_ts)}` : ""}</div></div></div>
+        <div class="me-stats">${where}${stat(L("Ervaring", "Experience"), c.satisfaction == null ? "–" : nf(c.satisfaction))}
+          ${c.wired ? "" : stat(L("AP-wissels vandaag", "AP switches today"), `${roams.length}${roams[0] ? ` <span class="muted" title="${esc(roams.slice(0, 5).map((r) => `${hhmm(r.ts)} ${r.message.split(": ").pop()}`).join("\n"))}">${L("laatst", "last")} ${hhmm(roams[0].ts)}</span>` : ""}`)}</div>
+        <div class="me-act"><button class="btn" data-open="client" data-id="${esc(c.mac)}">Details</button>${c.wired ? "" : `<button class="btn" data-reconnect="${esc(c.mac)}">${L("Opnieuw verbinden", "Reconnect")}</button>`}</div>
       </div>${tip}${d.issues?.length ? `<div class="me-issues">${d.issues.map((i) => sevBadge(i.severity) + `<span>${esc(i.title)}</span>`).join("")}</div>` : ""}`;
   }
   UPDATERS.overzicht = function () {
@@ -407,21 +417,21 @@
     const [lbl, lv] = scoreLabel(h.score);
     const types = { gateway: 0, switch: 0, ap: 0 };
     devs.forEach((d) => (types[d.type] = (types[d.type] || 0) + 1));
-    $("#ov-sub").textContent = `${s.wan.isp || "Internet"} · ${devs.length} apparaten · ${s.clients.length} clients`;
+    $("#ov-sub").textContent = `${s.wan.isp || "Internet"} · ${devs.length} ${L("apparaten", "devices")} · ${s.clients.length} clients`;
     $("#ov-banner").innerHTML = state.status.mode === "mock"
-      ? `<div class="banner">${icon("info")}<span>Je bekijkt <b>demodata</b> met een paar ingebouwde problemen. <a href="#/instellingen">Koppel je eigen UniFi-controller</a> om je eigen netwerk te zien.</span></div>`
-      : state.status.last_error ? `<div class="banner err">${icon("octagon")}<span>Laatste poging mislukt: ${esc(state.status.last_error)}</span></div>` : "";
+      ? `<div class="banner">${icon("info")}<span>${L(`Je bekijkt <b>demodata</b> met een paar ingebouwde problemen. <a href="#/instellingen">Koppel je eigen UniFi-controller</a> om je eigen netwerk te zien.`, `You are viewing <b>demo data</b> with a few built-in problems. <a href="#/instellingen">Connect your own UniFi controller</a> to see your own network.`)}</span></div>`
+      : state.status.last_error ? `<div class="banner err">${icon("octagon")}<span>${L("Laatste poging mislukt", "Last attempt failed")}: ${esc(state.status.last_error)}</span></div>` : "";
     $("#ov-kpis").innerHTML = `
-      <div class="card compact kpi"><div class="label">${icon("gauge")}Netwerkscore</div><div class="value">${h.score}<small>/100</small></div>
+      <div class="card compact kpi"><div class="label">${icon("gauge")}${L("Netwerkscore", "Network score")}</div><div class="value">${h.score}<small>/100</small></div>
         <div class="sub">${badge(lv, lbl)}</div><div class="scorebar"><span style="width:${h.score}%;background:var(--me-${lv === "ok" ? "success" : lv === "warning" ? "warning" : "danger"})"></span></div></div>
-      <div class="card compact kpi clickable" data-go="issues" tabindex="0" role="link"><div class="label">${icon("alert")}Open issues</div><div class="value">${h.critical + h.warning + h.info}</div>
-        <div class="sub">${h.critical ? badge("critical", `${h.critical} kritiek`) : ""}${h.warning ? badge("warning", `${h.warning} waarschuwing`) : ""}${h.info ? badge("info", `${h.info} info`) : ""}${!h.critical && !h.warning && !h.info ? badge("ok", "Alles in orde", "check") : ""}${h.muted ? badge("", `${h.muted} genegeerd`) : ""}</div></div>
-      <div class="card compact kpi clickable" data-go="apparaten" tabindex="0" role="link"><div class="label">${icon("router")}Apparaten online</div><div class="value">${online}<small>/ ${devs.length}</small></div>
-        <div class="sub"><span>${types.gateway} gateway</span><span>${types.switch} switches</span><span>${types.ap} AP's</span></div></div>
+      <div class="card compact kpi clickable" data-go="issues" tabindex="0" role="link"><div class="label">${icon("alert")}${L("Open issues", "Open issues")}</div><div class="value">${h.critical + h.warning + h.info}</div>
+        <div class="sub">${h.critical ? badge("critical", `${h.critical} ${L("kritiek", "critical")}`) : ""}${h.warning ? badge("warning", `${h.warning} ${L("waarschuwing", "warning")}`) : ""}${h.info ? badge("info", `${h.info} info`) : ""}${!h.critical && !h.warning && !h.info ? badge("ok", L("Alles in orde", "All good"), "check") : ""}${h.muted ? badge("", `${h.muted} ${L("genegeerd", "ignored")}`) : ""}</div></div>
+      <div class="card compact kpi clickable" data-go="apparaten" tabindex="0" role="link"><div class="label">${icon("router")}${L("Apparaten online", "Devices online")}</div><div class="value">${online}<small>/ ${devs.length}</small></div>
+        <div class="sub"><span>${types.gateway} gateway</span><span>${types.switch} switches</span><span>${types.ap} ${L("AP's", "APs")}</span></div></div>
       <div class="card compact kpi clickable" data-go="clients" tabindex="0" role="link"><div class="label">${icon("users")}Clients</div><div class="value">${s.clients.length}</div>
-        <div class="sub"><span>${icon("wifi")} ${wifi} wifi</span><span>${icon("cable")} ${s.clients.length - wifi} bedraad</span></div></div>
+        <div class="sub"><span>${icon("wifi")} ${wifi} wifi</span><span>${icon("cable")} ${s.clients.length - wifi} ${L("bedraad", "wired")}</span></div></div>
       <div class="card compact kpi clickable" data-go="internet" tabindex="0" role="link"><div class="label">${icon("globe")}Internet</div><div class="value">${s.wan.latency_ms == null ? "–" : nf(s.wan.latency_ms)}<small>ms</small></div>
-        <div class="sub">${s.wan.up === false ? badge("critical", "Offline", "octagon") : badge("ok", "Online", "check")}<span>verlies ${nf(s.wan.loss_pct, 1)}%</span></div></div>`;
+        <div class="sub">${s.wan.up === false ? badge("critical", "Offline", "octagon") : badge("ok", "Online", "check")}<span>${L("verlies", "loss")} ${nf(s.wan.loss_pct, 1)}%</span></div></div>`;
     $("#ov-kpis").querySelectorAll("[data-go]").forEach((n) => {
       const go = () => (location.hash = "#/" + n.dataset.go);
       n.onclick = go; n.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), go());
@@ -429,7 +439,7 @@
 
     const top = state.issues.filter((i) => !i.group && !i.resolved_at && !i.muted).slice(0, 6);
     $("#ov-issues").innerHTML = top.length ? top.map((i) => issueHTML(i, state.issues, true)).join("")
-      : `<div class="empty">${icon("check")}<div>Geen problemen gevonden</div></div>`;
+      : `<div class="empty">${icon("check")}<div>${L("Geen problemen gevonden", "No problems found")}</div></div>`;
 
     // topologie
     const kids = {};
@@ -443,14 +453,14 @@
         : badge("ok", "OK", "check");
       html += `<div class="node clickable l${Math.min(lvl, 3)}" data-open data-id="${esc(d.mac)}" tabindex="0" role="button">
         <span class="ico">${icon(devIcon(d.type))}</span>
-        <div><div class="name">${esc(d.name)}</div><div class="sub">${esc(d.model)} · ${d.num_clients} clients${d.client_issue_count ? ` · <span class="t-warning">${d.client_issue_count} client-meldingen</span>` : ""}</div></div>
+        <div><div class="name">${esc(d.name)}</div><div class="sub">${esc(d.model)} · ${d.num_clients} clients${d.client_issue_count ? ` · <span class="t-warning">${d.client_issue_count} ${L("client-meldingen", "client issues")}</span>` : ""}</div></div>
         <div class="right">${st}</div></div>`;
       (kids[d.mac] || []).sort((a, b) => order[a.type] - order[b.type] || a.name.localeCompare(b.name)).forEach((k) => walk(k, lvl + 1));
     };
     roots.sort((a, b) => order[a.type] - order[b.type]).forEach((r) => walk(r, 0));
     $("#ov-topo").innerHTML = html;
     $("#ov-topo").querySelectorAll(".node").forEach((n) => (n.onkeydown = (e) => e.key === "Enter" && openDrawer("device", n.dataset.id, n)));
-    $("#ov-topo-sub").textContent = `uptime gateway ${dur(devs.find((d) => d.type === "gateway")?.uptime)}`;
+    $("#ov-topo-sub").textContent = `${L("uptime gateway", "gateway uptime")} ${dur(devs.find((d) => d.type === "gateway")?.uptime)}`;
 
     // AP-tabel
     const aps = devs.filter((d) => d.type === "ap");
@@ -458,13 +468,13 @@
       const r = d.radios.find((x) => x.radio === band);
       if (!r) return `<td class="muted">–</td>`;
       const lv = level("cu", r.cu_total);
-      return `<td><div style="display:flex;gap:10px;align-items:center">${meter(r.cu_total, lv)}<span class="num ${lv !== "ok" ? "t-" + lv : ""}">${nf(r.cu_total)}%</span></div><div class="cell-sub">kanaal ${r.channel ?? "–"} · storing ${nf(r.interference)}% · retries ${nf(r.retry_pct, 1)}%</div></td>`;
+      return `<td><div style="display:flex;gap:10px;align-items:center">${meter(r.cu_total, lv)}<span class="num ${lv !== "ok" ? "t-" + lv : ""}">${nf(r.cu_total)}%</span></div><div class="cell-sub">${L("kanaal", "channel")} ${r.channel ?? "–"} · ${L("storing", "interference")} ${nf(r.interference)}% · retries ${nf(r.retry_pct, 1)}%</div></td>`;
     };
-    $("#ov-aps").innerHTML = `<table><thead><tr><th>Access point</th><th class="r">Clients</th><th>2.4 GHz bezetting</th><th>5 GHz bezetting</th><th class="r">Ervaring</th><th>Status</th></tr></thead><tbody>
+    $("#ov-aps").innerHTML = `<table><thead><tr><th>Access point</th><th class="r">Clients</th><th>${L("2.4 GHz bezetting", "2.4 GHz utilization")}</th><th>${L("5 GHz bezetting", "5 GHz utilization")}</th><th class="r">${L("Ervaring", "Experience")}</th><th>Status</th></tr></thead><tbody>
       ${aps.map((d) => `<tr data-open data-id="${esc(d.mac)}" tabindex="0"><td><div class="cell-name">${esc(d.name)}</div><div class="cell-sub">${esc(d.model)}</div></td>
         <td class="r num">${d.num_clients}</td>${radioCell(d, "2.4")}${radioCell(d, "5")}
         <td class="r num ${level("sat", d.satisfaction) !== "ok" ? "t-" + level("sat", d.satisfaction) : ""}">${nf(d.satisfaction)}</td>
-        <td>${d.issue_count || d.client_issue_count ? badge(worstSev(d.mac, true), plural(d.issue_count + d.client_issue_count, "melding", "meldingen")) : badge("ok", "OK", "check")}</td></tr>`).join("")}
+        <td>${d.issue_count || d.client_issue_count ? badge(worstSev(d.mac, true), plural(d.issue_count + d.client_issue_count, L("melding", "issue"), L("meldingen", "issues"))) : badge("ok", "OK", "check")}</td></tr>`).join("")}
       </tbody></table>`;
     $("#ov-aps").querySelectorAll("tr[data-open]").forEach((n) => (n.onkeydown = (e) => e.key === "Enter" && openDrawer("device", n.dataset.id, n)));
     loadOverviewCharts();
@@ -473,23 +483,23 @@
     const d = await api(`/api/history/overview?hours=${state.hours}`);
     const lat = d.wan.map((p) => [p.t, p.latency_ms]);
     const vals = lat.map((p) => p[1]).filter((v) => v != null);
-    $("#ov-lat-sub").textContent = vals.length ? `gem. ${nf(vals.reduce((a, b) => a + b, 0) / vals.length)} ms · max ${nf(Math.max(...vals))} ms` : "";
+    $("#ov-lat-sub").textContent = vals.length ? `${L("gem.", "avg.")} ${nf(vals.reduce((a, b) => a + b, 0) / vals.length)} ms · max ${nf(Math.max(...vals))} ms` : "";
     MEcharts.lineChart($("#ch-lat"), { series: [{ name: "Latency", color: C.cyan, data: lat }], unit: " ms", yMin: 0, bucket: d.bucket,
-      threshold: { value: state.th.wan_latency_warn, label: `drempel ${nf(state.th.wan_latency_warn)} ms` }, label: "Internetlatency in milliseconden" });
-    MEcharts.lineChart($("#ch-sat"), { series: [{ name: "Ervaring", color: C.violet, data: d.clients.map((p) => [p.t, p.sat]) }], yMin: 0, yMax: 100, bucket: d.bucket,
-      threshold: { value: state.th.client_satisfaction_warn, label: `drempel ${nf(state.th.client_satisfaction_warn)}` }, label: "Gemiddelde wifi-ervaring" });
+      threshold: { value: state.th.wan_latency_warn, label: `${L("drempel", "threshold")} ${nf(state.th.wan_latency_warn)} ms` }, label: L("Internetlatency in milliseconden", "Internet latency in milliseconds") });
+    MEcharts.lineChart($("#ch-sat"), { series: [{ name: L("Ervaring", "Experience"), color: C.violet, data: d.clients.map((p) => [p.t, p.sat]) }], yMin: 0, yMax: 100, bucket: d.bucket,
+      threshold: { value: state.th.client_satisfaction_warn, label: `${L("drempel", "threshold")} ${nf(state.th.client_satisfaction_warn)}` }, label: L("Gemiddelde wifi-ervaring", "Average wifi experience") });
   }
 
   // ------------------------------------------------------------------ issues
   function mountIssues() {
     const chips = (name, opts, cur) => opts.map(([v, l]) => `<button class="chip" data-${name}="${v}" aria-pressed="${cur === v}">${l}</button>`).join("");
     mount("issues", `
-      <div class="page-head"><div><h1>Issues</h1><p class="subtitle">Automatisch gevonden problemen, met uitleg en advies. Gelijksoortige meldingen zijn samengevoegd tot één oorzaak.</p></div>
-        <div class="chips"><button class="chip" id="is-muted" aria-pressed="${state.showMuted}">Genegeerd <span class="num" id="is-muted-n"></span></button>
-        <button class="chip" id="is-resolved" aria-pressed="${state.showResolved}">${icon("clock")}Ook opgeloste tonen</button></div></div>
+      <div class="page-head"><div><h1>Issues</h1><p class="subtitle">${L("Automatisch gevonden problemen, met uitleg en advies. Gelijksoortige meldingen zijn samengevoegd tot één oorzaak.", "Automatically detected problems, with explanation and advice. Similar issues are merged into one cause.")}</p></div>
+        <div class="chips"><button class="chip" id="is-muted" aria-pressed="${state.showMuted}">${L("Genegeerd", "Ignored")} <span class="num" id="is-muted-n"></span></button>
+        <button class="chip" id="is-resolved" aria-pressed="${state.showResolved}">${icon("clock")}${L("Ook opgeloste tonen", "Show resolved too")}</button></div></div>
       <div class="toolbar">
-        <div class="chips" role="group" aria-label="Ernst">${chips("sev", [["all", "Alles"], ["critical", "Kritiek"], ["warning", "Waarschuwing"], ["info", "Info"]], state.issueSev)}</div>
-        <div class="chips" role="group" aria-label="Categorie">${chips("cat", [["all", "Alle categorieën"], ["wifi", "Wifi"], ["switch", "Switch"], ["device", "Apparaat"], ["wan", "Internet"], ["security", "Beveiliging"], ["config", "Configuratie"]], state.issueCat)}</div>
+        <div class="chips" role="group" aria-label="${L("Ernst", "Severity")}">${chips("sev", [["all", L("Alles", "All")], ["critical", SEV.critical[0]], ["warning", SEV.warning[0]], ["info", "Info"]], state.issueSev)}</div>
+        <div class="chips" role="group" aria-label="${L("Categorie", "Category")}">${chips("cat", [["all", L("Alle categorieën", "All categories")], ...["wifi", "switch", "device", "wan", "security", "config"].map((k) => [k, CAT[k]])], state.issueCat)}</div>
       </div>
       <div class="issue-list" id="is-list"></div>`);
     $("#view").querySelector(".toolbar").addEventListener("click", (e) => {
@@ -522,15 +532,15 @@
       .filter((i) => state.issueSev === "all" || i.severity === state.issueSev)
       .filter((i) => state.issueCat === "all" || i.category === state.issueCat);
     $("#is-list").innerHTML = list.length ? list.map((i) => issueHTML(i, all, false)).join("")
-      : `<div class="card empty">${icon("check")}<div>${state.showMuted ? "Geen genegeerde meldingen" : "Geen issues voor deze filter"}</div></div>`;
+      : `<div class="card empty">${icon("check")}<div>${state.showMuted ? L("Geen genegeerde meldingen", "No ignored issues") : L("Geen issues voor deze filter", "No issues for this filter")}</div></div>`;
   };
 
   // ------------------------------------------------------------------ apparaten
   const devView = { mode: store.get("dv.mode", "map"), clients: store.get("dv.clients", false) };
   function mountDevices() {
-    mount("apparaten", `<div class="page-head"><div><h1>Apparaten</h1><p class="subtitle">Gateway, switches en access points. Klik voor details en historie.</p></div>
-        <div class="w-head-r"><button class="chip" id="dv-cl" aria-pressed="${devView.clients}" ${devView.mode === "map" ? "" : "hidden"}>${icon("users")}Clients tonen</button>
-        <div class="seg" role="group" aria-label="Weergave" id="dv-mode">${[["map", "Kaart"], ["list", "Lijst"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${devView.mode === k}">${l}</button>`).join("")}</div></div></div>
+    mount("apparaten", `<div class="page-head"><div><h1>${L("Apparaten", "Devices")}</h1><p class="subtitle">${L("Gateway, switches en access points. Klik voor details en historie.", "Gateway, switches and access points. Click for details and history.")}</p></div>
+        <div class="w-head-r"><button class="chip" id="dv-cl" aria-pressed="${devView.clients}" ${devView.mode === "map" ? "" : "hidden"}>${icon("users")}${L("Clients tonen", "Show clients")}</button>
+        <div class="seg" role="group" aria-label="${L("Weergave", "View")}" id="dv-mode">${[["map", L("Kaart", "Map")], ["list", L("Lijst", "List")]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${devView.mode === k}">${l}</button>`).join("")}</div></div></div>
       <div id="dv-map" class="topo-scroll"></div><div id="dv-list"></div>`);
     for (const id of ["#dv-list", "#dv-map"]) {
       $(id).addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer(n.dataset.open === "client" ? "client" : "device", n.dataset.id, n); });
@@ -589,27 +599,27 @@
       const slow = !wireless && d.uplink_speed && d.uplink_speed < 1000;
       const cls = d.state !== "online" ? "down" : slow ? "slow" : wireless ? "mesh" : "";
       links.push(`<path class="tl ${cls}" d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}"/>`);
-      const txt = [d.uplink_port ? `poort ${d.uplink_port}` : "", wireless ? "draadloos" : linkTxt(d.uplink_speed)].filter(Boolean).join(" · ");
+      const txt = [d.uplink_port ? `${L("poort", "port")} ${d.uplink_port}` : "", wireless ? L("draadloos", "wireless") : linkTxt(d.uplink_speed)].filter(Boolean).join(" · ");
       if (txt) labels.push(`<div class="tlabel ${cls}" style="left:${x2}px;top:${y2 - 22}px">${esc(txt)}</div>`);
     }
     const sevCls = (d) => (d.state !== "online" ? "critical" : d.issue_count ? worstSev(d.mac) : "ok");
     const nodes = devs.filter((d) => pos[d.mac]).map((d) => {
       const x = X(d.mac) - NW / 2, y = Y(d.mac);
-      const sub = d.type === "ap" ? `${d.num_clients} clients` : d.type === "switch" ? `${d.ports.filter((p) => p.up).length}/${d.ports.length} poorten · ${d.num_clients} clients` : d.model;
+      const sub = d.type === "ap" ? `${d.num_clients} clients` : d.type === "switch" ? `${d.ports.filter((p) => p.up).length}/${d.ports.length} ${L("poorten", "ports")} · ${d.num_clients} clients` : d.model;
       const cs = (cl[d.mac] || []).slice().sort((a, b) => (a.signal ?? 0) - (b.signal ?? 0));
       const dots = cs.slice(0, MAXC).map((c, i) => {
         const lv = c.wired ? "wired" : level("signal", c.signal, c.band);
         const left = (i % PER) * (DOT + 4) - ((Math.min(cs.length, PER) * (DOT + 4) - 4) / 2) + NW / 2;
-        return `<button class="tdot ${lv}" style="left:${left}px;top:${NH + 10 + Math.floor(i / PER) * (DOT + 4)}px" data-open="client" data-id="${esc(c.mac)}" title="${esc(c.name)}${c.wired ? " · bedraad" : ` · ${nf(c.signal)} dBm`}" aria-label="${esc(c.name)}"></button>`;
+        return `<button class="tdot ${lv}" style="left:${left}px;top:${NH + 10 + Math.floor(i / PER) * (DOT + 4)}px" data-open="client" data-id="${esc(c.mac)}" title="${esc(c.name)}${c.wired ? ` · ${L("bedraad", "wired")}` : ` · ${nf(c.signal)} dBm`}" aria-label="${esc(c.name)}"></button>`;
       }).join("") + (cs.length > MAXC ? `<span class="tmore" style="top:${NH + 10 + Math.ceil(MAXC / PER) * (DOT + 4)}px">+${cs.length - MAXC}</span>` : "");
       return `<div class="tnode sev-${sevCls(d)}" style="left:${x}px;top:${y}px;width:${NW}px">
         <button class="tcard" data-open="device" data-id="${esc(d.mac)}" aria-label="${esc(d.name)}"><span class="ico">${icon(devIcon(d.type))}</span>
           <span class="tt"><b>${esc(d.name)}</b><small>${esc(sub)}</small></span></button>${dots}</div>`;
     }).join("");
     el.innerHTML = `<div class="topo-map" style="width:${W}px;height:${H}px"><svg width="${W}" height="${H}" aria-hidden="true">${links.join("")}</svg>${labels.join("")}${nodes}</div>
-      <div class="legend-row topo-legend"><span><i class="sw" style="background:var(--me-border-strong)"></i>bedraad</span><span><i class="sw" style="background:var(--me-warning)"></i>trager dan 1 Gbit/s</span>
-        <span><i class="sw" style="background:var(--me-violet)"></i>draadloos (mesh)</span><span><i class="sw" style="background:var(--me-danger)"></i>offline</span>
-        ${devView.clients ? `<span><i class="sw" style="background:var(--me-success)"></i>goed signaal</span><span><i class="sw" style="background:var(--me-warning)"></i>matig</span><span><i class="sw" style="background:var(--me-danger)"></i>zwak</span>` : ""}</div>`;
+      <div class="legend-row topo-legend"><span><i class="sw" style="background:var(--me-border-strong)"></i>${L("bedraad", "wired")}</span><span><i class="sw" style="background:var(--me-warning)"></i>${L("trager dan 1 Gbit/s", "slower than 1 Gbit/s")}</span>
+        <span><i class="sw" style="background:var(--me-violet)"></i>${L("draadloos (mesh)", "wireless (mesh)")}</span><span><i class="sw" style="background:var(--me-danger)"></i>offline</span>
+        ${devView.clients ? `<span><i class="sw" style="background:var(--me-success)"></i>${L("goed signaal", "good signal")}</span><span><i class="sw" style="background:var(--me-warning)"></i>${L("matig", "fair")}</span><span><i class="sw" style="background:var(--me-danger)"></i>${L("zwak", "weak")}</span>` : ""}</div>`;
     hydrateIcons(el);
   }
   UPDATERS.apparaten = function () {
@@ -630,17 +640,17 @@
     let extra = "";
     if (d.type === "ap") {
       extra = d.radios.map((r) => { const lv = level("cu", r.cu_total); return `<div style="display:grid;grid-template-columns:56px 1fr 44px;gap:8px;align-items:center;margin-top:8px"><span class="muted" style="font-size:12px">${r.radio} GHz</span>${meter(r.cu_total, lv)}<span class="num ${lv !== "ok" ? "t-" + lv : ""}" style="font-size:12px;text-align:right">${nf(r.cu_total)}%</span></div>`; }).join("");
-      extra = `<div style="margin-top:14px"><div class="muted" style="font-size:12px">Kanaalbezetting</div>${extra}</div>`;
+      extra = `<div style="margin-top:14px"><div class="muted" style="font-size:12px">${L("Kanaalbezetting", "Channel utilization")}</div>${extra}</div>`;
     } else if (d.type === "switch") {
       const up = d.ports.filter((p) => p.up).length;
-      extra = `<div style="margin-top:14px"><div class="muted" style="font-size:12px;margin-bottom:6px">${up} van ${d.ports.length} poorten actief${d.poe_budget_w ? ` · PoE ${nf(d.poe_used_w)} / ${nf(d.poe_budget_w)} W` : ""}</div>${portGrid(d, true)}</div>`;
+      extra = `<div style="margin-top:14px"><div class="muted" style="font-size:12px;margin-bottom:6px">${L(`${up} van ${d.ports.length} poorten actief`, `${up} of ${d.ports.length} ports active`)}${d.poe_budget_w ? ` · PoE ${nf(d.poe_used_w)} / ${nf(d.poe_budget_w)} W` : ""}</div>${portGrid(d, true)}</div>`;
     } else if (d.type === "gateway") {
       const w = state.snap.wan;
       extra = `<div class="stats" style="margin-top:8px"><div class="stat"><div class="k">Latency</div><div class="v">${nf(w.latency_ms)} ms</div></div><div class="stat"><div class="k">Download</div><div class="v">${nf(w.xput_down)} Mb</div></div><div class="stat"><div class="k">Upload</div><div class="v">${nf(w.xput_up)} Mb</div></div></div>`;
     }
     return `<article class="card dev-card clickable" data-open data-id="${esc(d.mac)}" tabindex="0" role="button" aria-label="${esc(d.name)}">
       <div class="top"><span class="ico">${icon(devIcon(d.type))}</span><div style="min-width:0;flex:1"><h3>${esc(d.name)}</h3><div class="muted" style="font-size:12px">${esc(d.model)} · ${esc(d.ip)}</div></div>${st}</div>
-      <div class="stats"><div class="stat"><div class="k">Clients</div><div class="v">${d.num_clients}</div></div><div class="stat"><div class="k">Uptime</div><div class="v">${dur(d.uptime)}</div></div><div class="stat"><div class="k">CPU / geh.</div><div class="v">${nf(d.cpu)}% / ${nf(d.mem)}%</div></div></div>
+      <div class="stats"><div class="stat"><div class="k">Clients</div><div class="v">${d.num_clients}</div></div><div class="stat"><div class="k">Uptime</div><div class="v">${dur(d.uptime)}</div></div><div class="stat"><div class="k">${L("CPU / geh.", "CPU / mem.")}</div><div class="v">${nf(d.cpu)}% / ${nf(d.mem)}%</div></div></div>
       ${extra}</article>`;
   }
   function portIssues(d) {
@@ -655,7 +665,7 @@
     const cells = d.ports.map((p) => {
       const iss = pi[p.idx] || [];
       const cls = iss.some((i) => i.key.startsWith("port_flap") || i.key.startsWith("port_err")) ? "bad" : iss.length ? "slow" : p.up ? "up" : "";
-      const tip = `${p.name} · ${p.up ? speed(p.speed) : "geen link"}${p.poe_w ? ` · PoE ${nf(p.poe_w, 1)} W` : ""}${iss.length ? " · " + iss.map((i) => i.title.split(": ").pop()).join(", ") : ""}`;
+      const tip = `${p.name} · ${p.up ? speed(p.speed) : L("geen link", "no link")}${p.poe_w ? ` · PoE ${nf(p.poe_w, 1)} W` : ""}${iss.length ? " · " + iss.map((i) => i.title.split(": ").pop()).join(", ") : ""}`;
       return `<span class="port ${cls} ${p.media.startsWith("SFP") ? "sfp" : ""}" title="${esc(tip)}" ${compact ? "" : 'tabindex="0"'} aria-label="${esc(tip)}">${p.idx}${p.poe_w > 0 ? '<i class="poe"></i>' : ""}</span>`;
     }).join("");
     return `<div class="ports">${cells}</div>`;
@@ -668,9 +678,9 @@
       <div class="page-head"><div><h1>Clients</h1><p class="subtitle" id="cl-sub"></p></div></div>
       <section class="card paused-card" id="cl-paused" hidden></section>
       <div class="toolbar">
-        <label class="search"><span class="sr-only">Zoeken</span>${icon("search")}<input class="input" id="cl-q" placeholder="Zoek op naam, IP, MAC of fabrikant" value="${esc(state.cq)}"></label>
-        <div class="chips" role="group" aria-label="Type" id="cl-kind">${[["all", "Alle"], ["wifi", "Wifi"], ["wired", "Bedraad"], ["issues", "Met problemen"]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ckind === v}">${l}</button>`).join("")}</div>
-        <label><span class="sr-only">Verbonden met</span><select class="input" id="cl-up"><option value="">Alle AP's en switches</option>${uplinks.map((d) => `<option value="${esc(d.mac)}" ${state.cuplink === d.mac ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>
+        <label class="search"><span class="sr-only">${L("Zoeken", "Search")}</span>${icon("search")}<input class="input" id="cl-q" placeholder="${L("Zoek op naam, IP, MAC of fabrikant", "Search by name, IP, MAC or vendor")}" value="${esc(state.cq)}"></label>
+        <div class="chips" role="group" aria-label="Type" id="cl-kind">${[["all", L("Alle", "All")], ["wifi", "Wifi"], ["wired", L("Bedraad", "Wired")], ["issues", L("Met problemen", "With problems")]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ckind === v}">${l}</button>`).join("")}</div>
+        <label><span class="sr-only">${L("Verbonden met", "Connected to")}</span><select class="input" id="cl-up"><option value="">${L("Alle AP's en switches", "All APs and switches")}</option>${uplinks.map((d) => `<option value="${esc(d.mac)}" ${state.cuplink === d.mac ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>
       </div>
       <div class="table-wrap" id="cl-table"></div>`);
     $("#cl-q").addEventListener("input", (e) => { state.cq = e.target.value; UPDATERS.clients(); });
@@ -694,17 +704,17 @@
     const el = $("#cl-paused");
     if (!el || current !== "clients") return;
     el.hidden = !d.pauses.length;
-    el.innerHTML = `<div class="card-head"><h2 style="margin:0">${icon("power")}Gepauzeerd</h2><span class="muted">geen internet of netwerk tot de tijd om is</span></div>
+    el.innerHTML = `<div class="card-head"><h2 style="margin:0">${icon("power")}${L("Gepauzeerd", "Paused")}</h2><span class="muted">${L("geen internet of netwerk tot de tijd om is", "no internet or network until the time is up")}</span></div>
       ${d.pauses.map((p) => `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(p.name)}</div>
-        <div class="cell-sub">${p.until ? `tot ${stamp(p.until)} · nog ${dur(p.until - d.now)}` : "tot je hervat"} · sinds ${stamp(p.created)}</div></div>
-        <button class="btn small" data-resume="${esc(p.mac)}">${icon("check")}Hervatten</button></div>`).join("")}`;
+        <div class="cell-sub">${p.until ? L(`tot ${stamp(p.until)} · nog ${dur(p.until - d.now)}`, `until ${stamp(p.until)} · ${dur(p.until - d.now)} left`) : L("tot je hervat", "until you resume")} · ${L("sinds", "since")} ${stamp(p.created)}</div></div>
+        <button class="btn small" data-resume="${esc(p.mac)}">${icon("check")}${L("Hervatten", "Resume")}</button></div>`).join("")}`;
   }
   UPDATERS.clients = function () {
     loadPauses();
     const dm = devByMac();
     const q = state.cq.trim().toLowerCase();
-    const uplinkName = (c) => (c.wired ? `${dm[c.sw_mac]?.name || "–"} · poort ${c.sw_port ?? "?"}`
-      : c.connected === false ? `niet verbonden · laatst via ${dm[c.last_ap_mac]?.name || "?"}` : `${dm[c.ap_mac]?.name || "–"}`);
+    const uplinkName = (c) => (c.wired ? `${dm[c.sw_mac]?.name || "–"} · ${L("poort", "port")} ${c.sw_port ?? "?"}`
+      : c.connected === false ? L(`niet verbonden · laatst via ${dm[c.last_ap_mac]?.name || "?"}`, `not connected · last via ${dm[c.last_ap_mac]?.name || "?"}`) : `${dm[c.ap_mac]?.name || "–"}`);
     let rows = state.snap.clients.filter((c) =>
       (state.ckind === "all" || (state.ckind === "wifi" && !c.wired) || (state.ckind === "wired" && c.wired) || (state.ckind === "issues" && c.issue_count))
       && (!state.cuplink || c.ap_mac === state.cuplink || c.sw_mac === state.cuplink)
@@ -717,21 +727,22 @@
     rows.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * state.csort.dir; });
     const wifi = state.snap.clients.filter((c) => !c.wired).length;
     const bad = state.snap.clients.filter((c) => c.issue_count).length;
-    $("#cl-sub").textContent = `${state.snap.clients.length} verbonden · ${wifi} wifi · ${state.snap.clients.length - wifi} bedraad · ${bad} met problemen`;
+    $("#cl-sub").textContent = L(`${state.snap.clients.length} verbonden · ${wifi} wifi · ${state.snap.clients.length - wifi} bedraad · ${bad} met problemen`,
+      `${state.snap.clients.length} connected · ${wifi} wifi · ${state.snap.clients.length - wifi} wired · ${bad} with problems`);
     const th = (k, l, cls = "") => `<th class="${cls}" ${state.csort.key === k ? `aria-sort="${state.csort.dir > 0 ? "ascending" : "descending"}"` : ""}><button data-sort="${k}">${l}${state.csort.key === k ? (state.csort.dir > 0 ? " ↑" : " ↓") : ""}</button></th>`;
-    $("#cl-table").innerHTML = rows.length ? `<table><thead><tr>${th("name", "Naam")}${th("uplink", "Verbonden met")}${th("signal", "Signaal")}${th("retry", "Retries", "r")}${th("sat", "Ervaring", "r")}${th("rate", "Snelheid", "r")}<th>IP</th>${th("issues", "Status")}</tr></thead><tbody>
+    $("#cl-table").innerHTML = rows.length ? `<table><thead><tr>${th("name", L("Naam", "Name"))}${th("uplink", L("Verbonden met", "Connected to"))}${th("signal", L("Signaal", "Signal"))}${th("retry", "Retries", "r")}${th("sat", L("Ervaring", "Experience"), "r")}${th("rate", L("Snelheid", "Speed"), "r")}<th>IP</th>${th("issues", "Status")}</tr></thead><tbody>
       ${rows.map((c) => {
         const rl = level("retry", c.retry_pct), sl = level("sat", c.satisfaction);
         return `<tr data-id="${esc(c.mac)}" tabindex="0" ${state.drawer?.id === c.mac ? 'aria-selected="true"' : ""}>
           <td><div class="cell-name">${esc(c.name)}</div><div class="cell-sub">${esc(c.vendor || c.mac)}</div></td>
-          <td><div style="display:flex;gap:8px;align-items:center">${icon(c.wired ? "cable" : "wifi")}<div><div>${esc(uplinkName(c))}</div><div class="cell-sub">${c.wired ? "bedraad" : c.connected === false ? `${c.last_seen ? ago(c.last_seen) + " geleden gezien" : "even weg"}` : `${c.band} GHz · kanaal ${c.channel} · ${proto(c.proto)}`}</div></div></div></td>
+          <td><div style="display:flex;gap:8px;align-items:center">${icon(c.wired ? "cable" : "wifi")}<div><div>${esc(uplinkName(c))}</div><div class="cell-sub">${c.wired ? L("bedraad", "wired") : c.connected === false ? `${c.last_seen ? L(`${ago(c.last_seen)} geleden gezien`, `seen ${ago(c.last_seen)} ago`) : L("even weg", "briefly away")}` : `${c.band} GHz · ${L("kanaal", "channel")} ${c.channel} · ${proto(c.proto)}`}</div></div></div></td>
           <td>${c.wired ? '<span class="muted">–</span>' : signalBars(c.signal, c.band)}</td>
           <td class="r num ${rl && rl !== "ok" ? "t-" + rl : ""}">${c.retry_pct == null ? "–" : nf(c.retry_pct, 1) + "%"}</td>
           <td class="r num ${sl && sl !== "ok" ? "t-" + sl : ""}">${nf(c.satisfaction)}</td>
           <td class="r num">${c.wired ? "–" : nf(c.tx_rate_mbps) + " Mbit/s"}</td>
           <td class="num muted">${esc(c.ip)}</td>
-          <td>${c.connected === false ? badge("", "Niet verbonden") : c.issue_count ? badge(c.score < 70 ? "critical" : "warning", `${c.issue_count} probleem${c.issue_count > 1 ? "en" : ""}`, "alert") : badge("ok", "OK", "check")}</td></tr>`;
-      }).join("")}</tbody></table>` : `<div class="empty">Geen clients gevonden</div>`;
+          <td>${c.connected === false ? badge("", L("Niet verbonden", "Not connected")) : c.issue_count ? badge(c.score < 70 ? "critical" : "warning", plural(c.issue_count, L("probleem", "problem"), L("problemen", "problems")), "alert") : badge("ok", "OK", "check")}</td></tr>`;
+      }).join("")}</tbody></table>` : `<div class="empty">${L("Geen clients gevonden", "No clients found")}</div>`;
   };
 
   // ------------------------------------------------------------------ internet
@@ -739,24 +750,24 @@
                 usage: null, usagePeriod: store.get("net.usage", "day") };
   const mb = (bps) => (bps == null ? null : bps / 1e6);
   const mbTxt = (v) => (v == null ? "–" : nf(v, v < 10 ? 1 : 0));
-  const dateTxt = (t, withTime) => new Date(t * 1000).toLocaleString("nl-NL", withTime ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short" });
+  const dateTxt = (t, withTime) => new Date(t * 1000).toLocaleString(LOC, withTime ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short" });
   function mountInternet() {
     mount("internet", `
-      <div class="page-head"><div><h1>Internet</h1><p class="subtitle" id="net-sub">Live verkeer en de snelheid van je verbinding.</p></div>
-        <div class="seg" role="group" aria-label="Periode" id="net-range">${[[6, "6 u"], [24, "24 u"], [168, "7 d"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${net.hours === h}">${l}</button>`).join("")}</div></div>
+      <div class="page-head"><div><h1>Internet</h1><p class="subtitle" id="net-sub">${L("Live verkeer en de snelheid van je verbinding.", "Live traffic and the speed of your connection.")}</p></div>
+        <div class="seg" role="group" aria-label="${L("Periode", "Period")}" id="net-range">${[[6, L("6 u", "6 h")], [24, L("24 u", "24 h")], [168, "7 d"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${net.hours === h}">${l}</button>`).join("")}</div></div>
       <div id="net-banner"></div>
-      <section class="grid kpis net-kpis" id="net-kpis" aria-label="Internet nu"></section>
+      <section class="grid kpis net-kpis" id="net-kpis" aria-label="${L("Internet nu", "Internet now")}"></section>
       <section class="grid cols-main" style="margin-bottom:16px">
-        <div class="card"><div class="card-head"><h2 style="margin:0">Live verkeer</h2><span class="muted" id="net-live-sub"></span></div><div id="net-live"></div>
-          <p class="help" style="margin:8px 0 0">De gateway geeft zijn tellers om de 10 à 45 seconden door aan UniFi; daarom springt de lijn in stapjes.</p></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">${L("Live verkeer", "Live traffic")}</h2><span class="muted" id="net-live-sub"></span></div><div id="net-live"></div>
+          <p class="help" style="margin:8px 0 0">${L("De gateway geeft zijn tellers om de 10 à 45 seconden door aan UniFi; daarom springt de lijn in stapjes.", "The gateway passes its counters to UniFi every 10 to 45 seconds; that is why the line moves in steps.")}</p></div>
         <div class="card" id="net-test" aria-live="polite"></div>
       </section>
-      <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>Internetverkeer</h3><span class="muted" id="net-hist-sub"></span></div><div id="net-hist"></div></section>
-      <section class="card" style="margin-bottom:16px" id="net-usage"><div class="card-head"><h3>Datagebruik</h3>
-          <div class="seg" role="group" aria-label="Per dag of per maand" id="net-usage-seg">${[["day", "Per dag"], ["month", "Per maand"]].map(([k, l]) => `<button data-p="${k}" aria-pressed="${net.usagePeriod === k}">${l}</button>`).join("")}</div></div>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>${L("Internetverkeer", "Internet traffic")}</h3><span class="muted" id="net-hist-sub"></span></div><div id="net-hist"></div></section>
+      <section class="card" style="margin-bottom:16px" id="net-usage"><div class="card-head"><h3>${L("Datagebruik", "Data usage")}</h3>
+          <div class="seg" role="group" aria-label="${L("Per dag of per maand", "Per day or per month")}" id="net-usage-seg">${[["day", L("Per dag", "Per day")], ["month", L("Per maand", "Per month")]].map(([k, l]) => `<button data-p="${k}" aria-pressed="${net.usagePeriod === k}">${l}</button>`).join("")}</div></div>
         <div class="usage-kpis" id="net-usage-kpis"></div><div id="net-usage-chart"></div>
         <p class="help" id="net-usage-note" style="margin:8px 0 0"></p></section>
-      <section class="card"><div class="card-head"><h3>Speedtests</h3><span class="muted" id="net-st-sub">afgelopen 90 dagen</span></div><div id="net-st-chart"></div>
+      <section class="card"><div class="card-head"><h3>${L("Speedtests", "Speed tests")}</h3><span class="muted" id="net-st-sub">${L("afgelopen 90 dagen", "past 90 days")}</span></div><div id="net-st-chart"></div>
         <div class="table-wrap" style="border:0;margin-top:12px" id="net-st-table"></div></section>`);
     $("#net-range").addEventListener("click", (e) => {
       const b = e.target.closest("button[data-h]"); if (!b) return;
@@ -785,24 +796,24 @@
     if (current !== "internet") return;
     net.data = d;
     const w = d.wan || {};
-    $("#net-sub").textContent = [w.isp, w.link_mbps ? `WAN-poort ${speed(w.link_mbps)}` : null, "live verkeer en snelheid"].filter(Boolean).join(" · ");
-    $("#net-banner").innerHTML = d.available ? "" : `<div class="banner err">${icon("info")}<span>Live verkeer en speedtests zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).</span></div>`;
-    $("#net-hist-sub").textContent = `gemiddeld per ${d.bucket >= 3600 ? d.bucket / 3600 + " uur" : d.bucket / 60 + " min"}`;
+    $("#net-sub").textContent = [w.isp, w.link_mbps ? `${L("WAN-poort", "WAN port")} ${speed(w.link_mbps)}` : null, L("live verkeer en snelheid", "live traffic and speed")].filter(Boolean).join(" · ");
+    $("#net-banner").innerHTML = d.available ? "" : `<div class="banner err">${icon("info")}<span>${L("Live verkeer en speedtests zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).", "Live traffic and speed tests are only available via the extended UniFi API (API key or local account).")}</span></div>`;
+    $("#net-hist-sub").textContent = `${L("gemiddeld per", "average per")} ${d.bucket >= 3600 ? d.bucket / 3600 + L(" uur", " h") : d.bucket / 60 + " min"}`;
     MEcharts.lineChart($("#net-hist"), { series: [
       { name: "Download", color: C.cyan, data: d.series.map((p) => [p.t, mb(p.rx)]) },
       { name: "Upload", color: C.violet, data: d.series.map((p) => [p.t, mb(p.tx)]) }],
-      unit: " Mbit/s", yMin: 0, bucket: d.bucket, label: "Internetverkeer in Mbit/s",
+      unit: " Mbit/s", yMin: 0, bucket: d.bucket, label: L("Internetverkeer in Mbit/s", "Internet traffic in Mbit/s"),
       xfmt: net.hours > 48 ? (t) => dateTxt(t) : undefined });
     const st = d.speedtests;
-    $("#net-st-sub").textContent = st.length ? `${plural(st.length, "test", "tests")} in de afgelopen 90 dagen` : "afgelopen 90 dagen";
+    $("#net-st-sub").textContent = st.length ? `${plural(st.length, "test", "tests")} ${L("in de afgelopen 90 dagen", "in the past 90 days")}` : L("afgelopen 90 dagen", "past 90 days");
     MEcharts.lineChart($("#net-st-chart"), { series: [
       { name: "Download", color: C.cyan, data: st.map((r) => [r.ts, r.down]) },
       { name: "Upload", color: C.violet, data: st.map((r) => [r.ts, r.up]) }],
-      unit: " Mbit/s", yMin: 0, bucket: 86400 * 4, markers: true, label: "Speedtest-resultaten",
+      unit: " Mbit/s", yMin: 0, bucket: 86400 * 4, markers: true, label: L("Speedtest-resultaten", "Speed test results"),
       xfmt: (t) => dateTxt(t), tfmt: (t) => dateTxt(t, true) });
-    $("#net-st-table").innerHTML = st.length ? `<table><thead><tr><th>Wanneer</th><th class="r">Download</th><th class="r">Upload</th><th class="r">Ping</th><th>Server</th></tr></thead><tbody>
+    $("#net-st-table").innerHTML = st.length ? `<table><thead><tr><th>${L("Wanneer", "When")}</th><th class="r">Download</th><th class="r">Upload</th><th class="r">Ping</th><th>Server</th></tr></thead><tbody>
       ${st.slice(-10).reverse().map((r) => `<tr style="cursor:default"><td class="num">${dateTxt(r.ts, true)}</td><td class="r num">${mbTxt(r.down)} Mbit/s</td><td class="r num">${mbTxt(r.up)} Mbit/s</td><td class="r num">${r.latency == null ? "–" : nf(r.latency) + " ms"}</td><td class="muted">${esc(r.server || "–")}</td></tr>`).join("")}</tbody></table>`
-      : `<div class="empty">Nog geen speedtests. Start er hierboven een.</div>`;
+      : `<div class="empty">${L("Nog geen speedtests. Start er hierboven een.", "No speed tests yet. Start one above.")}</div>`;
     renderNetKpis(); renderTest(); loadUsage();
   }
   async function loadUsage() {
@@ -817,44 +828,45 @@
     const tm = u.this_month, lm = u.last_month;
     const pace = tm && u.avg_day ? (() => {   // verwachting voor de hele maand op basis van het gemiddelde per dag
       const d = new Date(), days = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-      return `verwacht ~${gb((u.avg_day.rx + u.avg_day.tx) * days)}`;
+      return `${L("verwacht", "expected")} ~${gb((u.avg_day.rx + u.avg_day.tx) * days)}`;
     })() : "";
-    $("#net-usage-kpis").innerHTML = tile("Vandaag", u.today, "tot nu") + tile("Deze maand", tm, pace) + tile("Vorige maand", lm) +
-      tile("Gemiddeld per dag", u.avg_day, "laatste 30 dagen");
+    $("#net-usage-kpis").innerHTML = tile(L("Vandaag", "Today"), u.today, L("tot nu", "so far")) + tile(L("Deze maand", "This month"), tm, pace) + tile(L("Vorige maand", "Last month"), lm) +
+      tile(L("Gemiddeld per dag", "Average per day"), u.avg_day, L("laatste 30 dagen", "last 30 days"));
     const rows = net.usagePeriod === "month" ? u.months.slice(-24) : u.days.slice(-60);
     const running = rows.length && rows[rows.length - 1].ts === (net.usagePeriod === "month" ? u.month0 : u.day0) ? rows.length - 1 : -1;
     const toGb = (b) => b / 1e9;
     MEcharts.barChart($("#net-usage-chart"), {
       labels: rows.map((r) => r.ts), highlight: running, height: 210,
       series: [{ name: "Download", color: C.cyan, data: rows.map((r) => toGb(r.rx)) }, { name: "Upload", color: C.violet, data: rows.map((r) => toGb(r.tx)) }],
-      fmt: (v) => `${nf(v, v < 10 && v > 0 ? 1 : 0)} GB`, label: `Datagebruik ${net.usagePeriod === "month" ? "per maand" : "per dag"}`,
-      xfmt: (t) => new Date(t * 1000).toLocaleDateString("nl-NL", net.usagePeriod === "month" ? { month: "short", year: "2-digit" } : { day: "numeric", month: "short" }),
-      tfmt: (t) => new Date(t * 1000).toLocaleDateString("nl-NL", net.usagePeriod === "month" ? { month: "long", year: "numeric" } : { weekday: "long", day: "numeric", month: "long" }),
+      fmt: (v) => `${nf(v, v < 10 && v > 0 ? 1 : 0)} GB`, label: `${L("Datagebruik", "Data usage")} ${net.usagePeriod === "month" ? L("per maand", "per month") : L("per dag", "per day")}`,
+      xfmt: (t) => new Date(t * 1000).toLocaleDateString(LOC, net.usagePeriod === "month" ? { month: "short", year: "2-digit" } : { day: "numeric", month: "short" }),
+      tfmt: (t) => new Date(t * 1000).toLocaleDateString(LOC, net.usagePeriod === "month" ? { month: "long", year: "numeric" } : { weekday: "long", day: "numeric", month: "long" }),
     });
-    $("#net-usage-note").textContent = u.error ? `Ophalen lukte niet: ${u.error}`
-      : u.since ? `Gegevens van je gateway sinds ${new Date(u.since * 1000).toLocaleDateString("nl-NL", { day: "numeric", month: "long", year: "numeric" })}. Sonar bewaart ze zelf, dus de historie groeit vanaf nu.` : "";
+    const since = u.since ? new Date(u.since * 1000).toLocaleDateString(LOC, { day: "numeric", month: "long", year: "numeric" }) : "";
+    $("#net-usage-note").textContent = u.error ? `${L("Ophalen lukte niet", "Fetching failed")}: ${u.error}`
+      : u.since ? L(`Gegevens van je gateway sinds ${since}. Sonar bewaart ze zelf, dus de historie groeit vanaf nu.`, `Data from your gateway since ${since}. Sonar keeps it itself, so the history grows from now on.`) : "";
   }
   const normal = (key) => {   // wat is normaal voor deze verbinding: mediaan van de tests
     const v = (net.data?.speedtests || []).map((r) => r[key]).filter(Boolean).sort((a, b) => a - b);
     return v.length ? v[Math.floor(v.length / 2)] : null;
   };
   function renderNetKpis() {
-    const L = net.last, d = net.data;
+    const cur = net.last, d = net.data;
     if (!$("#net-kpis") || !d) return;
     const last = d.speedtests[d.speedtests.length - 1];
-    const fresh = L ? Math.max(0, Math.round(L.now - L.updated)) : null;
+    const fresh = cur ? Math.max(0, Math.round(cur.now - cur.updated)) : null;
     const kpi = (ic, label, v, unit, ref, sub) => {
       const pct = ref && v != null ? Math.min(100, (100 * v) / ref) : null;
       return `<div class="card compact kpi"><div class="label">${icon(ic)}${label}</div><div class="value">${mbTxt(v)}<small>${unit}</small></div>
-        ${pct != null ? `<div class="scorebar" title="${nf(pct)}% van wat de verbinding haalt"><span style="width:${pct}%"></span></div>` : ""}<div class="sub">${sub}</div></div>`;
+        ${pct != null ? `<div class="scorebar" title="${L(`${nf(pct)}% van wat de verbinding haalt`, `${nf(pct)}% of what the connection achieves`)}"><span style="width:${pct}%"></span></div>` : ""}<div class="sub">${sub}</div></div>`;
     };
-    const live = L ? `<span class="live-dot" aria-hidden="true"></span>${fresh < 5 ? "zojuist" : `${dur(fresh)} geleden`}` : "laden…";
+    const live = cur ? `<span class="live-dot" aria-hidden="true"></span>${fresh < 5 ? L("zojuist", "just now") : L(`${dur(fresh)} geleden`, `${dur(fresh)} ago`)}` : L("laden…", "loading…");
     $("#net-kpis").innerHTML =
-      kpi("activity", "Download nu", mb(L?.rx_bps), "Mbit/s", normal("down"), live) +
-      kpi("activity", "Upload nu", mb(L?.tx_bps), "Mbit/s", normal("up"), normal("up") ? `van ~${mbTxt(normal("up"))} Mbit/s` : "") +
-      `<div class="card compact kpi"><div class="label">${icon("clock")}Latency</div><div class="value">${L?.latency_ms == null ? "–" : nf(L.latency_ms)}<small>ms</small></div><div class="sub">naar internet</div></div>` +
-      `<div class="card compact kpi"><div class="label">${icon("gauge")}Laatste speedtest</div><div class="value">${last ? mbTxt(last.down) : "–"}<small>/ ${last ? mbTxt(last.up) : "–"} Mbit/s</small></div>
-        <div class="sub">${last ? `${dateTxt(last.ts, true)} · ping ${nf(last.latency)} ms` : "nog niet gemeten"}</div></div>`;
+      kpi("activity", L("Download nu", "Download now"), mb(cur?.rx_bps), "Mbit/s", normal("down"), live) +
+      kpi("activity", L("Upload nu", "Upload now"), mb(cur?.tx_bps), "Mbit/s", normal("up"), normal("up") ? `${L("van", "of")} ~${mbTxt(normal("up"))} Mbit/s` : "") +
+      `<div class="card compact kpi"><div class="label">${icon("clock")}Latency</div><div class="value">${cur?.latency_ms == null ? "–" : nf(cur.latency_ms)}<small>ms</small></div><div class="sub">${L("naar internet", "to the internet")}</div></div>` +
+      `<div class="card compact kpi"><div class="label">${icon("gauge")}${L("Laatste speedtest", "Last speed test")}</div><div class="value">${last ? mbTxt(last.down) : "–"}<small>/ ${last ? mbTxt(last.up) : "–"} Mbit/s</small></div>
+        <div class="sub">${last ? `${dateTxt(last.ts, true)} · ping ${nf(last.latency)} ms` : L("nog niet gemeten", "not measured yet")}</div></div>`;
   }
   const PHASES = [["ping", "Ping"], ["download", "Download"], ["upload", "Upload"]];
   function renderTest() {
@@ -866,26 +878,26 @@
     const nd = normal("down");
     if (t.running) {
       const at = PHASES.findIndex(([k]) => k === g.phase);
-      root.innerHTML = `<div class="card-head"><h2 style="margin:0">Speedtest</h2><span class="badge info"><span class="live-dot"></span>bezig</span></div>
+      root.innerHTML = `<div class="card-head"><h2 style="margin:0">${L("Speedtest", "Speed test")}</h2><span class="badge info"><span class="live-dot"></span>${L("bezig", "running")}</span></div>
         <ol class="st-steps">${PHASES.map(([k, l], i) => {
           const val = i < at ? (k === "ping" ? (g.latency != null ? `${nf(g.latency)} ms` : "") : g[k === "download" ? "down" : "up"] != null ? `${mbTxt(g[k === "download" ? "down" : "up"])} Mbit/s` : "") : "";
           return `<li class="${at < 0 ? (i === 0 ? "active" : "") : i < at ? "done" : i === at ? "active" : ""}">${i < at ? icon("check") : `<span>${i + 1}</span>`}${l}${val ? `<b class="num st-val">${val}</b>` : ""}</li>`;
         }).join("")}</ol>
-        <p class="muted">Je gateway meet nu de snelheid van je internetverbinding. Dit duurt 15 tot 30 seconden.</p>`;
+        <p class="muted">${L("Je gateway meet nu de snelheid van je internetverbinding. Dit duurt 15 tot 30 seconden.", "Your gateway is now measuring the speed of your internet connection. This takes 15 to 30 seconds.")}</p>`;
       return;
     }
     const res = last ? `<div class="st-result"><div><div class="k">Download</div><div class="v">${mbTxt(last.down)}<small>Mbit/s</small></div></div>
         <div><div class="k">Upload</div><div class="v">${mbTxt(last.up)}<small>Mbit/s</small></div></div>
         <div><div class="k">Ping</div><div class="v">${last.latency == null ? "–" : nf(last.latency)}<small>ms</small></div></div></div>
-        <p class="muted" style="margin:6px 0 0">${dateTxt(last.ts, true)}${nd && last.down < 0.8 * nd ? ` · <span class="t-warning">lager dan normaal (~${mbTxt(nd)} Mbit/s)</span>` : nd ? ` · normaal ~${mbTxt(nd)} Mbit/s` : ""}</p>` : "";
-    root.innerHTML = `<div class="card-head"><h2 style="margin:0">Speedtest</h2></div>${res}
+        <p class="muted" style="margin:6px 0 0">${dateTxt(last.ts, true)}${nd && last.down < 0.8 * nd ? ` · <span class="t-warning">${L("lager dan normaal", "lower than normal")} (~${mbTxt(nd)} Mbit/s)</span>` : nd ? ` · ${L("normaal", "normal")} ~${mbTxt(nd)} Mbit/s` : ""}</p>` : "";
+    root.innerHTML = `<div class="card-head"><h2 style="margin:0">${L("Speedtest", "Speed test")}</h2></div>${res}
       ${t.error ? `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(t.error)}</span></div>` : ""}
-      <div class="wiz-actions" style="margin-top:16px"><button class="btn primary" data-st="start" ${net.data.available ? "" : "disabled"}>${icon("gauge")}Start speedtest</button></div>
-      <p class="help">De test draait op je gateway zelf en meet dus je echte internetverbinding, los van wifi of dit apparaat. Duurt 15 tot 30 seconden en gebruikt even je volledige bandbreedte.</p>`;
+      <div class="wiz-actions" style="margin-top:16px"><button class="btn primary" data-st="start" ${net.data.available ? "" : "disabled"}>${icon("gauge")}${L("Start speedtest", "Start speed test")}</button></div>
+      <p class="help">${L("De test draait op je gateway zelf en meet dus je echte internetverbinding, los van wifi of dit apparaat. Duurt 15 tot 30 seconden en gebruikt even je volledige bandbreedte.", "The test runs on your gateway itself, so it measures your real internet connection, independent of wifi or this device. Takes 15 to 30 seconds and briefly uses your full bandwidth.")}</p>`;
   }
   async function startSpeedtest() {
     const b = $("[data-st=start]");
-    if (b) { b.disabled = true; b.textContent = "Starten…"; }
+    if (b) { b.disabled = true; b.textContent = L("Starten…", "Starting…"); }
     try {
       await post("/api/speedtest", {});
       net.last = { ...(net.last || {}), test: { running: true }, speedtest: { phase: "ping" } };
@@ -904,20 +916,20 @@
     MEcharts.lineChart($("#net-live"), { series: [
       { name: "Download", color: C.cyan, data: net.live.map((p) => [p.t, p.rx]) },
       { name: "Upload", color: C.violet, data: net.live.map((p) => [p.t, p.tx]) }],
-      unit: " Mbit/s", yMin: 0, bucket: 60, label: "Live internetverkeer in Mbit/s", tfmt: (t) => new Date(t * 1000).toLocaleTimeString("nl-NL") });
-    $("#net-live-sub").textContent = "laatste 15 minuten";
+      unit: " Mbit/s", yMin: 0, bucket: 60, label: L("Live internetverkeer in Mbit/s", "Live internet traffic in Mbit/s"), tfmt: (t) => new Date(t * 1000).toLocaleTimeString(LOC) });
+    $("#net-live-sub").textContent = L("laatste 15 minuten", "last 15 minutes");
   }
   async function liveLoop() {
     clearTimeout(net.timer);
     if (current !== "internet") return;
     try {
-      const L = await api("/api/live/wan");
+      const live = await api("/api/live/wan");
       const prev = net.last;
-      net.last = L;
-      if (!prev || prev.updated !== L.updated) { net.live.push({ t: L.updated, rx: mb(L.rx_bps), tx: mb(L.tx_bps) }); drawLive(); }
+      net.last = live;
+      if (!prev || prev.updated !== live.updated) { net.live.push({ t: live.updated, rx: mb(live.rx_bps), tx: mb(live.tx_bps) }); drawLive(); }
       renderNetKpis();
-      if (net.wasRunning && !L.test.running) { net.wasRunning = false; loadInternet(); }
-      else if (L.test.running) { net.wasRunning = true; renderTest(); }
+      if (net.wasRunning && !live.test.running) { net.wasRunning = false; loadInternet(); }
+      else if (live.test.running) { net.wasRunning = true; renderTest(); }
     } catch (e) {
       $("#net-live-sub").textContent = e.message;
     }
@@ -926,26 +938,26 @@
 
   // ------------------------------------------------------------------ beveiliging
   const secState = { hours: store.get("sec.hours", 24), scope: "all", ignored: false };
-  const ignMenu = (opts) => `<details class="mute ign"><summary class="mutebtn">Negeren</summary><div class="mute-menu" role="group" aria-label="Negeren">${opts.map(([l, o]) => `<button data-ign="${esc(JSON.stringify(o))}">${l}</button>`).join("")}</div></details>`;
+  const ignMenu = (opts) => `<details class="mute ign"><summary class="mutebtn">${L("Negeren", "Ignore")}</summary><div class="mute-menu" role="group" aria-label="${L("Negeren", "Ignore")}">${opts.map(([l, o]) => `<button data-ign="${esc(JSON.stringify(o))}">${l}</button>`).join("")}</div></details>`;
   const catLabel = (c) => (c || "").replace(/^emerging-/, "").replace(/-/g, " ");
   function mountSecurity() {
     mount("beveiliging", `
-      <div class="page-head"><div><h1>Beveiliging</h1><p class="subtitle">Wat de IPS op je gateway tegenhield, wat er openstaat naar internet en hoe je netwerken van elkaar gescheiden zijn. Aanvallen van buiten zijn normaal; blokkades van <b>eigen apparaten</b> verdienen aandacht.</p></div>
-        <div class="seg" role="group" aria-label="Periode" id="sec-range">${[[24, "24 u"], [168, "7 d"], [336, "14 d"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${secState.hours === h}">${l}</button>`).join("")}</div></div>
+      <div class="page-head"><div><h1>${L("Beveiliging", "Security")}</h1><p class="subtitle">${L("Wat de IPS op je gateway tegenhield, wat er openstaat naar internet en hoe je netwerken van elkaar gescheiden zijn. Aanvallen van buiten zijn normaal; blokkades van <b>eigen apparaten</b> verdienen aandacht.", "What the IPS on your gateway stopped, what is open to the internet and how your networks are separated. Attacks from outside are normal; blocks of <b>your own devices</b> deserve attention.")}</p></div>
+        <div class="seg" role="group" aria-label="${L("Periode", "Period")}" id="sec-range">${[[24, L("24 u", "24 h")], [168, "7 d"], [336, "14 d"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${secState.hours === h}">${l}</button>`).join("")}</div></div>
       <div id="sec-banner"></div>
       <section class="grid kpis" id="sec-kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))"></section>
       <section class="grid cols-2" style="margin-bottom:16px">
-        <div class="card"><div class="card-head"><h2 style="margin:0">Meest geraakte regels</h2></div><div class="rank" id="sec-sigs"></div></div>
-        <div class="card"><div class="card-head"><h2 style="margin:0">Bronnen</h2></div><div class="rank" id="sec-srcs"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">${L("Meest geraakte regels", "Most hit rules")}</h2></div><div class="rank" id="sec-sigs"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">${L("Bronnen", "Sources")}</h2></div><div class="rank" id="sec-srcs"></div></div>
       </section>
-      <section class="card" style="margin-bottom:16px" id="sec-seg-card"><div class="card-head"><h2 style="margin:0">Netwerkscheiding</h2><span class="muted" id="sec-seg-sub"></span></div>
+      <section class="card" style="margin-bottom:16px" id="sec-seg-card"><div class="card-head"><h2 style="margin:0">${L("Netwerkscheiding", "Network segmentation")}</h2><span class="muted" id="sec-seg-sub"></span></div>
         <div class="seg-nets" id="sec-seg-nets"></div><div id="sec-seg-matrix"></div><div id="sec-seg-issues"></div></section>
-      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">Open naar internet</h2><span class="muted" id="sec-expo-sub"></span></div><div id="sec-expo"></div></section>
-      <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>Blokkades in de tijd</h3><span class="muted" id="sec-bucket"></span></div><div id="sec-chart"></div></section>
-      <div class="toolbar"><div class="chips" role="group" aria-label="Bron" id="sec-scope">${[["all", "Alles"], ["internal", "Eigen apparaten"], ["external", "Van buiten"]].map(([v, l]) => `<button class="chip" data-s="${v}" aria-pressed="${secState.scope === v}">${l}</button>`).join("")}</div>
-        <button class="chip" id="sec-ignored" aria-pressed="${secState.ignored}">Genegeerde tonen <span class="num" id="sec-ignored-n"></span></button></div>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Open naar internet", "Open to the internet")}</h2><span class="muted" id="sec-expo-sub"></span></div><div id="sec-expo"></div></section>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>${L("Blokkades in de tijd", "Blocks over time")}</h3><span class="muted" id="sec-bucket"></span></div><div id="sec-chart"></div></section>
+      <div class="toolbar"><div class="chips" role="group" aria-label="${L("Bron", "Source")}" id="sec-scope">${[["all", L("Alles", "All")], ["internal", L("Eigen apparaten", "Own devices")], ["external", L("Van buiten", "From outside")]].map(([v, l]) => `<button class="chip" data-s="${v}" aria-pressed="${secState.scope === v}">${l}</button>`).join("")}</div>
+        <button class="chip" id="sec-ignored" aria-pressed="${secState.ignored}">${L("Genegeerde tonen", "Show ignored")} <span class="num" id="sec-ignored-n"></span></button></div>
       <div class="table-wrap" id="sec-table"></div>
-      <section class="card" style="margin-top:16px" id="sec-ign-card" hidden><div class="card-head"><h3>Negeerregels</h3><span class="muted">tellen niet mee in de cijfers en geven geen meldingen</span></div><div id="sec-ign"></div></section>`);
+      <section class="card" style="margin-top:16px" id="sec-ign-card" hidden><div class="card-head"><h3>${L("Negeerregels", "Ignore rules")}</h3><span class="muted">${L("tellen niet mee in de cijfers en geven geen meldingen", "not counted in the figures and raise no issues")}</span></div><div id="sec-ign"></div></section>`);
     $("#sec-range").addEventListener("click", (e) => {
       const b = e.target.closest("button[data-h]"); if (!b) return;
       secState.hours = +b.dataset.h; store.set("sec.hours", secState.hours);
@@ -964,7 +976,8 @@
   }
   // ------------------------------------------------------------------ netwerkscheiding
   let segData = null;
-  const SEG_KIND = { main: ["Hoofdnetwerk", "home"], iot: ["Slimme apparaten", "plug"], other: ["Apart netwerk", "layers"], guest: ["Gasten", "users"] };
+  const SEG_KIND = { main: [L("Hoofdnetwerk", "Main network"), "home"], iot: [L("Slimme apparaten", "Smart devices"), "plug"],
+    other: [L("Apart netwerk", "Separate network"), "layers"], guest: [L("Gasten", "Guests"), "users"] };
   async function loadSegments() {
     try { segData = await api("/api/segments"); } catch { segData = null; }
     if (current !== "beveiliging") return;
@@ -979,10 +992,10 @@
     const all = segIssues(), open = all.filter((i) => !i.muted), muted = all.length - open.length;
     const hasApart = segData.segments.some((s) => s.kind === "iot" || s.kind === "other");
     const shown = state.segShowMuted ? all : open;
-    el.innerHTML = `<div class="seg-sub-head"><h3>${hasApart ? "Slimme apparaten op je hoofdnetwerk" : "Advies"}</h3>
-        ${muted ? `<button class="chip" id="seg-muted" aria-pressed="${!!state.segShowMuted}">Genegeerde tonen <span class="num">(${muted})</span></button>` : ""}</div>
+    el.innerHTML = `<div class="seg-sub-head"><h3>${hasApart ? L("Slimme apparaten op je hoofdnetwerk", "Smart devices on your main network") : L("Advies", "Advice")}</h3>
+        ${muted ? `<button class="chip" id="seg-muted" aria-pressed="${!!state.segShowMuted}">${L("Genegeerde tonen", "Show ignored")} <span class="num">(${muted})</span></button>` : ""}</div>
       ${shown.length ? segListHTML(shown, all)
-        : `<div class="empty">${icon("check")}<div>${hasApart ? "Alle herkende slimme apparaten staan op een apart netwerk" : "Niets te melden"}</div></div>`}`;
+        : `<div class="empty">${icon("check")}<div>${hasApart ? L("Alle herkende slimme apparaten staan op een apart netwerk", "All recognized smart devices are on a separate network") : L("Niets te melden", "Nothing to report")}</div></div>`}`;
     const b = $("#seg-muted");
     if (b) b.onclick = () => { state.segShowMuted = !state.segShowMuted; renderSegIssues(); };
   }
@@ -991,43 +1004,43 @@
     const general = shown.filter((i) => !i.key.startsWith("segment:") || i.key === "segment:none");
     const devs = shown.filter((i) => !general.includes(i));
     const cli = cliByMac();
-    const target = (segData.segments.find((s) => s.kind === "iot") || segData.segments.find((s) => s.kind === "other") || {}).name || "het aparte netwerk";
+    const target = (segData.segments.find((s) => s.kind === "iot") || segData.segments.find((s) => s.kind === "other") || {}).name || L("het aparte netwerk", "the separate network");
     return `${general.length ? `<div class="issue-list" style="margin-bottom:12px">${general.map((i) => issueHTML(i, all)).join("")}</div>` : ""}
-      ${devs.length ? `<div class="advice seg-advice">${icon("bulb")}<span><b>Verhuizen naar ${esc(target)}:</b> wifi-apparaten in UniFi bij het apparaat → Settings → Virtual Network Override (kan op dezelfde SSID). Daarna stellen alle access points zich opnieuw in en valt de wifi ongeveer een minuut weg, dus verhuis ze in één keer. Bekabelde apparaten via de switchpoort (Port Manager → Native VLAN/Network). Pas daarna het nieuwe IP-adres aan in Home Assistant of de app die het aanstuurt. Hoort een apparaat bewust hier? Kies Negeren → Altijd.</span></div>
+      ${devs.length ? `<div class="advice seg-advice">${icon("bulb")}<span>${L(`<b>Verhuizen naar ${esc(target)}:</b> wifi-apparaten in UniFi bij het apparaat → Settings → Virtual Network Override (kan op dezelfde SSID). Daarna stellen alle access points zich opnieuw in en valt de wifi ongeveer een minuut weg, dus verhuis ze in één keer. Bekabelde apparaten via de switchpoort (Port Manager → Native VLAN/Network). Pas daarna het nieuwe IP-adres aan in Home Assistant of de app die het aanstuurt. Hoort een apparaat bewust hier? Kies Negeren → Altijd.`, `<b>Moving to ${esc(target)}:</b> wifi devices in UniFi at the device → Settings → Virtual Network Override (works on the same SSID). Afterwards all access points re-provision and wifi drops for about a minute, so move them all at once. Wired devices via the switch port (Port Manager → Native VLAN/Network). Then update the new IP address in Home Assistant or the app that controls the device. Does a device belong here on purpose? Choose Ignore → Always.`)}</span></div>
       <div class="seg-devs">${devs.map((i) => {
         const c = cli[i.client_mac] || {};
         const why = (i.detail.match(/\(([^)]+)\)/) || [])[1] || "";
-        const via = c.wired ? `bekabeld · ${devName(c.sw_mac)}${c.sw_port ? ` poort ${c.sw_port}` : ""}` : c.ap_mac ? `wifi · ${devName(c.ap_mac)}` : "";
+        const via = c.wired ? `${L("bekabeld", "wired")} · ${devName(c.sw_mac)}${c.sw_port ? ` ${L("poort", "port")} ${c.sw_port}` : ""}` : c.ap_mac ? `wifi · ${devName(c.ap_mac)}` : "";
         return `<div class="seg-dev ${i.muted ? "muted" : ""}"><span class="seg-dev-ico">${icon(c.wired ? "cable" : "wifi")}</span>
-          <div style="min-width:0"><div class="seg-name">${esc(c.name || i.title.replace(" staat op je hoofdnetwerk", ""))}</div><div class="cell-sub">${esc([why, via, c.ip].filter(Boolean).join(" · "))}</div></div>
-          <div class="seg-dev-act">${i.muted ? badge("", "Genegeerd") : ""}${i.client_mac ? `<button class="linkbtn" data-open="client" data-id="${esc(i.client_mac)}">Bekijk</button>` : ""}${muteCtlHTML(i)}</div></div>`;
+          <div style="min-width:0"><div class="seg-name">${esc(c.name || i.title.replace(L(" staat op je hoofdnetwerk", " is on your main network"), ""))}</div><div class="cell-sub">${esc([why, via, c.ip].filter(Boolean).join(" · "))}</div></div>
+          <div class="seg-dev-act">${i.muted ? badge("", L("Genegeerd", "Ignored")) : ""}${i.client_mac ? `<button class="linkbtn" data-open="client" data-id="${esc(i.client_mac)}">${L("Bekijk", "View")}</button>` : ""}${muteCtlHTML(i)}</div></div>`;
       }).join("")}</div>` : ""}`;
   }
   function ruleText(r) {
-    const what = r.targets.length ? r.targets.join(", ") : r.to === "any" ? "alles" : r.to;
-    const port = r.port ? ` · poort ${r.port}${r.proto ? " " + r.proto : ""}` : r.proto ? ` · ${r.proto}` : "";
-    if (r.forward) return `${r.upnp ? "UPnP-mapping" : "port forward"} naar ${what}${port}`;
-    const from = r.sources && r.sources.length ? ` · alleen vanaf ${r.sources.join(", ")}` : "";
-    return `${r.action === "allow" ? "toegestaan" : "geblokkeerd"} naar ${what}${port}${from}`;
+    const what = r.targets.length ? r.targets.join(", ") : r.to === "any" ? L("alles", "everything") : r.to;
+    const port = r.port ? ` · ${L("poort", "port")} ${r.port}${r.proto ? " " + r.proto : ""}` : r.proto ? ` · ${r.proto}` : "";
+    if (r.forward) return `${r.upnp ? L("UPnP-mapping", "UPnP mapping") : "port forward"} ${L("naar", "to")} ${what}${port}`;
+    const from = r.sources && r.sources.length ? ` · ${L("alleen vanaf", "only from")} ${r.sources.join(", ")}` : "";
+    return `${r.action === "allow" ? L("toegestaan", "allowed") : L("geblokkeerd", "blocked")} ${L("naar", "to")} ${what}${port}${from}`;
   }
   function renderSegments() {
     const d = segData;
     if (!d || !d.available) {
       $("#sec-seg-sub").textContent = "";
-      $("#sec-seg-nets").innerHTML = `<p class="muted">Netwerken en firewallzones zijn alleen te zien via de uitgebreide UniFi-API (API-key of lokaal account).</p>`;
+      $("#sec-seg-nets").innerHTML = `<p class="muted">${L("Netwerken en firewallzones zijn alleen te zien via de uitgebreide UniFi-API (API-key of lokaal account).", "Networks and firewall zones are only visible via the extended UniFi API (API key or local account).")}</p>`;
       $("#sec-seg-issues").innerHTML = $("#sec-seg-matrix").innerHTML = "";
       return;
     }
     const nets = d.segments;
-    $("#sec-seg-sub").textContent = `${nets.length} netwerk${nets.length === 1 ? "" : "en"}${d.matrix ? ` · ${d.matrix.zones.length} firewallzones` : ""}`;
+    $("#sec-seg-sub").textContent = `${plural(nets.length, L("netwerk", "network"), L("netwerken", "networks"))}${d.matrix ? ` · ${d.matrix.zones.length} ${L("firewallzones", "firewall zones")}` : ""}`;
     $("#sec-seg-nets").innerHTML = nets.map((n) => {
       const [label, ic] = SEG_KIND[n.kind] || SEG_KIND.other;
-      const iso = n.isolated === true ? badge("ok", "Afgeschermd", "lock") : n.isolated === false ? badge("warning", "Niet afgeschermd", "alert") : "";
+      const iso = n.isolated === true ? badge("ok", L("Afgeschermd", "Isolated"), "lock") : n.isolated === false ? badge("warning", L("Niet afgeschermd", "Not isolated"), "alert") : "";
       return `<div class="seg-net">
         <div class="seg-net-head"><span class="seg-ico">${icon(ic)}</span><div style="min-width:0"><div class="seg-name">${esc(n.name)}</div><div class="cell-sub">${esc(label)}</div></div></div>
         <div class="seg-facts"><span>VLAN <b class="num">${n.vlan ?? "1"}</b></span>${n.subnet ? `<span class="num">${esc(n.subnet)}</span>` : ""}${n.zone ? `<span>zone <b>${esc(n.zone)}</b></span>` : ""}</div>
-        <div class="seg-count"><span class="num">${nf(n.clients)}</span> apparaten<span class="muted"> · ${nf(n.wifi)} wifi · ${nf(n.wired)} bekabeld</span></div>
-        <div class="seg-badges">${iso}${n.smart ? `<span class="muted">${nf(n.smart)} herkend als slim apparaat</span>` : ""}</div></div>`;
+        <div class="seg-count"><span class="num">${nf(n.clients)}</span> ${L("apparaten", "devices")}<span class="muted"> · ${nf(n.wifi)} wifi · ${nf(n.wired)} ${L("bekabeld", "wired")}</span></div>
+        <div class="seg-badges">${iso}${n.smart ? `<span class="muted">${nf(n.smart)} ${L("herkend als slim apparaat", "recognized as smart device")}</span>` : ""}</div></div>`;
     }).join("");
     renderSegIssues();
     renderFlowBlock();
@@ -1037,26 +1050,27 @@
     const cell = (a, b) => m.cells[`${a.id}>${b.id}`];
     const rows = srcs.map((a) => `<tr style="cursor:default"><th scope="row">${esc(a.name)}</th>${m.zones.map((b) => {
       const c = cell(a, b);
-      if (a.id === b.id && a.networks < 2) return `<td class="mx-na" title="Binnen één netwerk gaat verkeer niet via de firewall">–</td>`;
+      if (a.id === b.id && a.networks < 2) return `<td class="mx-na" title="${L("Binnen één netwerk gaat verkeer niet via de firewall", "Within one network traffic does not pass the firewall")}">–</td>`;
       if (!c || !c.effective) return `<td class="mx-na">?</td>`;
       const n = c.rules.filter((r) => r.enabled).length;
-      const lbl = c.effective === "allow" ? "Open" : "Dicht";
-      const tip = `${a.name} → ${b.name}: ${c.effective === "allow" ? "toegestaan" : "geblokkeerd"}${n ? `, met ${n} eigen regel${n > 1 ? "s" : ""}` : ""}`;
+      const lbl = c.effective === "allow" ? "Open" : L("Dicht", "Closed");
+      const tip = `${a.name} → ${b.name}: ${c.effective === "allow" ? L("toegestaan", "allowed") : L("geblokkeerd", "blocked")}${n ? L(`, met ${n} eigen regel${n > 1 ? "s" : ""}`, `, with ${n} custom rule${n > 1 ? "s" : ""}`) : ""}`;
       return `<td class="mx ${c.effective}" title="${esc(tip)}"><span class="mx-pill">${c.effective === "block" ? icon("lock") : ""}${lbl}</span>${n ? `<span class="mx-n">+${n}</span>` : ""}</td>`;
     }).join("")}</tr>`).join("");
     const exc = [];
     srcs.forEach((a) => m.zones.forEach((b) => { const c = cell(a, b); if (c && c.rules.length) exc.push([a, b, c]); }));
-    return `<p class="cell-sub" style="margin:0 0 8px">Per firewallzone · rij = van, kolom = naar · standaard plus je eigen regels</p>
-      <div class="table-wrap mx-wrap"><table class="mx-table"><thead><tr><th scope="col"><span class="sr-only">Van</span></th>${m.zones.map((z) => `<th scope="col">${esc(z.key === "external" ? "Internet" : z.name)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>
-      ${exc.length ? `<div class="mx-exc">${exc.map(([a, b, c]) => `<div class="mx-exc-row"><div class="mx-exc-pair">${esc(a.name)} → ${esc(b.key === "external" ? "Internet" : b.name)}<div class="cell-sub">standaard ${c.default === "allow" ? "open" : "dicht"}</div></div>
-        <ul>${c.rules.map((r) => `<li class="${r.enabled ? "" : "off"}"><b>${esc(r.name)}</b> <span class="muted">${esc(ruleText(r))}${r.enabled ? "" : " · uitgeschakeld"}</span></li>`).join("")}</ul></div>`).join("")}</div>` : ""}`;
+    return `<p class="cell-sub" style="margin:0 0 8px">${L("Per firewallzone · rij = van, kolom = naar · standaard plus je eigen regels", "Per firewall zone · row = from, column = to · default plus your own rules")}</p>
+      <div class="table-wrap mx-wrap"><table class="mx-table"><thead><tr><th scope="col"><span class="sr-only">${L("Van", "From")}</span></th>${m.zones.map((z) => `<th scope="col">${esc(z.key === "external" ? "Internet" : z.name)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>
+      ${exc.length ? `<div class="mx-exc">${exc.map(([a, b, c]) => `<div class="mx-exc-row"><div class="mx-exc-pair">${esc(a.name)} → ${esc(b.key === "external" ? "Internet" : b.name)}<div class="cell-sub">${L("standaard", "default")} ${c.default === "allow" ? "open" : L("dicht", "closed")}</div></div>
+        <ul>${c.rules.map((r) => `<li class="${r.enabled ? "" : "off"}"><b>${esc(r.name)}</b> <span class="muted">${esc(ruleText(r))}${r.enabled ? "" : ` · ${L("uitgeschakeld", "disabled")}`}</span></li>`).join("")}</ul></div>`).join("")}</div>` : ""}`;
   }
 
   // ------------------------------------------------------------------ toegang tussen netwerken (diagram)
   const FL = { sel: store.get("fl.sel", null), edge: null, view: store.get("fl.view", "diagram"), key: "", ro: null, w: 0 };
   const FL_ICON = { main: "home", iot: "plug", other: "layers", guest: "users", vpn: "key", gateway: "router", internet: "globe" };
-  const FL_SUB = { main: "hoofdnetwerk", iot: "slimme apparaten", other: "apart netwerk", guest: "gasten", vpn: "VPN", gateway: "router", internet: "buitenwereld" };
-  const FL_ST = { allow: ["mag", "check"], partial: ["deels", "alert"], block: ["geblokkeerd", "x"] };
+  const FL_SUB = { main: L("hoofdnetwerk", "main network"), iot: L("slimme apparaten", "smart devices"), other: L("apart netwerk", "separate network"),
+    guest: L("gasten", "guests"), vpn: "VPN", gateway: "router", internet: L("buitenwereld", "outside world") };
+  const FL_ST = { allow: [L("mag", "allowed"), "check"], partial: [L("deels", "partly"), "alert"], block: [L("geblokkeerd", "blocked"), "x"] };
   const trunc = (t, n) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
 
   function renderFlowBlock() {
@@ -1064,16 +1078,16 @@
     if (!el || !d || !d.available) return;
     if (!d.matrix || !d.flows) {
       FL.key = "";
-      el.innerHTML = `<p class="muted" style="margin-top:16px">Wat er tussen je netwerken mag, is alleen te zien met de zone-gebaseerde firewall (UniFi Network 9 of nieuwer).</p>`;
+      el.innerHTML = `<p class="muted" style="margin-top:16px">${L("Wat er tussen je netwerken mag, is alleen te zien met de zone-gebaseerde firewall (UniFi Network 9 of nieuwer).", "What is allowed between your networks can only be shown with the zone-based firewall (UniFi Network 9 or newer).")}</p>`;
       return;
     }
     const key = FL.view + JSON.stringify(d.flows) + (FL.view === "tabel" ? JSON.stringify(d.matrix) : "");
     if (key === FL.key && el.firstChild) return;   // niets veranderd: laat selectie en animatie staan
     FL.key = key;
     el.innerHTML = `
-      <div class="seg-sub-head"><div><h3>Toegang tussen netwerken</h3>
-          <div class="cell-sub">Wat er mag bij een nieuwe verbinding, nagerekend uit je firewallregels op volgorde. Kies een netwerk voor zijn pijlen, of een pijl voor de regels die het bepalen.</div></div>
-        <div class="seg" role="group" aria-label="Weergave" id="fl-view">${[["diagram", "Diagram"], ["tabel", "Tabel"]].map(([v, l]) => `<button data-flview="${v}" aria-pressed="${FL.view === v}">${l}</button>`).join("")}</div></div>
+      <div class="seg-sub-head"><div><h3>${L("Toegang tussen netwerken", "Access between networks")}</h3>
+          <div class="cell-sub">${L("Wat er mag bij een nieuwe verbinding, nagerekend uit je firewallregels op volgorde. Kies een netwerk voor zijn pijlen, of een pijl voor de regels die het bepalen.", "What a new connection is allowed to do, worked out from your firewall rules in order. Pick a network for its arrows, or an arrow for the rules behind it.")}</div></div>
+        <div class="seg" role="group" aria-label="${L("Weergave", "View")}" id="fl-view">${[["diagram", "Diagram"], ["tabel", L("Tabel", "Table")]].map(([v, l]) => `<button data-flview="${v}" aria-pressed="${FL.view === v}">${l}</button>`).join("")}</div></div>
       ${FL.view === "tabel" ? matrixHTML(d.matrix) : `<div class="fl-canvas" id="fl-canvas"></div>
         <div class="fl-legend" aria-hidden="true">${["allow", "partial", "block"].map((st) => `<span class="fl-leg ${st}"><svg width="34" height="10" viewBox="0 0 34 10"><path d="M1 5 H${st === "block" ? 30 : 27}"/>${st === "block" ? `<rect x="30" y="0" width="3" height="10" rx="1"/>` : `<path class="hd" d="M25 1 L33 5 L25 9 z"/>`}</svg>${icon(FL_ST[st][1])}${FL_ST[st][0]}</span>`).join("")}</div>
         <div class="fl-detail" id="fl-detail" aria-live="polite"></div>`}`;
@@ -1114,25 +1128,25 @@
     return [p[0] + dx * s, p[1] + dy * s];
   }
   function flPath(a, b, both, w, h) {   // heen en terug buigen vanzelf naar verschillende kanten
-    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L, half = both ? 13 : 5;
+    const dx = b[0] - a[0], dy = b[1] - a[1], dist = Math.hypot(dx, dy) || 1, nx = -dy / dist, ny = dx / dist, half = both ? 13 : 5;
     const c = [(a[0] + b[0]) / 2 + nx * half * 2, (a[1] + b[1]) / 2 + ny * half * 2];
     const p0 = flClip(a, w, h, c), p1 = flClip(b, w, h, c), f = (v) => v.toFixed(1);
-    return { d: `M${f(p0[0])},${f(p0[1])} Q${f(c[0])},${f(c[1])} ${f(p1[0])},${f(p1[1])}`, len: L };
+    return { d: `M${f(p0[0])},${f(p0[1])} Q${f(c[0])},${f(c[1])} ${f(p1[0])},${f(p1[1])}`, len: dist };
   }
 
   function flNodeHTML(n, x, y, nw, nh, on, compact) {
     const sub = n.kind !== "vpn" && n.kind !== "gateway" && n.kind !== "internet" && n.clients != null
-      ? `${nf(n.clients)} apparaten` : FL_SUB[n.kind] || "";
+      ? `${nf(n.clients)} ${L("apparaten", "devices")}` : FL_SUB[n.kind] || "";
     const tx = compact ? 13 : 51, maxc = Math.floor((nw - tx - (n.isolated ? 24 : 8)) / 7.4);
     return `<g class="fl-node ${n.kind}${on ? " sel" : ""}" data-node="${esc(n.id)}" tabindex="0" role="button" aria-pressed="${on}"
-        aria-label="${esc(`${n.name}${n.isolated ? ", afgeschermd" : ""}`)}" style="transform:translate(${(x - nw / 2).toFixed(1)}px,${(y - nh / 2).toFixed(1)}px)">
+        aria-label="${esc(`${n.name}${n.isolated ? L(", afgeschermd", ", isolated") : ""}`)}" style="transform:translate(${(x - nw / 2).toFixed(1)}px,${(y - nh / 2).toFixed(1)}px)">
       <title>${esc(n.name)}${n.subnet ? ` · ${esc(n.subnet)}` : ""}</title>
       <rect width="${nw}" height="${nh}" rx="14"/>
       ${compact ? "" : `<rect class="fl-ico-bg" x="11" y="${nh / 2 - 15}" width="30" height="30" rx="9"/>
       <svg class="fl-ico" x="17" y="${nh / 2 - 9}" width="18" height="18" viewBox="0 0 24 24">${ICONS[FL_ICON[n.kind]] || ""}</svg>`}
       <text class="fl-name" x="${tx}" y="${nh / 2 - 2}">${esc(trunc(n.name, maxc))}</text>
       <text class="fl-sub" x="${tx}" y="${nh / 2 + 14}">${esc(trunc(sub, Math.floor((nw - tx - 6) / 6.3)))}</text>
-      ${n.isolated ? `<svg class="fl-lock" x="${nw - 21}" y="8" width="13" height="13" viewBox="0 0 24 24"><title>Afgeschermd</title>${ICONS.lock}</svg>` : ""}
+      ${n.isolated ? `<svg class="fl-lock" x="${nw - 21}" y="8" width="13" height="13" viewBox="0 0 24 24"><title>${L("Afgeschermd", "Isolated")}</title>${ICONS.lock}</svg>` : ""}
     </g>`;
   }
 
@@ -1152,7 +1166,7 @@
     edges.sort((a, b) => (a.i === FL.edge) - (b.i === FL.edge));
     const lines = edges.map((e) => {
       const { d, len } = flPath(pos[e.from], pos[e.to], pairs.has(`${e.to}>${e.from}`), nw, nh);
-      const lbl = `${byId[e.from].name} naar ${byId[e.to].name}: ${FL_ST[e.status][0]}`;
+      const lbl = `${byId[e.from].name} ${L("naar", "to")} ${byId[e.to].name}: ${FL_ST[e.status][0]}`;
       return `<g class="fl-edge ${e.status}${e.i === FL.edge ? " on" : ""}">
         <path class="fl-line" d="${d}" marker-end="url(#fl-m-${e.status})"/>
         ${!reduce && e.status !== "block" ? `<circle class="fl-dot" r="2.6"><animateMotion dur="${(len / 75 + 1.2).toFixed(1)}s" repeatCount="indefinite" path="${d}"/></circle>` : ""}
@@ -1176,7 +1190,7 @@
       const eg = svg.querySelector(".fl-edges");
       eg.innerHTML = lines; eg.classList.toggle("has-on", FL.edge != null); eg.classList.remove("hidden");
     } else {
-      canvas.innerHTML = `<svg class="fl-svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H.toFixed(0)}" data-w="${W}" data-nodes="${esc(fl.nodes.map((n) => n.id).join("|"))}" role="group" aria-label="Toegang tussen netwerken">
+      canvas.innerHTML = `<svg class="fl-svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H.toFixed(0)}" data-w="${W}" data-nodes="${esc(fl.nodes.map((n) => n.id).join("|"))}" role="group" aria-label="${L("Toegang tussen netwerken", "Access between networks")}">
         <defs>${["allow", "partial"].map((st) => `<marker id="fl-m-${st}" class="fl-mk ${st}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,1 L9,5 L0,9 z"/></marker>`).join("")}
           <marker id="fl-m-block" class="fl-mk block" viewBox="0 0 10 12" refX="8" refY="6" markerWidth="10" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto"><rect x="6" y="0" width="3" height="12" rx="1.5"/></marker></defs>
         <g class="fl-edges${FL.edge != null ? " has-on" : ""}">${lines}</g>
@@ -1192,11 +1206,12 @@
     if (e) {
       const a = byId[e.from], b = byId[e.to], wn = flWelNiet(e, b);
       const col = (kind, title, items) => `<div class="fl-wn ${kind}"><div class="fl-wn-h">${icon(kind === "wel" ? "check" : "x")}${title}</div>
-        <ul>${items.map((it) => `<li><span>${esc(it.what)}</span>${it.how ? `<span class="fl-how">${esc(it.how)}</span>` : ""}${it.name ? `<div class="cell-sub">regel: ${esc(it.name)}</div>` : ""}</li>`).join("")}</ul></div>`;
-      el.innerHTML = `<div class="fl-det-head"><b>${esc(a.name)} → ${esc(b.name)}</b>${pill(e.status)}<button class="linkbtn" data-fl-close>Sluiten</button></div>
-        <div class="fl-wn-grid">${col("wel", "Wel", wn.wel)}${col("niet", "Niet", wn.niet)}</div>
-        <div class="cell-sub" style="margin-top:10px">Standaard ${e.default === "allow" ? "toegestaan" : "geblokkeerd"}${a.zone && b.zone ? ` (zone ${esc(a.zone)} → ${esc(b.zone)})` : ""}${e.rules.length ? `, aangevuld met ${e.rules.length} eigen regel${e.rules.length > 1 ? "s" : ""}.` : ", zonder eigen regels."}
-          ${wn.base === "block" ? ` Antwoorden op verbindingen die ${esc(b.name)} zelf begint, komen wel terug.` : ""}</div>`;
+        <ul>${items.map((it) => `<li><span>${esc(it.what)}</span>${it.how ? `<span class="fl-how">${esc(it.how)}</span>` : ""}${it.name ? `<div class="cell-sub">${L("regel", "rule")}: ${esc(it.name)}</div>` : ""}</li>`).join("")}</ul></div>`;
+      const nr = e.rules.length, s = nr > 1 ? "s" : "";
+      el.innerHTML = `<div class="fl-det-head"><b>${esc(a.name)} → ${esc(b.name)}</b>${pill(e.status)}<button class="linkbtn" data-fl-close>${L("Sluiten", "Close")}</button></div>
+        <div class="fl-wn-grid">${col("wel", L("Wel", "Allowed"), wn.wel)}${col("niet", L("Niet", "Not allowed"), wn.niet)}</div>
+        <div class="cell-sub" style="margin-top:10px">${L("Standaard", "Default")} ${e.default === "allow" ? L("toegestaan", "allowed") : L("geblokkeerd", "blocked")}${a.zone && b.zone ? ` (zone ${esc(a.zone)} → ${esc(b.zone)})` : ""}${nr ? L(`, aangevuld met ${nr} eigen regel${s}.`, `, plus ${nr} custom rule${s}.`) : L(", zonder eigen regels.", ", without custom rules.")}
+          ${wn.base === "block" ? L(` Antwoorden op verbindingen die ${esc(b.name)} zelf begint, komen wel terug.`, ` Replies to connections that ${esc(b.name)} starts itself do come back.`) : ""}</div>`;
       return;
     }
     const n = byId[FL.sel];
@@ -1208,14 +1223,14 @@
         if (st !== "partial") return esc(other);
         const wn = flWelNiet(x, byId[x.to]);
         const short = (wn.base === "block" ? wn.wel : wn.niet).map((it) => it.what + (it.how ? ` ${it.how}` : "")).join(", ");
-        return `${esc(other)} <span class="muted">(${wn.base === "block" ? "alleen" : "behalve"} ${esc(short)})</span>`;
+        return `${esc(other)} <span class="muted">(${wn.base === "block" ? L("alleen", "only") : L("behalve", "except")} ${esc(short)})</span>`;
       });
       return `<div class="fl-sum-row">${pill(st)}<span>${names.join(", ")}</span></div>`;
     }).join("");
     const out = edges.filter((x) => x.from === n.id), inc = edges.filter((x) => x.to === n.id);
     el.innerHTML = `<div class="fl-sum">
-      ${out.length ? `<div><div class="fl-sum-h">Vanaf ${esc(n.name)} naar</div>${group(out, true)}</div>` : ""}
-      ${inc.length ? `<div><div class="fl-sum-h">Naar ${esc(n.name)} vanaf</div>${group(inc, false)}</div>` : ""}</div>`;
+      ${out.length ? `<div><div class="fl-sum-h">${L(`Vanaf ${esc(n.name)} naar`, `From ${esc(n.name)} to`)}</div>${group(out, true)}</div>` : ""}
+      ${inc.length ? `<div><div class="fl-sum-h">${L(`Naar ${esc(n.name)} vanaf`, `To ${esc(n.name)} from`)}</div>${group(inc, false)}</div>` : ""}</div>`;
   }
 
   // Wat mag er wel en niet over deze pijl? Uit de standaard plus de regels op volgorde.
@@ -1224,16 +1239,17 @@
     const whole = e.rules.find(isWhole);
     const base = whole ? whole.action : e.default;
     const item = (r) => ({
-      what: r.targets && r.targets.length ? r.targets.join(", ") : r.to === "any" ? `alles in ${b.name}` : r.to,
-      how: [r.port ? `poort ${r.port}${r.proto ? " " + r.proto : ""}` : r.proto || "",
-            r.sources && r.sources.length ? `alleen vanaf ${r.sources.join(", ")}` : "",
+      what: r.targets && r.targets.length ? r.targets.join(", ") : r.to === "any" ? L(`alles in ${b.name}`, `everything in ${b.name}`) : r.to,
+      how: [r.port ? `${L("poort", "port")} ${r.port}${r.proto ? " " + r.proto : ""}` : r.proto || "",
+            r.sources && r.sources.length ? `${L("alleen vanaf", "only from")} ${r.sources.join(", ")}` : "",
             r.forward ? (r.upnp ? "UPnP" : "port forward") : ""].filter(Boolean).join(" · "),
       name: r.forward ? r.name : r.name });
     const exc = e.rules.filter((r) => r !== whole);
-    const rest = { what: exc.length ? "al het andere" : `alles naar ${b.name}`, how: "", name: whole ? whole.name : "" };
+    const rest = { what: exc.length ? L("al het andere", "everything else") : L(`alles naar ${b.name}`, `everything to ${b.name}`), how: "", name: whole ? whole.name : "" };
     const wel = exc.filter((r) => r.action === "allow").map(item), niet = exc.filter((r) => r.action === "block").map(item);
     if (base === "allow") wel.push(rest); else niet.push(rest);
-    return { base, wel: wel.length ? wel : [{ what: "niets", how: "", name: "" }], niet: niet.length ? niet : [{ what: "niets", how: "", name: "" }] };
+    const none = [{ what: L("niets", "nothing"), how: "", name: "" }];
+    return { base, wel: wel.length ? wel : none, niet: niet.length ? niet : none };
   }
 
   function bindFlow(root) {
@@ -1265,16 +1281,16 @@
     UPDATERS.beveiliging();
   });
   function exposureHTML(x) {
-    if (!x) return `<p class="muted">Port forwards en UPnP zijn alleen te zien via de uitgebreide UniFi-API (API-key of lokaal account).</p>`;
+    if (!x) return `<p class="muted">${L("Port forwards en UPnP zijn alleen te zien via de uitgebreide UniFi-API (API-key of lokaal account).", "Port forwards and UPnP are only visible via the extended UniFi API (API key or local account).")}</p>`;
     const f = x.forwards;
-    if (!f.length) return `<div class="empty">${icon("check")}<div>Geen port forwards en geen actieve UPnP-mappings</div></div>`;
-    return `<div class="table-wrap" style="border:0"><table><thead><tr><th>Naam</th><th>Poort op internet</th><th>Naar</th><th>Soort</th><th class="r">Aanvallen</th><th>Status</th></tr></thead><tbody>
+    if (!f.length) return `<div class="empty">${icon("check")}<div>${L("Geen port forwards en geen actieve UPnP-mappings", "No port forwards and no active UPnP mappings")}</div></div>`;
+    return `<div class="table-wrap" style="border:0"><table><thead><tr><th>${L("Naam", "Name")}</th><th>${L("Poort op internet", "Internet port")}</th><th>${L("Naar", "To")}</th><th>${L("Soort", "Type")}</th><th class="r">${L("Aanvallen", "Attacks")}</th><th>Status</th></tr></thead><tbody>
       ${f.map((r) => `<tr style="cursor:default" class="${r.enabled ? "" : "off"}"><td class="cell-name">${esc(r.name)}</td>
         <td class="num">${esc(r.port)}<span class="muted"> ${esc(r.proto)}</span></td>
         <td>${esc(r.target_name || r.fwd_ip)}<div class="cell-sub">${esc(r.fwd_ip)}:${esc(r.fwd_port || r.port)}</div></td>
-        <td>${r.upnp ? badge("info", "UPnP") : badge("", "Vast")}${r.src && r.src !== "any" ? `<div class="cell-sub">alleen ${esc(r.src)}</div>` : ""}</td>
+        <td>${r.upnp ? badge("info", "UPnP") : badge("", L("Vast", "Fixed"))}${r.src && r.src !== "any" ? `<div class="cell-sub">${L("alleen", "only")} ${esc(r.src)}</div>` : ""}</td>
         <td class="r num ${r.attacks >= 10 ? "t-warning" : ""}">${r.enabled ? nf(r.attacks) : "–"}</td>
-        <td>${r.enabled ? badge("warning", "Open", "globe") : badge("", "Uit")}</td></tr>`).join("")}</tbody></table></div>`;
+        <td>${r.enabled ? badge("warning", "Open", "globe") : badge("", L("Uit", "Off"))}</td></tr>`).join("")}</tbody></table></div>`;
   }
   const srcLabel = (e) => `${esc(e.src_name && e.src_name !== e.src_ip ? e.src_name : e.src_ip)}${e.src_name && e.src_name !== e.src_ip ? `<div class="cell-sub">${esc(e.src_ip)}</div>` : ""}`;
   UPDATERS.beveiliging = async function () {
@@ -1283,47 +1299,47 @@
     if (current !== "beveiliging") return;
     const s = d.summary;
     $("#sec-banner").innerHTML = d.available === false
-      ? `<div class="banner err">${icon("info")}<span>IPS-gegevens zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).</span></div>` : "";
-    const per = secState.hours <= 24 ? "24 uur" : secState.hours <= 168 ? "7 dagen" : "14 dagen";
+      ? `<div class="banner err">${icon("info")}<span>${L("IPS-gegevens zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).", "IPS data is only available via the extended UniFi API (API key or local account).")}</span></div>` : "";
+    const per = secState.hours <= 24 ? L("24 uur", "24 hours") : secState.hours <= 168 ? L("7 dagen", "7 days") : L("14 dagen", "14 days");
     $("#sec-kpis").innerHTML = `
-      <div class="card compact kpi"><div class="label">${icon("shield")}Blokkades</div><div class="value">${nf(s.total)}</div><div class="sub">afgelopen ${per}</div></div>
-      <div class="card compact kpi"><div class="label">${icon("globe")}Van buiten</div><div class="value">${nf(s.external)}</div><div class="sub">tegengehouden door de IPS</div></div>
-      <div class="card compact kpi"><div class="label">${icon("home")}Van eigen apparaten</div><div class="value">${nf(s.internal)}</div>
-        <div class="sub">${s.internal ? badge("warning", "Bekijken", "alert") : badge("ok", "Geen", "check")}</div></div>
-      <div class="card compact kpi"><div class="label">${icon("users")}Unieke bronnen</div><div class="value">${nf(s.sources)}</div><div class="sub">IP-adressen</div></div>`;
+      <div class="card compact kpi"><div class="label">${icon("shield")}${L("Blokkades", "Blocks")}</div><div class="value">${nf(s.total)}</div><div class="sub">${L("afgelopen", "past")} ${per}</div></div>
+      <div class="card compact kpi"><div class="label">${icon("globe")}${L("Van buiten", "From outside")}</div><div class="value">${nf(s.external)}</div><div class="sub">${L("tegengehouden door de IPS", "stopped by the IPS")}</div></div>
+      <div class="card compact kpi"><div class="label">${icon("home")}${L("Van eigen apparaten", "From own devices")}</div><div class="value">${nf(s.internal)}</div>
+        <div class="sub">${s.internal ? badge("warning", L("Bekijken", "Review"), "alert") : badge("ok", L("Geen", "None"), "check")}</div></div>
+      <div class="card compact kpi"><div class="label">${icon("users")}${L("Unieke bronnen", "Unique sources")}</div><div class="value">${nf(s.sources)}</div><div class="sub">${L("IP-adressen", "IP addresses")}</div></div>`;
     const max1 = Math.max(1, ...d.by_signature.map((x) => x.count)), max2 = Math.max(1, ...d.by_source.map((x) => x.count));
     const srcName = (x) => (x.name && x.name !== x.ip ? `${x.name} (${x.ip})` : x.ip);
     $("#sec-sigs").innerHTML = d.by_signature.length ? d.by_signature.map((x) => `
       <div class="rank-row"><div class="rank-main"><div class="rank-name" title="${esc(x.signature)}">${esc(x.signature)}</div><div class="cell-sub">${esc(catLabel(x.category))}${x.sid ? ` · SID ${x.sid}` : ""}</div></div>
         <div class="rank-bar">${meter(100 * x.count / max1)}</div><span class="num rank-n">${x.count}</span>
-        <span>${x.sid ? ignMenu([["Negeer deze regel", { sid: x.sid, label: x.signature }]]) : ""}</span></div>`).join("")
-      : `<div class="empty">${icon("check")}<div>Niets geblokkeerd in deze periode</div></div>`;
+        <span>${x.sid ? ignMenu([[L("Negeer deze regel", "Ignore this rule"), { sid: x.sid, label: x.signature }]]) : ""}</span></div>`).join("")
+      : `<div class="empty">${icon("check")}<div>${L("Niets geblokkeerd in deze periode", "Nothing blocked in this period")}</div></div>`;
     $("#sec-srcs").innerHTML = d.by_source.length ? d.by_source.map((x) => `
-      <div class="rank-row"><div class="rank-main"><div class="rank-name">${esc(srcName(x))}</div><div class="cell-sub">${x.internal ? badge("warning", "eigen netwerk", "home") : badge("", "internet", "globe")} ${esc(x.net || "")}</div></div>
+      <div class="rank-row"><div class="rank-main"><div class="rank-name">${esc(srcName(x))}</div><div class="cell-sub">${x.internal ? badge("warning", L("eigen netwerk", "own network"), "home") : badge("", "internet", "globe")} ${esc(x.net || "")}</div></div>
         <div class="rank-bar">${meter(100 * x.count / max2, x.internal ? "warning" : "")}</div><span class="num rank-n">${x.count}</span>
-        <span>${ignMenu([["Negeer dit adres", { ip: x.ip, label: srcName(x) }]])}</span></div>`).join("")
-      : `<div class="empty">Geen bronnen</div>`;
-    $("#sec-expo-sub").textContent = d.exposure ? (d.exposure.upnp_enabled ? "UPnP staat aan" : d.exposure.upnp_enabled === false ? "UPnP staat uit" : "") + ` · aanvallen in de afgelopen ${per}` : "";
+        <span>${ignMenu([[L("Negeer dit adres", "Ignore this address"), { ip: x.ip, label: srcName(x) }]])}</span></div>`).join("")
+      : `<div class="empty">${L("Geen bronnen", "No sources")}</div>`;
+    $("#sec-expo-sub").textContent = d.exposure ? (d.exposure.upnp_enabled ? L("UPnP staat aan", "UPnP is on") : d.exposure.upnp_enabled === false ? L("UPnP staat uit", "UPnP is off") : "") + ` · ${L("aanvallen in de afgelopen", "attacks in the past")} ${per}` : "";
     $("#sec-expo").innerHTML = exposureHTML(d.exposure);
     $("#sec-ignored-n").textContent = s.ignored ? `(${s.ignored})` : "";
     $("#sec-ign-card").hidden = !d.ignores.length;
     $("#sec-ign").innerHTML = d.ignores.map((r) => `<div class="rank-row ign-row"><div class="rank-main"><div class="rank-name">${esc(r.label || (r.ip || "") + (r.sid ? " SID " + r.sid : ""))}</div>
-      <div class="cell-sub">${r.ip && r.sid ? `regel ${r.sid} voor ${esc(r.ip)}` : r.ip ? `alle regels voor ${esc(r.ip)}` : `regel ${r.sid}, alle adressen`} · sinds ${new Date(r.created * 1000).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}</div></div>
-      <button class="linkbtn" data-unign="${r.id}">Niet meer negeren</button></div>`).join("");
-    $("#sec-bucket").textContent = d.bucket === 3600 ? "per uur" : "per 6 uur";
+      <div class="cell-sub">${r.ip && r.sid ? L(`regel ${r.sid} voor ${esc(r.ip)}`, `rule ${r.sid} for ${esc(r.ip)}`) : r.ip ? L(`alle regels voor ${esc(r.ip)}`, `all rules for ${esc(r.ip)}`) : L(`regel ${r.sid}, alle adressen`, `rule ${r.sid}, all addresses`)} · ${L("sinds", "since")} ${new Date(r.created * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short" })}</div></div>
+      <button class="linkbtn" data-unign="${r.id}">${L("Niet meer negeren", "Stop ignoring")}</button></div>`).join("");
+    $("#sec-bucket").textContent = d.bucket === 3600 ? L("per uur", "per hour") : L("per 6 uur", "per 6 hours");
     MEcharts.lineChart($("#sec-chart"), { series: [
-      { name: "Van buiten", color: C.cyan, data: d.series.map((p) => [p.t, p.external]) },
-      { name: "Eigen apparaten", color: C.amber, data: d.series.map((p) => [p.t, p.internal]) }],
-      yMin: 0, bucket: d.bucket, fmt: (v) => nf(v), label: "Aantal IPS-blokkades" });
+      { name: L("Van buiten", "From outside"), color: C.cyan, data: d.series.map((p) => [p.t, p.external]) },
+      { name: L("Eigen apparaten", "Own devices"), color: C.amber, data: d.series.map((p) => [p.t, p.internal]) }],
+      yMin: 0, bucket: d.bucket, fmt: (v) => nf(v), label: L("Aantal IPS-blokkades", "Number of IPS blocks") });
     const ev = d.events;
-    $("#sec-table").innerHTML = ev.length ? `<table><thead><tr><th>Tijd</th><th>Bron</th><th>Doel</th><th>Regel</th><th>Risico</th><th><span class="sr-only">Acties</span></th></tr></thead><tbody>
-      ${ev.map((e) => `<tr style="cursor:default"><td class="num"><div>${hhmm(e.ts)}</div><div class="cell-sub">${new Date(e.ts * 1000).toLocaleDateString("nl-NL", { day: "numeric", month: "short" })}</div></td>
+    $("#sec-table").innerHTML = ev.length ? `<table><thead><tr><th>${L("Tijd", "Time")}</th><th>${L("Bron", "Source")}</th><th>${L("Doel", "Target")}</th><th>${L("Regel", "Rule")}</th><th>${L("Risico", "Risk")}</th><th><span class="sr-only">${L("Acties", "Actions")}</span></th></tr></thead><tbody>
+      ${ev.map((e) => `<tr style="cursor:default"><td class="num"><div>${hhmm(e.ts)}</div><div class="cell-sub">${new Date(e.ts * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short" })}</div></td>
         <td>${e.internal ? `<span class="t-warning">${icon("home", "")}</span> ` : ""}${srcLabel(e)}<div class="cell-sub">${esc(e.src_net || "")}</div></td>
         <td>${esc(e.dst_name || e.dst_ip)}${e.dst_port ? `<span class="muted">:${e.dst_port}</span>` : ""}<div class="cell-sub">${esc([e.proto, e.service].filter(Boolean).join(" · "))}</div></td>
         <td style="white-space:normal;min-width:240px"><div>${esc(e.signature)}</div><div class="cell-sub">${esc(catLabel(e.category))}${e.sid ? ` · SID ${e.sid}` : ""}</div></td>
-        <td>${badge(e.risk === "high" ? "critical" : e.risk === "medium" ? "warning" : "", e.risk || "–")}${e.ignored ? ` ${badge("", "genegeerd")}` : ""}</td>
-        <td>${e.ignored ? "" : ignMenu([...(e.sid ? [["Deze regel voor dit adres", { ip: e.src_ip, sid: e.sid, label: `${e.signature} · ${e.src_name || e.src_ip}` }], ["Deze regel overal", { sid: e.sid, label: e.signature }]] : []), ["Dit adres", { ip: e.src_ip, label: e.src_name || e.src_ip }]])}</td></tr>`).join("")}</tbody></table>`
-      : `<div class="empty">${icon("check")}<div>Geen blokkades voor deze filter</div></div>`;
+        <td>${badge(e.risk === "high" ? "critical" : e.risk === "medium" ? "warning" : "", e.risk || "–")}${e.ignored ? ` ${badge("", L("genegeerd", "ignored"))}` : ""}</td>
+        <td>${e.ignored ? "" : ignMenu([...(e.sid ? [[L("Deze regel voor dit adres", "This rule for this address"), { ip: e.src_ip, sid: e.sid, label: `${e.signature} · ${e.src_name || e.src_ip}` }], [L("Deze regel overal", "This rule everywhere"), { sid: e.sid, label: e.signature }]] : []), [L("Dit adres", "This address"), { ip: e.src_ip, label: e.src_name || e.src_ip }]])}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">${icon("check")}<div>${L("Geen blokkades voor deze filter", "No blocks for this filter")}</div></div>`;
   };
 
   // ------------------------------------------------------------------ setup-wizard
@@ -1331,7 +1347,7 @@
                 current_api_key: "", result: null, error: null, busy: false, info: null };
   async function showWizard(step) {
     document.body.classList.add("setup");
-    $("#status").innerHTML = `<span class="dot off"></span>Nog niet gekoppeld`;
+    $("#status").innerHTML = `<span class="dot off"></span>${L("Nog niet gekoppeld", "Not connected yet")}`;
     wiz.info = await api("/api/setup").catch(() => ({}));
     if (step) wiz.step = step;
     if (wiz.info.configured && wiz.step === 2 && !wiz.address) {
@@ -1344,50 +1360,51 @@
   }
   const field = (id, label, input, help) => `<div class="field"><label for="${id}">${label}</label>${input}${help ? `<div class="help">${help}</div>` : ""}</div>`;
   function renderWizard() {
-    const steps = ["Welkom", "Koppelen", "Controleren"];
+    const steps = [L("Welkom", "Welcome"), L("Koppelen", "Connect"), L("Controleren", "Check")];
     const reconf = wiz.info?.configured;
-    const head = `<div class="wiz-brand"><span class="logo">${icon("radar")}</span><div><div class="wiz-title">UniFi Sonar</div><div class="muted">${reconf ? "Koppeling wijzigen" : "Eerste keer instellen"}</div></div></div>
-      <ol class="wiz-steps" aria-label="Stappen">${steps.map((s, i) => `<li ${i + 1 === wiz.step ? 'aria-current="step"' : ""} class="${i + 1 < wiz.step ? "done" : ""}"><span>${i + 1}</span>${s}</li>`).join("")}</ol>`;
+    const head = `<div class="wiz-brand"><span class="logo">${icon("radar")}</span><div><div class="wiz-title">UniFi Sonar</div><div class="muted">${reconf ? L("Koppeling wijzigen", "Change connection") : L("Eerste keer instellen", "First-time setup")}</div></div></div>
+      <ol class="wiz-steps" aria-label="${L("Stappen", "Steps")}">${steps.map((s, i) => `<li ${i + 1 === wiz.step ? 'aria-current="step"' : ""} class="${i + 1 < wiz.step ? "done" : ""}"><span>${i + 1}</span>${s}</li>`).join("")}</ol>`;
     let body = "";
     if (wiz.step === 1) {
-      body = `<h1>Welkom</h1>
-        <p class="lead">UniFi Sonar houdt je UniFi-netwerk in de gaten en vertelt in gewone taal waar het misgaat: zwak wifi-signaal, veel retries, drukke kanalen, kabelproblemen, apparaten die op de verkeerde AP blijven hangen en wat de IPS tegenhoudt.</p>
-        <p class="muted">Je hebt nodig: het IP-adres van je UniFi-console (UDM, UCG, Cloud Gateway of UniFi OS Server) en een API-key. Alles blijft op dit apparaat; er gaat niets naar internet.</p>
-        <div class="wiz-actions"><button class="btn primary" data-wiz="2">Koppel mijn UniFi-controller</button><button class="btn" data-wiz="demo">Eerst rondkijken met demodata</button></div>`;
+      body = `<h1>${L("Welkom", "Welcome")}</h1>
+        <p class="lead">${L("UniFi Sonar houdt je UniFi-netwerk in de gaten en vertelt in gewone taal waar het misgaat: zwak wifi-signaal, veel retries, drukke kanalen, kabelproblemen, apparaten die op de verkeerde AP blijven hangen en wat de IPS tegenhoudt.", "UniFi Sonar keeps an eye on your UniFi network and tells you in plain language where things go wrong: weak wifi signal, many retries, busy channels, cable problems, devices stuck on the wrong AP and what the IPS stops.")}</p>
+        <p class="muted">${L("Je hebt nodig: het IP-adres van je UniFi-console (UDM, UCG, Cloud Gateway of UniFi OS Server) en een API-key. Alles blijft op dit apparaat; er gaat niets naar internet.", "You need: the IP address of your UniFi console (UDM, UCG, Cloud Gateway or UniFi OS Server) and an API key. Everything stays on this device; nothing goes to the internet.")}</p>
+        <div class="wiz-actions"><button class="btn primary" data-wiz="2">${L("Koppel mijn UniFi-controller", "Connect my UniFi controller")}</button><button class="btn" data-wiz="demo">${L("Eerst rondkijken met demodata", "Look around with demo data first")}</button></div>`;
     } else if (wiz.step === 2) {
-      body = `<h1>Koppel je controller</h1>
+      body = `<h1>${L("Koppel je controller", "Connect your controller")}</h1>
         <form id="wiz-form" novalidate>
-        ${field("w-addr", "Adres van je UniFi-console", `<input class="input" id="w-addr" name="address" required autocomplete="off" spellcheck="false" placeholder="192.168.1.1" value="${esc(wiz.address)}">`,
-          "Het IP-adres of de hostnaam. Poort 443 en 11443 (UniFi OS Server) worden allebei geprobeerd; een andere poort vul je zo in: <code>192.168.1.10:8443</code>.")}
-        ${field("w-key", "API-key", `<div class="pw"><input class="input" id="w-key" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="Plak hier je API-key" value="${esc(wiz.api_key)}"><button type="button" class="btn ghost" data-show="w-key" aria-label="Toon API-key">${icon("eye")}</button></div>`,
-          `<details><summary>Waar vind ik de API-key?</summary><ol><li>Open <b>UniFi Network</b> op je console.</li><li>Ga naar <b>Instellingen → Control Plane → Integrations</b>.</li><li>Kies <b>Create API Key</b>, geef hem een naam (bijv. "UniFi Sonar") en kopieer de sleutel. Je ziet hem maar één keer.</li></ol></details>`)}
-        ${reconf && wiz.info.needs_confirmation ? field("w-cur", "Huidige API-key (ter bevestiging)", `<input class="input" id="w-cur" name="current_api_key" type="password" autocomplete="off" value="${esc(wiz.current_api_key)}">`, "Alleen nodig als je een andere API-key invult. Zo kan niet iedereen in je netwerk de koppeling omzetten.") : ""}
-        <details class="adv"><summary>Geavanceerd</summary>
-          ${field("w-site", "Site", `<input class="input" id="w-site" name="site" value="${esc(wiz.site)}" spellcheck="false">`, "Meestal <code>default</code>.")}
-          <label class="check"><input type="checkbox" id="w-tls" name="verify_tls" ${wiz.verify_tls ? "checked" : ""}> Certificaat controleren <span class="muted">(alleen met een geldig certificaat; UniFi gebruikt standaard een eigen certificaat)</span></label>
-          <p class="help" style="margin-top:14px">Geeft je API-key alleen beperkte gegevens (geen signaal en retries)? Vul dan een lokaal account met <b>View Only</b>-rechten in. Dat wordt alleen gebruikt als het nodig is.</p>
-          ${field("w-user", "Gebruikersnaam (optioneel)", `<input class="input" id="w-user" name="username" autocomplete="off" value="${esc(wiz.username)}">`)}
-          ${field("w-pass", "Wachtwoord (optioneel)", `<input class="input" id="w-pass" name="password" type="password" autocomplete="off" value="${esc(wiz.password)}">`)}
+        ${field("w-addr", L("Adres van je UniFi-console", "Address of your UniFi console"), `<input class="input" id="w-addr" name="address" required autocomplete="off" spellcheck="false" placeholder="192.168.1.1" value="${esc(wiz.address)}">`,
+          L("Het IP-adres of de hostnaam. Poort 443 en 11443 (UniFi OS Server) worden allebei geprobeerd; een andere poort vul je zo in: <code>192.168.1.10:8443</code>.", "The IP address or host name. Ports 443 and 11443 (UniFi OS Server) are both tried; enter another port like this: <code>192.168.1.10:8443</code>."))}
+        ${field("w-key", L("API-key", "API key"), `<div class="pw"><input class="input" id="w-key" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="${L("Plak hier je API-key", "Paste your API key here")}" value="${esc(wiz.api_key)}"><button type="button" class="btn ghost" data-show="w-key" aria-label="${L("Toon API-key", "Show API key")}">${icon("eye")}</button></div>`,
+          L(`<details><summary>Waar vind ik de API-key?</summary><ol><li>Open <b>UniFi Network</b> op je console.</li><li>Ga naar <b>Instellingen → Control Plane → Integrations</b>.</li><li>Kies <b>Create API Key</b>, geef hem een naam (bijv. "UniFi Sonar") en kopieer de sleutel. Je ziet hem maar één keer.</li></ol></details>`,
+            `<details><summary>Where do I find the API key?</summary><ol><li>Open <b>UniFi Network</b> on your console.</li><li>Go to <b>Settings → Control Plane → Integrations</b>.</li><li>Choose <b>Create API Key</b>, give it a name (e.g. "UniFi Sonar") and copy the key. You only see it once.</li></ol></details>`))}
+        ${reconf && wiz.info.needs_confirmation ? field("w-cur", L("Huidige API-key (ter bevestiging)", "Current API key (to confirm)"), `<input class="input" id="w-cur" name="current_api_key" type="password" autocomplete="off" value="${esc(wiz.current_api_key)}">`, L("Alleen nodig als je een andere API-key invult. Zo kan niet iedereen in je netwerk de koppeling omzetten.", "Only needed when you enter a different API key. This way not everyone on your network can change the connection.")) : ""}
+        <details class="adv"><summary>${L("Geavanceerd", "Advanced")}</summary>
+          ${field("w-site", "Site", `<input class="input" id="w-site" name="site" value="${esc(wiz.site)}" spellcheck="false">`, L("Meestal <code>default</code>.", "Usually <code>default</code>."))}
+          <label class="check"><input type="checkbox" id="w-tls" name="verify_tls" ${wiz.verify_tls ? "checked" : ""}> ${L("Certificaat controleren", "Verify certificate")} <span class="muted">${L("(alleen met een geldig certificaat; UniFi gebruikt standaard een eigen certificaat)", "(only with a valid certificate; UniFi uses its own certificate by default)")}</span></label>
+          <p class="help" style="margin-top:14px">${L("Geeft je API-key alleen beperkte gegevens (geen signaal en retries)? Vul dan een lokaal account met <b>View Only</b>-rechten in. Dat wordt alleen gebruikt als het nodig is.", "Does your API key only give limited data (no signal and retries)? Then enter a local account with <b>View Only</b> rights. It is only used when needed.")}</p>
+          ${field("w-user", L("Gebruikersnaam (optioneel)", "Username (optional)"), `<input class="input" id="w-user" name="username" autocomplete="off" value="${esc(wiz.username)}">`)}
+          ${field("w-pass", L("Wachtwoord (optioneel)", "Password (optional)"), `<input class="input" id="w-pass" name="password" type="password" autocomplete="off" value="${esc(wiz.password)}">`)}
         </details>
         ${wiz.error ? `<div class="banner err" role="alert">${icon("octagon")}<div><b>${esc(wiz.error.error)}</b>${wiz.error.hint ? `<div>${esc(wiz.error.hint)}</div>` : ""}</div></div>` : ""}
-        <div class="wiz-actions"><button type="submit" class="btn primary" ${wiz.busy ? "disabled" : ""}>${wiz.busy ? "Bezig met testen…" : "Verbinding testen"}</button>
-          <button type="button" class="btn ghost" data-wiz="${reconf ? "cancel" : "1"}">${reconf ? "Annuleren" : "Terug"}</button></div>
+        <div class="wiz-actions"><button type="submit" class="btn primary" ${wiz.busy ? "disabled" : ""}>${wiz.busy ? L("Bezig met testen…", "Testing…") : L("Verbinding testen", "Test connection")}</button>
+          <button type="button" class="btn ghost" data-wiz="${reconf ? "cancel" : "1"}">${reconf ? L("Annuleren", "Cancel") : L("Terug", "Back")}</button></div>
         </form>`;
     } else if (wiz.step === 3) {
       const r = wiz.result;
       const row = (ok, text) => `<li>${icon(ok ? "check" : "alert", ok ? "t-ok" : "t-warning")}<span>${text}</span></li>`;
-      body = `<h1>Gelukt</h1><p class="lead">De verbinding werkt. Dit is wat ik zie:</p>
+      body = `<h1>${L("Gelukt", "Success")}</h1><p class="lead">${L("De verbinding werkt. Dit is wat ik zie:", "The connection works. This is what Sonar sees:")}</p>
         <ul class="checks">
-          ${row(true, `Bereikbaar op <b>${esc(r.url)}</b>`)}
-          ${row(r.source !== "integration", `Ingelogd via de ${esc(SOURCE_LABEL[r.source] || r.source)}`)}
+          ${row(true, `${L("Bereikbaar op", "Reachable at")} <b>${esc(r.url)}</b>`)}
+          ${row(r.source !== "integration", `${L("Ingelogd via de", "Logged in via the")} ${esc(SOURCE_LABEL[r.source] || r.source)}`)}
           ${r.gateway ? row(true, `Gateway: <b>${esc(r.gateway)}</b>`) : ""}
-          ${row(r.devices > 0, `<b>${r.devices}</b> UniFi-apparaten en <b>${r.clients}</b> clients`)}
+          ${row(r.devices > 0, L(`<b>${r.devices}</b> UniFi-apparaten en <b>${r.clients}</b> clients`, `<b>${r.devices}</b> UniFi devices and <b>${r.clients}</b> clients`))}
         </ul>
         ${r.warnings.map((w) => `<div class="banner">${icon("info")}<span>${esc(w)}</span></div>`).join("")}
         ${wiz.error ? `<div class="banner err" role="alert">${icon("octagon")}<span>${esc(wiz.error.error)}</span></div>` : ""}
-        <div class="wiz-actions"><button class="btn primary" data-wiz="save" ${wiz.busy ? "disabled" : ""}>${wiz.busy ? "Opslaan…" : "Opslaan en starten"}</button><button class="btn ghost" data-wiz="2">Terug</button></div>`;
+        <div class="wiz-actions"><button class="btn primary" data-wiz="save" ${wiz.busy ? "disabled" : ""}>${wiz.busy ? L("Opslaan…", "Saving…") : L("Opslaan en starten", "Save and start")}</button><button class="btn ghost" data-wiz="2">${L("Terug", "Back")}</button></div>`;
     }
-    $("#view").innerHTML = `<div class="wizard">${head}<div class="card wiz-card">${body}</div><p class="wiz-foot muted">Je API-key wordt alleen op dit apparaat opgeslagen en nooit teruggestuurd naar de browser.</p></div>`;
+    $("#view").innerHTML = `<div class="wizard">${head}<div class="card wiz-card">${body}</div><p class="wiz-foot muted">${L("Je API-key wordt alleen op dit apparaat opgeslagen en nooit teruggestuurd naar de browser.", "Your API key is only stored on this device and never sent back to the browser.")}</p></div>`;
     const form = $("#wiz-form");
     if (form) {
       form.addEventListener("submit", (e) => { e.preventDefault(); wizTest(); });
@@ -1413,8 +1430,8 @@
   async function wizTest() {
     readForm();
     wiz.error = null;
-    if (!wiz.address) { wiz.error = { error: "Vul het adres van je UniFi-console in." }; return renderWizard(); }
-    if (!wiz.api_key && !(wiz.username && wiz.password)) { wiz.error = { error: "Vul een API-key in." }; return renderWizard(); }
+    if (!wiz.address) { wiz.error = { error: L("Vul het adres van je UniFi-console in.", "Enter the address of your UniFi console.") }; return renderWizard(); }
+    if (!wiz.api_key && !(wiz.username && wiz.password)) { wiz.error = { error: L("Vul een API-key in.", "Enter an API key.") }; return renderWizard(); }
     wiz.busy = true; renderWizard();
     try {
       const r = await post("/api/setup/test", wizBody());
@@ -1455,17 +1472,19 @@
 
   // ------------------------------------------------------------------ instellingen
   function mountSettings() {
-    mount("instellingen", `<div class="page-head"><div><h1>Instellingen</h1><p class="subtitle">Koppeling, meldingen naar je telefoon, toegang en probleemoplossing.</p></div></div>
+    mount("instellingen", `<div class="page-head"><div><h1>${L("Instellingen", "Settings")}</h1><p class="subtitle">${L("Koppeling, taal, meldingen naar je telefoon, toegang en probleemoplossing.", "Connection, language, notifications to your phone, access and troubleshooting.")}</p></div></div>
       <div class="settings">
-        <section class="card" aria-labelledby="h-conn"><h2 id="h-conn">Koppeling</h2><div id="set-conn"></div></section>
-        <section class="card" aria-labelledby="h-notify"><h2 id="h-notify">Meldingen versturen</h2>
-          <p class="help" style="margin:-4px 0 4px">Krijg een bericht als er iets misgaat: via Home Assistant, ntfy, Discord, Slack of een eigen webhook.</p><div id="set-notify"></div></section>
+        <section class="card" aria-labelledby="h-conn"><h2 id="h-conn">${L("Koppeling", "Connection")}</h2><div id="set-conn"></div></section>
+        <section class="card" aria-labelledby="h-lang"><h2 id="h-lang">${L("Taal", "Language")}</h2>
+          <p class="help" style="margin:-4px 0 12px">${L("Geldt voor het dashboard, de meldingen die Sonar verstuurt en de namen in Home Assistant.", "Applies to the dashboard, the notifications Sonar sends and the names in Home Assistant.")}</p>${langSwitch(true)}</section>
+        <section class="card" aria-labelledby="h-notify"><h2 id="h-notify">${L("Meldingen versturen", "Sending notifications")}</h2>
+          <p class="help" style="margin:-4px 0 4px">${L("Krijg een bericht als er iets misgaat: via Home Assistant, ntfy, Discord, Slack of een eigen webhook.", "Get a message when something goes wrong: via Home Assistant, ntfy, Discord, Slack or your own webhook.")}</p><div id="set-notify"></div></section>
         <section class="card" aria-labelledby="h-mqtt"><h2 id="h-mqtt">Home Assistant (MQTT)</h2>
-          <p class="help" style="margin:-4px 0 4px">Zet de netwerkscore, meldingen, internetsnelheid, datagebruik en een speedtest-knop in Home Assistant. HA herkent alles vanzelf via MQTT-discovery.</p><div id="set-mqtt"></div></section>
-        <section class="card" aria-labelledby="h-access"><h2 id="h-access">Toegang</h2><div id="set-access"></div></section>
-        <section class="card" aria-labelledby="h-debug"><h2 id="h-debug">Probleemoplossing</h2><div id="set-debug"></div></section>
+          <p class="help" style="margin:-4px 0 4px">${L("Zet de netwerkscore, meldingen, internetsnelheid, datagebruik en een speedtest-knop in Home Assistant. HA herkent alles vanzelf via MQTT-discovery.", "Put the network score, issues, internet speed, data usage and a speed test button in Home Assistant. HA picks everything up automatically via MQTT discovery.")}</p><div id="set-mqtt"></div></section>
+        <section class="card" aria-labelledby="h-access"><h2 id="h-access">${L("Toegang", "Access")}</h2><div id="set-access"></div></section>
+        <section class="card" aria-labelledby="h-debug"><h2 id="h-debug">${L("Probleemoplossing", "Troubleshooting")}</h2><div id="set-debug"></div></section>
       </div>
-      <p class="muted" style="font-size:12px;margin-top:16px">UniFi Sonar is een onofficieel hobbyproject en niet verbonden aan Ubiquiti.</p>`);
+      <p class="muted" style="font-size:12px;margin-top:16px">${L("UniFi Sonar is een onofficieel hobbyproject en niet verbonden aan Ubiquiti.", "UniFi Sonar is an unofficial hobby project and not affiliated with Ubiquiti.")}</p>`);
     $("#set-conn").addEventListener("click", (e) => {
       const b = e.target.closest("[data-act]");
       if (!b) return;
@@ -1481,26 +1500,29 @@
     if (current !== "instellingen" || !$("#set-conn")) return;
     const live = info.mode === "live";
     $("#set-conn").innerHTML = `
-      ${kv([["Modus", live ? badge("ok", "Live", "check") : badge("info", "Demodata")],
+      ${kv([[L("Modus", "Mode"), live ? badge("ok", "Live", "check") : badge("info", L("Demodata", "Demo data"))],
             ["Controller", live ? esc(info.controller_url) : "–"], ["Site", live ? esc(info.site) : "–"],
-            ["Bron", esc(SOURCE_LABEL[s.source] || s.source || "–")], ["Laatste meting", s.last_ok ? `${ago(s.last_ok)} geleden` : "–"],
-            ["API-key", info.has_api_key ? "opgeslagen (verborgen)" : "–"]])}
+            [L("Bron", "Source"), esc(SOURCE_LABEL[s.source] || s.source || "–")], [L("Laatste meting", "Last reading"), s.last_ok ? L(`${ago(s.last_ok)} geleden`, `${ago(s.last_ok)} ago`) : "–"],
+            [L("API-key", "API key"), info.has_api_key ? L("opgeslagen (verborgen)", "stored (hidden)") : "–"]])}
       ${s.last_error ? `<div class="banner err" style="margin-top:16px">${icon("octagon")}<span>${esc(s.last_error)}</span></div>` : ""}
-      <div class="wiz-actions" style="margin-top:20px"><button class="btn primary" data-act="change">${live ? "Koppeling wijzigen" : "Koppel mijn UniFi-controller"}</button>
-      ${live ? `<button class="btn" data-act="demo">Overschakelen naar demodata</button>` : ""}</div>`;
+      <div class="wiz-actions" style="margin-top:20px"><button class="btn primary" data-act="change">${live ? L("Koppeling wijzigen", "Change connection") : L("Koppel mijn UniFi-controller", "Connect my UniFi controller")}</button>
+      ${live ? `<button class="btn" data-act="demo">${L("Overschakelen naar demodata", "Switch to demo data")}</button>` : ""}</div>`;
   };
 
   // ---- meldingen versturen
   const KIND = {
     homeassistant: ["Home Assistant", "http://homeassistant.local:8123/api/webhook/unifi-sonar",
-      "Maak in Home Assistant een automatisering met als trigger <b>Webhook</b> (bijv. ID <code>unifi-sonar</code>) en plak hier de webhook-URL. In de automatisering heb je <code>trigger.json.title</code>, <code>.message</code>, <code>.severity</code> en <code>.event</code>."],
-    ntfy: ["ntfy", "https://ntfy.sh/kies-een-lastig-te-raden-naam",
-      "Installeer de ntfy-app, abonneer je op een topic met een lastig te raden naam en vul die URL hier in. Eigen ntfy-server met login? Vul dan ook een toegangstoken in."],
+      L("Maak in Home Assistant een automatisering met als trigger <b>Webhook</b> (bijv. ID <code>unifi-sonar</code>) en plak hier de webhook-URL. In de automatisering heb je <code>trigger.json.title</code>, <code>.message</code>, <code>.severity</code> en <code>.event</code>.",
+        "Create an automation in Home Assistant with a <b>Webhook</b> trigger (e.g. ID <code>unifi-sonar</code>) and paste the webhook URL here. In the automation you have <code>trigger.json.title</code>, <code>.message</code>, <code>.severity</code> and <code>.event</code>.")],
+    ntfy: ["ntfy", L("https://ntfy.sh/kies-een-lastig-te-raden-naam", "https://ntfy.sh/pick-a-hard-to-guess-name"),
+      L("Installeer de ntfy-app, abonneer je op een topic met een lastig te raden naam en vul die URL hier in. Eigen ntfy-server met login? Vul dan ook een toegangstoken in.",
+        "Install the ntfy app, subscribe to a topic with a hard-to-guess name and enter that URL here. Your own ntfy server with login? Then also enter an access token.")],
     discord: ["Discord", "https://discord.com/api/webhooks/…",
-      "In Discord: Serverinstellingen → Integraties → Webhooks → Nieuwe webhook → Webhook-URL kopiëren."],
-    slack: ["Slack", "https://hooks.slack.com/services/…", "Maak een <b>Incoming Webhook</b> aan in Slack en plak de URL hier."],
-    webhook: ["Eigen webhook", "https://…",
-      "Krijgt een POST met JSON: <code>event</code>, <code>severity</code>, <code>title</code>, <code>message</code>, <code>url</code> en <code>key</code>. Handig voor n8n of Node-RED."],
+      L("In Discord: Serverinstellingen → Integraties → Webhooks → Nieuwe webhook → Webhook-URL kopiëren.", "In Discord: Server Settings → Integrations → Webhooks → New Webhook → Copy Webhook URL.")],
+    slack: ["Slack", "https://hooks.slack.com/services/…", L("Maak een <b>Incoming Webhook</b> aan in Slack en plak de URL hier.", "Create an <b>Incoming Webhook</b> in Slack and paste the URL here.")],
+    webhook: [L("Eigen webhook", "Custom webhook"), "https://…",
+      L("Krijgt een POST met JSON: <code>event</code>, <code>severity</code>, <code>title</code>, <code>message</code>, <code>url</code> en <code>key</code>. Handig voor n8n of Node-RED.",
+        "Receives a POST with JSON: <code>event</code>, <code>severity</code>, <code>title</code>, <code>message</code>, <code>url</code> and <code>key</code>. Handy for n8n or Node-RED.")],
   };
   const nfy = { cfg: null, msg: {}, saving: false, banner: null };
   // ---- Home Assistant via MQTT
@@ -1510,17 +1532,18 @@
     const el = $("#set-mqtt");
     if (!el) return;
     const st = m.status || {};
-    const stTxt = !m.enabled ? "" : st.connected ? `<span class="badge ok">${icon("check")}Verbonden${st.last_publish ? ` · bijgewerkt ${ago(st.last_publish)} geleden` : ""}</span>`
-      : st.error ? `<span class="badge critical">${icon("octagon")}${esc(st.error)}</span>` : `<span class="badge info">verbinden…</span>`;
+    const stTxt = !m.enabled ? "" : st.connected ? `<span class="badge ok">${icon("check")}${L("Verbonden", "Connected")}${st.last_publish ? L(` · bijgewerkt ${ago(st.last_publish)} geleden`, ` · updated ${ago(st.last_publish)} ago`) : ""}</span>`
+      : st.error ? `<span class="badge critical">${icon("octagon")}${esc(st.error)}</span>` : `<span class="badge info">${L("verbinden…", "connecting…")}</span>`;
+    const keep = L("opgeslagen (leeg laten = behouden)", "stored (leave empty = keep)");
     el.innerHTML = `<form class="form-grid" id="mq-form" onsubmit="return false">
-        <div class="field" style="grid-column:1/-1"><label class="check"><input type="checkbox" name="enabled" ${m.enabled ? "checked" : ""}> Koppeling aan</label></div>
-        <div class="field"><label for="mq-host">Broker</label><input class="input" id="mq-host" name="host" value="${esc(m.host)}" placeholder="bijv. 192.168.1.20 of homeassistant.local"></div>
-        <div class="field"><label for="mq-port">Poort</label><input class="input" id="mq-port" name="port" type="number" min="1" max="65535" value="${esc(m.port)}"></div>
-        <div class="field"><label for="mq-user">Gebruikersnaam</label><input class="input" id="mq-user" name="username" autocomplete="off" value="${esc(m.username)}"></div>
-        <div class="field"><label for="mq-pw">Wachtwoord</label><input class="input" id="mq-pw" name="password" type="password" autocomplete="new-password" placeholder="${m.has_password ? "opgeslagen (leeg laten = behouden)" : ""}"></div>
+        <div class="field" style="grid-column:1/-1"><label class="check"><input type="checkbox" name="enabled" ${m.enabled ? "checked" : ""}> ${L("Koppeling aan", "Integration on")}</label></div>
+        <div class="field"><label for="mq-host">Broker</label><input class="input" id="mq-host" name="host" value="${esc(m.host)}" placeholder="${L("bijv. 192.168.1.20 of homeassistant.local", "e.g. 192.168.1.20 or homeassistant.local")}"></div>
+        <div class="field"><label for="mq-port">${L("Poort", "Port")}</label><input class="input" id="mq-port" name="port" type="number" min="1" max="65535" value="${esc(m.port)}"></div>
+        <div class="field"><label for="mq-user">${L("Gebruikersnaam", "Username")}</label><input class="input" id="mq-user" name="username" autocomplete="off" value="${esc(m.username)}"></div>
+        <div class="field"><label for="mq-pw">${L("Wachtwoord", "Password")}</label><input class="input" id="mq-pw" name="password" type="password" autocomplete="new-password" placeholder="${m.has_password ? keep : ""}"></div>
       </form>
-      <div class="wiz-actions" style="margin-top:14px;align-items:center"><button class="btn primary" data-mq="save">Opslaan</button><button class="btn" data-mq="test">Verbinding testen</button><span id="mq-msg">${stTxt}</span></div>
-      <p class="help">Gebruik je de Mosquitto-add-on, maak dan in Home Assistant een gewone gebruiker aan voor Sonar en vul die hier in. Na het opslaan verschijnt <b>UniFi Sonar</b> als apparaat onder Instellingen → Apparaten → MQTT.</p>`;
+      <div class="wiz-actions" style="margin-top:14px;align-items:center"><button class="btn primary" data-mq="save">${L("Opslaan", "Save")}</button><button class="btn" data-mq="test">${L("Verbinding testen", "Test connection")}</button><span id="mq-msg">${stTxt}</span></div>
+      <p class="help">${L("Gebruik je de Mosquitto-add-on, maak dan in Home Assistant een gewone gebruiker aan voor Sonar en vul die hier in. Na het opslaan verschijnt <b>UniFi Sonar</b> als apparaat onder Instellingen → Apparaten → MQTT.", "If you use the Mosquitto add-on, create a regular user for Sonar in Home Assistant and enter it here. After saving, <b>UniFi Sonar</b> appears as a device under Settings → Devices → MQTT.")}</p>`;
     hydrateIcons(el);
   }
   async function mqttAction(act, b) {
@@ -1530,10 +1553,10 @@
     try {
       if (act === "test") {
         const r = await post("/api/mqtt/test", body);
-        msg.innerHTML = r.ok ? `<span class="badge ok">${icon("check")}Broker bereikbaar en inloggen gelukt</span>` : `<span class="badge critical">${icon("octagon")}${esc(r.error)}</span>`;
+        msg.innerHTML = r.ok ? `<span class="badge ok">${icon("check")}${L("Broker bereikbaar en inloggen gelukt", "Broker reachable and login succeeded")}</span>` : `<span class="badge critical">${icon("octagon")}${esc(r.error)}</span>`;
       } else {
         await post("/api/mqtt/save", body);
-        msg.innerHTML = `<span class="badge ok">${icon("check")}Opgeslagen</span>`;
+        msg.innerHTML = `<span class="badge ok">${icon("check")}${L("Opgeslagen", "Saved")}</span>`;
         setTimeout(loadMqtt, 3000);
       }
     } catch (err) { msg.innerHTML = `<span class="badge critical">${icon("octagon")}${esc(err.message)}</span>`; }
@@ -1567,40 +1590,41 @@
     const st = c.status || {};
     const msg = nfy.msg[i];
     const stat = msg ? `<span class="${msg.ok ? "t-ok" : "t-critical"}">${esc(msg.text)}</span>`
-      : st.error ? `<span class="t-critical">Laatste poging mislukt: ${esc(st.error)}</span>`
-      : st.ok ? `<span class="muted">Laatst verstuurd ${ago(st.ok)} geleden</span>` : "";
+      : st.error ? `<span class="t-critical">${L("Laatste poging mislukt", "Last attempt failed")}: ${esc(st.error)}</span>`
+      : st.ok ? `<span class="muted">${L(`Laatst verstuurd ${ago(st.ok)} geleden`, `Last sent ${ago(st.ok)} ago`)}</span>` : "";
+    const keep = L("leeg laten = behouden", "leave empty = keep");
     return `<div class="channel" data-ch="${i}">
       <div class="channel-head"><b>${esc(label)}</b>
-        <label class="check" style="margin:0"><input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}> Aan</label>
-        <button type="button" class="linkbtn" data-n="remove" data-i="${i}">Verwijderen</button></div>
+        <label class="check" style="margin:0"><input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}> ${L("Aan", "On")}</label>
+        <button type="button" class="linkbtn" data-n="remove" data-i="${i}">${L("Verwijderen", "Remove")}</button></div>
       <div class="form-grid">
-        <div class="field"><label for="n-kind-${i}">Soort</label><select class="input" id="n-kind-${i}" name="kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${k === c.kind ? "selected" : ""}>${v[0]}</option>`).join("")}</select></div>
-        <div class="field"><label for="n-sev-${i}">Vanaf</label><select class="input" id="n-sev-${i}" name="sev">${[["critical", "Alleen kritiek"], ["warning", "Waarschuwing en kritiek"], ["info", "Alles, ook info"]].map(([k, l]) => `<option value="${k}" ${k === (c.min_severity || "warning") ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        <div class="field"><label for="n-kind-${i}">${L("Soort", "Type")}</label><select class="input" id="n-kind-${i}" name="kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${k === c.kind ? "selected" : ""}>${v[0]}</option>`).join("")}</select></div>
+        <div class="field"><label for="n-sev-${i}">${L("Vanaf", "From")}</label><select class="input" id="n-sev-${i}" name="sev">${[["critical", L("Alleen kritiek", "Critical only")], ["warning", L("Waarschuwing en kritiek", "Warning and critical")], ["info", L("Alles, ook info", "Everything, including info")]].map(([k, l]) => `<option value="${k}" ${k === (c.min_severity || "warning") ? "selected" : ""}>${l}</option>`).join("")}</select></div>
       </div>
-      <div class="field"><label for="n-url-${i}">Webhook-adres</label><input class="input" id="n-url-${i}" name="url" autocomplete="off" spellcheck="false" value="${esc(c.url || "")}" placeholder="${esc(c.url_masked ? c.url_masked + "  (leeg laten = behouden)" : ph)}">
+      <div class="field"><label for="n-url-${i}">${L("Webhook-adres", "Webhook address")}</label><input class="input" id="n-url-${i}" name="url" autocomplete="off" spellcheck="false" value="${esc(c.url || "")}" placeholder="${esc(c.url_masked ? `${c.url_masked}  (${keep})` : ph)}">
         <div class="help">${help}</div></div>
-      ${c.kind === "ntfy" ? `<div class="field"><label for="n-tok-${i}">Toegangstoken (optioneel)</label><input class="input" id="n-tok-${i}" name="token" type="password" autocomplete="off" placeholder="${c.has_token ? "opgeslagen (leeg laten = behouden)" : "tk_…"}"></div>` : ""}
-      <label class="check"><input type="checkbox" name="resolved" ${c.resolved !== false ? "checked" : ""}> Ook een bericht als het weer is opgelost</label>
-      <div class="channel-foot"><button type="button" class="btn" data-n="test" data-i="${i}">Testbericht sturen</button>${stat}</div>
+      ${c.kind === "ntfy" ? `<div class="field"><label for="n-tok-${i}">${L("Toegangstoken (optioneel)", "Access token (optional)")}</label><input class="input" id="n-tok-${i}" name="token" type="password" autocomplete="off" placeholder="${c.has_token ? `${L("opgeslagen", "stored")} (${keep})` : "tk_…"}"></div>` : ""}
+      <label class="check"><input type="checkbox" name="resolved" ${c.resolved !== false ? "checked" : ""}> ${L("Ook een bericht als het weer is opgelost", "Also send a message when it is resolved")}</label>
+      <div class="channel-foot"><button type="button" class="btn" data-n="test" data-i="${i}">${L("Testbericht sturen", "Send test message")}</button>${stat}</div>
     </div>`;
   }
   function renderNotify() {
     const root = $("#set-notify");
     if (!root) return;
-    if (!nfy.cfg) { root.innerHTML = `<p class="muted">Beschikbaar zodra UniFi Sonar is gekoppeld.</p>`; return; }
+    if (!nfy.cfg) { root.innerHTML = `<p class="muted">${L("Beschikbaar zodra UniFi Sonar is gekoppeld.", "Available once UniFi Sonar is connected.")}</p>`; return; }
     const c = nfy.cfg;
     root.innerHTML = `
-      ${c.channels.length ? c.channels.map(channelHTML).join("") : `<p class="muted">Nog geen kanalen. Voeg er een toe om meldingen te krijgen.</p>`}
-      <div class="wiz-actions" style="margin-top:12px"><button type="button" class="btn" data-n="add" ${c.channels.length >= 5 ? "disabled" : ""}>Kanaal toevoegen</button></div>
+      ${c.channels.length ? c.channels.map(channelHTML).join("") : `<p class="muted">${L("Nog geen kanalen. Voeg er een toe om meldingen te krijgen.", "No channels yet. Add one to get notifications.")}</p>`}
+      <div class="wiz-actions" style="margin-top:12px"><button type="button" class="btn" data-n="add" ${c.channels.length >= 5 ? "disabled" : ""}>${L("Kanaal toevoegen", "Add channel")}</button></div>
       <div class="form-grid" style="margin-top:8px">
-        <div class="field"><label for="n-delay">Pas melden na</label><select class="input" id="n-delay">${[0, 2, 5, 10, 15, 30].map((m) => `<option value="${m}" ${m === c.delay_min ? "selected" : ""}>${m ? m + " minuten" : "direct"}</option>`).join("")}</select>
-          <div class="help">Een probleem moet zo lang aanhouden; voorkomt berichten bij één uitschieter.</div></div>
-        <div class="field"><label for="n-digest">Dagoverzicht</label><select class="input" id="n-digest"><option value="">Uit</option>${[6, 7, 8, 9, 12, 17, 18, 19, 20, 21].map((h) => `<option value="${h}" ${h === c.digest_hour ? "selected" : ""}>Elke dag om ${String(h).padStart(2, "0")}:00</option>`).join("")}</select>
-          <div class="help">Eén bericht met de netwerkscore en alle open meldingen.</div></div>
+        <div class="field"><label for="n-delay">${L("Pas melden na", "Notify only after")}</label><select class="input" id="n-delay">${[0, 2, 5, 10, 15, 30].map((m) => `<option value="${m}" ${m === c.delay_min ? "selected" : ""}>${m ? `${m} ${L("minuten", "minutes")}` : L("direct", "immediately")}</option>`).join("")}</select>
+          <div class="help">${L("Een probleem moet zo lang aanhouden; voorkomt berichten bij één uitschieter.", "A problem has to last this long; prevents messages for a single spike.")}</div></div>
+        <div class="field"><label for="n-digest">${L("Dagoverzicht", "Daily summary")}</label><select class="input" id="n-digest"><option value="">${L("Uit", "Off")}</option>${[6, 7, 8, 9, 12, 17, 18, 19, 20, 21].map((h) => `<option value="${h}" ${h === c.digest_hour ? "selected" : ""}>${L("Elke dag om", "Every day at")} ${String(h).padStart(2, "0")}:00</option>`).join("")}</select>
+          <div class="help">${L("Eén bericht met de netwerkscore en alle open meldingen.", "One message with the network score and all open issues.")}</div></div>
       </div>
-      <div class="field"><label for="n-base">Adres van dit dashboard</label><input class="input" id="n-base" value="${esc(c.base_url || "")}" spellcheck="false"><div class="help">Voor de link in elk bericht.</div></div>
+      <div class="field"><label for="n-base">${L("Adres van dit dashboard", "Address of this dashboard")}</label><input class="input" id="n-base" value="${esc(c.base_url || "")}" spellcheck="false"><div class="help">${L("Voor de link in elk bericht.", "For the link in each message.")}</div></div>
       ${nfy.banner ? `<div class="banner ${nfy.banner.ok ? "" : "err"}" role="status" style="margin-top:16px">${icon(nfy.banner.ok ? "check" : "octagon")}<span>${esc(nfy.banner.text)}</span></div>` : ""}
-      <div class="wiz-actions"><button type="button" class="btn primary" data-n="save" ${nfy.saving ? "disabled" : ""}>${nfy.saving ? "Opslaan…" : "Meldingen opslaan"}</button></div>`;
+      <div class="wiz-actions"><button type="button" class="btn primary" data-n="save" ${nfy.saving ? "disabled" : ""}>${nfy.saving ? L("Opslaan…", "Saving…") : L("Meldingen opslaan", "Save notifications")}</button></div>`;
   }
   const chBody = (c) => ({ id: c.id || "", kind: c.kind, name: c.name || "", url: c.url || "", token: c.token ?? null,
     min_severity: c.min_severity || "warning", resolved: c.resolved !== false, enabled: c.enabled !== false });
@@ -1613,8 +1637,8 @@
     if (act === "add") { nfy.cfg.channels.push({ kind: "homeassistant", min_severity: "warning", resolved: true, enabled: true }); nfy.msg = {}; }
     if (act === "remove") { nfy.cfg.channels.splice(i, 1); nfy.msg = {}; }
     if (act === "test") {
-      b.disabled = true; b.textContent = "Versturen…";
-      try { await post("/api/notify/test", { channel: chBody(nfy.cfg.channels[i]), base_url: nfy.cfg.base_url }); nfy.msg[i] = { ok: true, text: "Verstuurd, kijk of het aankomt." }; }
+      b.disabled = true; b.textContent = L("Versturen…", "Sending…");
+      try { await post("/api/notify/test", { channel: chBody(nfy.cfg.channels[i]), base_url: nfy.cfg.base_url }); nfy.msg[i] = { ok: true, text: L("Verstuurd, kijk of het aankomt.", "Sent, check whether it arrives.") }; }
       catch (err) { nfy.msg[i] = { ok: false, text: err.message }; }
     }
     if (act === "save") {
@@ -1622,7 +1646,7 @@
       try {
         await post("/api/notify/save", { channels: nfy.cfg.channels.map(chBody), delay_min: nfy.cfg.delay_min, digest_hour: nfy.cfg.digest_hour, base_url: nfy.cfg.base_url });
         nfy.cfg = await api("/api/notify"); nfy.msg = {};
-        nfy.banner = { ok: true, text: "Opgeslagen. Wat nu al openstaat wordt niet alsnog verstuurd; nieuwe problemen wel." };
+        nfy.banner = { ok: true, text: L("Opgeslagen. Wat nu al openstaat wordt niet alsnog verstuurd; nieuwe problemen wel.", "Saved. What is already open now won't be sent afterwards; new problems will.") };
       } catch (err) { nfy.banner = { ok: false, text: err.message }; }
       nfy.saving = false;
     }
@@ -1638,15 +1662,15 @@
     const root = $("#set-access");
     if (!root) return;
     const a = await api("/api/access").catch(() => null);
-    if (!a) { root.innerHTML = `<p class="muted">Niet beschikbaar.</p>`; return; }
-    root.innerHTML = `<p class="help" style="margin-top:-4px">Het dashboard heeft geen login. Het werkt via een IP-adres, <code>localhost</code> en lokale namen zoals <code>sonar.local</code> of <code>sonar.lan</code>. Andere hostnamen worden geweigerd, zodat een website in je browser het dashboard niet stiekem kan aansturen (DNS-rebinding). Gebruik je een eigen naam of een reverse proxy, zet die hieronder.</p>
-      <div class="field"><label for="a-hosts">Extra hostnamen</label><input class="input" id="a-hosts" spellcheck="false" placeholder="sonar.mijndomein.nl, sonar.tailnet.ts.net" value="${esc((a.allowed_hosts || []).join(", "))}">
-        <div class="help">Gescheiden door komma's, precies zoals in de adresbalk.${a.env_hosts.length ? ` Al toegestaan via de service: <code>${esc(a.env_hosts.join(", "))}</code>.` : ""} Je bent nu verbonden via <code>${esc(a.current_host)}</code>.</div></div>
+    if (!a) { root.innerHTML = `<p class="muted">${L("Niet beschikbaar.", "Not available.")}</p>`; return; }
+    root.innerHTML = `<p class="help" style="margin-top:-4px">${L("Het dashboard heeft geen login. Het werkt via een IP-adres, <code>localhost</code> en lokale namen zoals <code>sonar.local</code> of <code>sonar.lan</code>. Andere hostnamen worden geweigerd, zodat een website in je browser het dashboard niet stiekem kan aansturen (DNS-rebinding). Gebruik je een eigen naam of een reverse proxy, zet die hieronder.", "The dashboard has no login. It works via an IP address, <code>localhost</code> and local names such as <code>sonar.local</code> or <code>sonar.lan</code>. Other host names are refused, so a website in your browser cannot secretly control the dashboard (DNS rebinding). If you use your own name or a reverse proxy, add it below.")}</p>
+      <div class="field"><label for="a-hosts">${L("Extra hostnamen", "Extra host names")}</label><input class="input" id="a-hosts" spellcheck="false" placeholder="${L("sonar.mijndomein.nl", "sonar.mydomain.com")}, sonar.tailnet.ts.net" value="${esc((a.allowed_hosts || []).join(", "))}">
+        <div class="help">${L("Gescheiden door komma's, precies zoals in de adresbalk.", "Separated by commas, exactly as in the address bar.")}${a.env_hosts.length ? ` ${L("Al toegestaan via de service", "Already allowed via the service")}: <code>${esc(a.env_hosts.join(", "))}</code>.` : ""} ${L("Je bent nu verbonden via", "You are now connected via")} <code>${esc(a.current_host)}</code>.</div></div>
       ${msg ? `<div class="banner ${msg.ok ? "" : "err"}" role="status" style="margin-top:16px">${icon(msg.ok ? "check" : "octagon")}<span>${esc(msg.text)}</span></div>` : ""}
-      <div class="wiz-actions"><button type="button" class="btn" id="a-save">Opslaan</button></div>`;
+      <div class="wiz-actions"><button type="button" class="btn" id="a-save">${L("Opslaan", "Save")}</button></div>`;
     $("#a-save").onclick = async () => {
       const hosts = $("#a-hosts").value.split(/[,\s]+/).map((h) => h.trim()).filter(Boolean);
-      try { await post("/api/access", { allowed_hosts: hosts }); loadAccess({ ok: true, text: "Opgeslagen." }); }
+      try { await post("/api/access", { allowed_hosts: hosts }); loadAccess({ ok: true, text: L("Opgeslagen.", "Saved.") }); }
       catch (err) { loadAccess({ ok: false, text: err.message }); }
     };
   }
@@ -1655,18 +1679,18 @@
   async function loadDebug() {
     const root = $("#set-debug");
     if (!root) return;
-    const d = await api("/api/debug").catch((e) => ({ text: "Kon geen debug-info ophalen: " + e.message }));
-    root.innerHTML = `<p class="help" style="margin-top:-4px">Werkt er iets niet? Kopieer deze gegevens en plak ze in een issue op GitHub. IP-adressen, namen, MAC-adressen en sleutels zijn eruit gehaald.</p>
+    const d = await api("/api/debug").catch((e) => ({ text: L("Kon geen debug-info ophalen: ", "Could not fetch debug info: ") + e.message }));
+    root.innerHTML = `<p class="help" style="margin-top:-4px">${L("Werkt er iets niet? Kopieer deze gegevens en plak ze in een issue op GitHub. IP-adressen, namen, MAC-adressen en sleutels zijn eruit gehaald.", "Something not working? Copy this info and paste it into an issue on GitHub. IP addresses, names, MAC addresses and keys have been removed.")}</p>
       <pre class="debug" id="dbg-text" tabindex="0">${esc(d.text)}</pre>
-      <div class="wiz-actions" style="margin-top:12px"><button type="button" class="btn" id="dbg-copy">Debug-info kopiëren</button><button type="button" class="btn ghost" id="dbg-reload">Vernieuwen</button><span class="muted" id="dbg-msg" role="status"></span></div>`;
+      <div class="wiz-actions" style="margin-top:12px"><button type="button" class="btn" id="dbg-copy">${L("Debug-info kopiëren", "Copy debug info")}</button><button type="button" class="btn ghost" id="dbg-reload">${L("Vernieuwen", "Refresh")}</button><span class="muted" id="dbg-msg" role="status"></span></div>`;
     $("#dbg-reload").onclick = loadDebug;
     $("#dbg-copy").onclick = async () => {
       const text = $("#dbg-text").textContent;
-      try { await navigator.clipboard.writeText(text); $("#dbg-msg").textContent = "Gekopieerd."; }
+      try { await navigator.clipboard.writeText(text); $("#dbg-msg").textContent = L("Gekopieerd.", "Copied."); }
       catch {   // geen clipboard-API (http): selecteer de tekst zodat ⌘C/Ctrl+C werkt
         const r = document.createRange(); r.selectNodeContents($("#dbg-text"));
         const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
-        $("#dbg-msg").textContent = "Geselecteerd: druk op Ctrl+C of ⌘C.";
+        $("#dbg-msg").textContent = L("Geselecteerd: druk op Ctrl+C of ⌘C.", "Selected: press Ctrl+C or ⌘C.");
       }
     };
   }
@@ -1681,17 +1705,17 @@
   function eventsHTML(evts) {
     let day = "", out = "";
     evts.forEach((e) => {
-      const d = new Date(e.ts * 1000).toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
+      const d = new Date(e.ts * 1000).toLocaleDateString(LOC, { weekday: "long", day: "numeric", month: "long" });
       if (d !== day) { out += `<div class="day">${d}</div>`; day = d; }
       const [ic, cls] = EV[e.kind] || ["activity", ""];
       out += `<div class="event"><span class="time">${hhmm(e.ts)}</span><span class="eico ${cls}">${icon(ic)}</span><span>${esc(e.message)}</span></div>`;
     });
-    return out || `<div class="empty">Geen gebeurtenissen in deze periode</div>`;
+    return out || `<div class="empty">${L("Geen gebeurtenissen in deze periode", "No events in this period")}</div>`;
   }
   function mountTimeline() {
     mount("tijdlijn", `
-      <div class="page-head"><div><h1>Tijdlijn</h1><p class="subtitle">Wat er in je netwerk gebeurde: herstarts, links die wegvallen, roaming en clients die komen en gaan.</p></div>${rangeSeg("tl-range")}</div>
-      <div class="toolbar"><div class="chips" role="group" aria-label="Soort" id="tl-kind">${[["all", "Alles"], ["config", "Instellingen"], ["device", "Apparaten"], ["port", "Poorten"], ["roam", "Roaming"], ["client", "Clients"]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ekind === v}">${l}</button>`).join("")}</div></div>
+      <div class="page-head"><div><h1>${L("Tijdlijn", "Timeline")}</h1><p class="subtitle">${L("Wat er in je netwerk gebeurde: herstarts, links die wegvallen, roaming en clients die komen en gaan.", "What happened in your network: restarts, links dropping, roaming and clients coming and going.")}</p></div>${rangeSeg("tl-range")}</div>
+      <div class="toolbar"><div class="chips" role="group" aria-label="${L("Soort", "Type")}" id="tl-kind">${[["all", L("Alles", "All")], ["config", L("Instellingen", "Settings")], ["device", L("Apparaten", "Devices")], ["port", L("Poorten", "Ports")], ["roam", "Roaming"], ["client", "Clients"]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ekind === v}">${l}</button>`).join("")}</div></div>
       <div class="card"><div class="events" id="tl-list"></div></div>`);
     bindRange("tl-range", UPDATERS.tijdlijn);
     $("#tl-kind").addEventListener("click", (e) => {
@@ -1749,33 +1773,33 @@
     $("#drawer-title").textContent = d.name;
     $("#drawer-sub").textContent = `${d.model} · ${d.ip} · ${d.mac}`;
     const dm = devByMac();
-    const up = d.uplink_mac ? `${esc(dm[d.uplink_mac]?.name || d.uplink_mac)}${d.uplink_port ? ` · poort ${d.uplink_port}` : ""}` : "–";
+    const up = d.uplink_mac ? `${esc(dm[d.uplink_mac]?.name || d.uplink_mac)}${d.uplink_port ? ` · ${L("poort", "port")} ${d.uplink_port}` : ""}` : "–";
     let body = kv([
       ["Status", d.state === "online" ? badge("ok", "Online", "check") : badge("critical", d.state, "octagon")],
       ["Firmware", `${esc(d.version)}${d.upgradable ? ` ${badge("info", "update " + (d.upgrade_to || ""))}` : ""}`],
-      ["Uptime", dur(d.uptime)], ["CPU", `${nf(d.cpu)}%`], ["Geheugen", `${nf(d.mem)}%`], ["Temperatuur", d.temp == null ? "–" : `${nf(d.temp)} °C`],
+      ["Uptime", dur(d.uptime)], ["CPU", `${nf(d.cpu)}%`], [L("Geheugen", "Memory"), `${nf(d.mem)}%`], [L("Temperatuur", "Temperature"), d.temp == null ? "–" : `${nf(d.temp)} °C`],
       ["Clients", d.num_clients], ["Uplink", up], ["Score", `${d.score}/100`],
     ]);
     body = `<div class="card">${body}</div>` + relatedIssues((i) => i.device_mac === d.mac && !i.client_mac && !i.group);
-    if (d.client_issue_count) body += `<div class="banner">${icon("users")}<span>${d.client_issue_count} meldingen bij clients op dit apparaat. <button class="linkbtn" id="dr-goclients">Bekijk deze clients</button></span></div>`;
+    if (d.client_issue_count) body += `<div class="banner">${icon("users")}<span>${L(`${d.client_issue_count} meldingen bij clients op dit apparaat.`, `${d.client_issue_count} issues with clients on this device.`)} <button class="linkbtn" id="dr-goclients">${L("Bekijk deze clients", "View these clients")}</button></span></div>`;
     if (d.type === "gateway") {
       const w = state.snap.wan;
-      body += `<div class="card"><h3 style="margin-bottom:12px">Internet</h3>${kv([["Provider", esc(w.isp || "–")], ["WAN-IP", esc(w.wan_ip || "–")], ["Latency", `${nf(w.latency_ms)} ms`], ["Pakketverlies", `${nf(w.loss_pct, 1)}%`], ["Download (test)", `${nf(w.xput_down)} Mbit/s`], ["Upload (test)", `${nf(w.xput_up)} Mbit/s`]])}</div>`;
+      body += `<div class="card"><h3 style="margin-bottom:12px">Internet</h3>${kv([["Provider", esc(w.isp || "–")], ["WAN-IP", esc(w.wan_ip || "–")], ["Latency", `${nf(w.latency_ms)} ms`], [L("Pakketverlies", "Packet loss"), `${nf(w.loss_pct, 1)}%`], ["Download (test)", `${nf(w.xput_down)} Mbit/s`], ["Upload (test)", `${nf(w.xput_up)} Mbit/s`]])}</div>`;
     }
     if (d.radios.length) {
-      body += `<div class="card"><h3 style="margin-bottom:12px">Radio's</h3><div class="table-wrap" style="border:0"><table><thead><tr><th>Band</th><th class="r">Kanaal</th><th class="r">Clients</th><th>Bezetting</th><th class="r">Storing</th><th class="r">Retries</th><th class="r">Ervaring</th></tr></thead><tbody>
+      body += `<div class="card"><h3 style="margin-bottom:12px">${L("Radio's", "Radios")}</h3><div class="table-wrap" style="border:0"><table><thead><tr><th>Band</th><th class="r">${L("Kanaal", "Channel")}</th><th class="r">Clients</th><th>${L("Bezetting", "Utilization")}</th><th class="r">${L("Storing", "Interference")}</th><th class="r">Retries</th><th class="r">${L("Ervaring", "Experience")}</th></tr></thead><tbody>
         ${d.radios.map((r) => { const lv = level("cu", r.cu_total); return `<tr style="cursor:default"><td><b>${r.radio} GHz</b><div class="cell-sub">${r.width ? r.width + " MHz" : ""}${r.tx_power ? ` · ${r.tx_power} dBm` : ""}</div></td><td class="r num">${r.channel ?? "–"}</td><td class="r num">${r.num_clients}</td>
           <td><div style="display:flex;gap:8px;align-items:center">${meter(r.cu_total, lv)}<span class="num ${lv !== "ok" ? "t-" + lv : ""}">${nf(r.cu_total)}%</span></div></td>
           <td class="r num">${nf(r.interference)}%</td><td class="r num">${nf(r.retry_pct, 1)}%</td><td class="r num">${nf(r.satisfaction)}</td></tr>`; }).join("")}
         </tbody></table></div></div>
-        <div class="card"><div class="card-head"><h3>Kanaalbezetting per band</h3>${rangeSeg("dr-range")}</div><div id="dr-ch-cu"></div></div>
-        <div class="card"><div class="card-head"><h3>Retries per band</h3></div><div id="dr-ch-rt"></div></div>
-        <div class="card"><div class="card-head"><h3>Drukte per uur van de week</h3><span class="muted">afgelopen 7 dagen</span></div>
+        <div class="card"><div class="card-head"><h3>${L("Kanaalbezetting per band", "Channel utilization per band")}</h3>${rangeSeg("dr-range")}</div><div id="dr-ch-cu"></div></div>
+        <div class="card"><div class="card-head"><h3>${L("Retries per band", "Retries per band")}</h3></div><div id="dr-ch-rt"></div></div>
+        <div class="card"><div class="card-head"><h3>${L("Drukte per uur van de week", "Busyness per hour of the week")}</h3><span class="muted">${L("afgelopen 7 dagen", "past 7 days")}</span></div>
           <div class="toolbar" style="margin-bottom:12px"><div class="seg" role="group" aria-label="Band" id="dr-hm-band">${d.radios.map((r) => `<button data-b="${r.radio}" aria-pressed="${r.radio === (hm.mac === d.mac ? hm.band : d.radios[0].radio)}">${r.radio} GHz</button>`).join("")}</div>
-          <div class="seg" role="group" aria-label="Meting" id="dr-hm-metric">${[["cu", "Bezetting"], ["interference", "Storing"], ["clients", "Clients"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${k === hm.metric}">${l}</button>`).join("")}</div></div>
-          <div id="dr-heat"><div class="chart-empty">Laden…</div></div></div>`;
+          <div class="seg" role="group" aria-label="${L("Meting", "Metric")}" id="dr-hm-metric">${[["cu", L("Bezetting", "Utilization")], ["interference", L("Storing", "Interference")], ["clients", "Clients"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${k === hm.metric}">${l}</button>`).join("")}</div></div>
+          <div id="dr-heat"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
       const cl = state.snap.clients.filter((c) => c.ap_mac === d.mac).sort((a, b) => (a.satisfaction ?? 100) - (b.satisfaction ?? 100));
-      body += `<div class="card"><h3 style="margin-bottom:8px">Clients op dit access point</h3><div class="table-wrap" style="border:0"><table><thead><tr><th>Naam</th><th>Band</th><th>Signaal</th><th class="r">Retries</th><th class="r">Ervaring</th></tr></thead><tbody>
+      body += `<div class="card"><h3 style="margin-bottom:8px">${L("Clients op dit access point", "Clients on this access point")}</h3><div class="table-wrap" style="border:0"><table><thead><tr><th>${L("Naam", "Name")}</th><th>Band</th><th>${L("Signaal", "Signal")}</th><th class="r">Retries</th><th class="r">${L("Ervaring", "Experience")}</th></tr></thead><tbody>
         ${cl.map((c) => `<tr data-id="${esc(c.mac)}" data-client tabindex="0"><td class="cell-name">${esc(c.name)}</td><td>${c.band} GHz</td><td>${signalBars(c.signal, c.band)}</td><td class="r num ${level("retry", c.retry_pct) !== "ok" ? "t-" + level("retry", c.retry_pct) : ""}">${nf(c.retry_pct, 1)}%</td><td class="r num">${nf(c.satisfaction)}</td></tr>`).join("")}
         </tbody></table></div></div>`;
     }
@@ -1783,19 +1807,19 @@
       const cm = Object.fromEntries(state.snap.clients.filter((c) => c.sw_mac === d.mac).map((c) => [c.sw_port, c]));
       const apm = Object.fromEntries(state.snap.devices.filter((x) => x.uplink_mac === d.mac).map((x) => [x.uplink_port, x]));
       const pi = portIssues(d);
-      body += `<div class="card"><div class="card-head"><h3>Poorten</h3>${d.poe_budget_w ? `<span class="muted">PoE ${nf(d.poe_used_w)} / ${nf(d.poe_budget_w)} W</span>` : ""}</div>
+      body += `<div class="card"><div class="card-head"><h3>${L("Poorten", "Ports")}</h3>${d.poe_budget_w ? `<span class="muted">PoE ${nf(d.poe_used_w)} / ${nf(d.poe_budget_w)} W</span>` : ""}</div>
         ${d.poe_budget_w ? `<div style="margin-bottom:14px">${meter(100 * d.poe_used_w / d.poe_budget_w, 100 * d.poe_used_w / d.poe_budget_w >= state.th.poe_budget_warn ? "warning" : "")}</div>` : ""}
         ${portGrid(d, false)}
-        <div class="legend-row"><span><i class="sw" style="background:var(--me-success)"></i>Actief</span><span><i class="sw" style="background:var(--me-warning)"></i>Aandacht</span><span><i class="sw" style="background:var(--me-danger)"></i>Fouten / flapt</span><span><i class="sw" style="background:var(--me-elevated);border:1px solid var(--me-border)"></i>Geen link</span><span><i class="sw" style="background:var(--me-warning);border-radius:50%;width:6px;height:6px"></i>PoE</span></div>
-        <div class="table-wrap" style="border:0;margin-top:12px"><table><thead><tr><th class="r">#</th><th>Aangesloten</th><th>Snelheid</th><th class="r">PoE</th><th>Status</th></tr></thead><tbody>
+        <div class="legend-row"><span><i class="sw" style="background:var(--me-success)"></i>${L("Actief", "Active")}</span><span><i class="sw" style="background:var(--me-warning)"></i>${L("Aandacht", "Attention")}</span><span><i class="sw" style="background:var(--me-danger)"></i>${L("Fouten / flapt", "Errors / flapping")}</span><span><i class="sw" style="background:var(--me-elevated);border:1px solid var(--me-border)"></i>${L("Geen link", "No link")}</span><span><i class="sw" style="background:var(--me-warning);border-radius:50%;width:6px;height:6px"></i>PoE</span></div>
+        <div class="table-wrap" style="border:0;margin-top:12px"><table><thead><tr><th class="r">#</th><th>${L("Aangesloten", "Connected")}</th><th>${L("Snelheid", "Speed")}</th><th class="r">PoE</th><th>Status</th></tr></thead><tbody>
         ${d.ports.filter((p) => p.up || pi[p.idx]).map((p) => {
           const who = cm[p.idx]?.name || apm[p.idx]?.name || p.name;
           const iss = pi[p.idx] || [];
-          return `<tr style="cursor:default"><td class="r num">${p.idx}</td><td>${esc(who)}${p.is_uplink ? ' <span class="badge">uplink</span>' : ""}</td><td class="num">${p.up ? speed(p.speed) : "geen link"}</td><td class="r num">${p.poe_w ? nf(p.poe_w, 1) + " W" : "–"}</td><td>${iss.length ? iss.map((i) => badge(i.severity, i.title.split(": ").pop())).join(" ") : badge("ok", "OK")}</td></tr>`;
+          return `<tr style="cursor:default"><td class="r num">${p.idx}</td><td>${esc(who)}${p.is_uplink ? ' <span class="badge">uplink</span>' : ""}</td><td class="num">${p.up ? speed(p.speed) : L("geen link", "no link")}</td><td class="r num">${p.poe_w ? nf(p.poe_w, 1) + " W" : "–"}</td><td>${iss.length ? iss.map((i) => badge(i.severity, i.title.split(": ").pop())).join(" ") : badge("ok", "OK")}</td></tr>`;
         }).join("")}</tbody></table></div></div>`;
     }
-    body += `<div class="card"><div class="card-head"><h3>CPU en geheugen</h3>${d.radios.length ? "" : rangeSeg("dr-range")}</div><div id="dr-ch-sys"></div></div>
-      <div class="card"><h3 style="margin-bottom:8px">Gebeurtenissen</h3><div class="events" id="dr-events"></div></div>`;
+    body += `<div class="card"><div class="card-head"><h3>${L("CPU en geheugen", "CPU and memory")}</h3>${d.radios.length ? "" : rangeSeg("dr-range")}</div><div id="dr-ch-sys"></div></div>
+      <div class="card"><h3 style="margin-bottom:8px">${L("Gebeurtenissen", "Events")}</h3><div class="events" id="dr-events"></div></div>`;
     $("#drawer-body").innerHTML = body;
     $("#dr-goclients")?.addEventListener("click", () => { state.cuplink = d.mac; state.ckind = "issues"; closeDrawer(); location.hash = "#/clients"; $("#view").dataset.mounted = ""; update(); });
     bindRange("dr-range", () => loadDeviceHistory(d));
@@ -1807,7 +1831,7 @@
   const hm = { band: null, metric: "cu", data: null, mac: null };
   function heatmap(grid, { min, max, fmt, what }) {
     const vals = grid.flat().filter((v) => v != null);
-    if (!vals.length) return `<div class="chart-empty">Nog te weinig historie: na een dag meten verschijnt hier een patroon.</div>`;
+    if (!vals.length) return `<div class="chart-empty">${L("Nog te weinig historie: na een dag meten verschijnt hier een patroon.", "Not enough history yet: after a day of measuring a pattern appears here.")}</div>`;
     const top = max ?? (Math.max(...vals) || 1);
     const bottom = Math.min(min ?? Math.min(...vals), top - 1e-9);   // schaal op de eigen waarden: patroon zichtbaar
     let hi = null, lo = null;
@@ -1818,13 +1842,13 @@
     }));
     const at = ([d, h]) => `${DAYS[d]} ${String(h).padStart(2, "0")}:00`;
     const cells = grid.map((row, d) => `<span class="hm-day">${DAYS[d]}</span>` + row.map((v, h) => {
-      const tip = `${at([d, h])} · ${v == null ? "geen meting" : fmt(v)}`;
+      const tip = `${at([d, h])} · ${v == null ? L("geen meting", "no reading") : fmt(v)}`;
       return `<span class="hm-c ${v == null ? "na" : ""}" data-tip="${esc(tip)}" style="${v == null ? "" : `background:rgba(57,216,244,${(0.07 + 0.78 * Math.max(0, Math.min(1, (v - bottom) / (top - bottom)))).toFixed(3)})`}"></span>`;
     }).join("")).join("");
     const hours = `<span></span>` + Array.from({ length: 24 }, (_, h) => `<span class="hm-h">${h % 6 === 0 ? h : ""}</span>`).join("");
     const flat = hi[2] - lo[2] < 0.05 * top;
-    const summary = flat ? (what === "presence" ? (lo[2] >= 0.95 ? "Altijd verbonden" : `Elk uur ongeveer even vaak verbonden (${fmt(hi[2])})`) : `Elk uur ongeveer gelijk (${fmt(hi[2])})`)
-      : `${what === "presence" ? "Meest verbonden" : "Drukst"}: ${at(hi)} (${fmt(hi[2])}) · ${what === "presence" ? "minst" : "rustigst"}: ${at(lo)} (${fmt(lo[2])})`;
+    const summary = flat ? (what === "presence" ? (lo[2] >= 0.95 ? L("Altijd verbonden", "Always connected") : L(`Elk uur ongeveer even vaak verbonden (${fmt(hi[2])})`, `Connected about equally often every hour (${fmt(hi[2])})`)) : L(`Elk uur ongeveer gelijk (${fmt(hi[2])})`, `About the same every hour (${fmt(hi[2])})`))
+      : `${what === "presence" ? L("Meest verbonden", "Most connected") : L("Drukst", "Busiest")}: ${at(hi)} (${fmt(hi[2])}) · ${what === "presence" ? L("minst", "least") : L("rustigst", "quietest")}: ${at(lo)} (${fmt(lo[2])})`;
     return `<div class="heat" role="img" aria-label="${esc(summary)}">${cells}${hours}</div>
       <div class="hm-foot"><span class="hm-read" aria-hidden="true">${esc(summary)}</span>
         <span class="hm-legend" aria-hidden="true">${fmt(bottom)}<i></i>${fmt(top)}</span></div>`;
@@ -1842,12 +1866,12 @@
     const total = p.aps.reduce((a, x) => a + x.seconds, 0);
     if (!c.wired && p.aps.length && total > 0) {
       const fav = p.aps[0];
-      html += `<p style="margin:0 0 10px">Meestal op <b>${esc(fav.name)}</b> (${Math.round(fav.share * 100)}% van de tijd)${p.switches ? `, ${p.switches}× van AP gewisseld` : ", nooit van AP gewisseld"}.</p>
+      html += `<p style="margin:0 0 10px">${L(`Meestal op <b>${esc(fav.name)}</b> (${Math.round(fav.share * 100)}% van de tijd)`, `Mostly on <b>${esc(fav.name)}</b> (${Math.round(fav.share * 100)}% of the time)`)}${p.switches ? L(`, ${p.switches}× van AP gewisseld`, `, switched AP ${p.switches}×`) : L(", nooit van AP gewisseld", ", never switched AP")}.</p>
         <div class="ap-share">${p.aps.slice(0, 6).map((a) => `<div class="ap-row"><span class="cell-name">${esc(a.name)}</span>${meter(a.share * 100)}<span class="num">${Math.round(a.share * 100)}%</span><span class="muted num">${dur(a.seconds)}</span><span>${signalBars(a.signal, c.band)}</span></div>`).join("")}</div>
-        <h4 class="sub-h">Wanneer verbonden</h4>`;
+        <h4 class="sub-h">${L("Wanneer verbonden", "When connected")}</h4>`;
     }
     html += heatmap(p.presence, { min: 0, max: 1, fmt: (v) => `${Math.round(v * 100)}%`, what: "presence" });
-    if (p.since && p.since > Date.now() / 1000 - p.days * 86400 + 6 * 3600) html += `<p class="help">Historie sinds ${new Date(p.since * 1000).toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" })}.</p>`;
+    if (p.since && p.since > Date.now() / 1000 - p.days * 86400 + 6 * 3600) html += `<p class="help">${L("Historie sinds", "History since")} ${new Date(p.since * 1000).toLocaleDateString(LOC, { weekday: "long", day: "numeric", month: "long" })}.</p>`;
     root.innerHTML = html;
   }
   async function loadDevicePattern(d) {
@@ -1858,7 +1882,7 @@
       const g = hm.data.radios[hm.band];
       const unit = hm.metric === "clients" ? "" : "%";
       root.innerHTML = g ? heatmap(g[hm.metric], { fmt: (v) => `${nf(v, hm.metric === "clients" && v < 10 ? 1 : 0)}${unit}`, what: hm.metric })
-        : `<div class="chart-empty">Geen historie voor deze band</div>`;
+        : `<div class="chart-empty">${L("Geen historie voor deze band", "No history for this band")}</div>`;
     };
     const seg = (id, key, attr) => $(id)?.addEventListener("click", (e) => {
       const b = e.target.closest("button"); if (!b) return;
@@ -1876,11 +1900,11 @@
     const bands = Object.keys(h.radios).sort();
     if ($("#dr-ch-cu")) {
       MEcharts.lineChart($("#dr-ch-cu"), { series: bands.map((b) => ({ name: `${b} GHz`, color: BAND_COLOR[b], data: h.radios[b].map((p) => [p.t, p.cu_total]) })), unit: "%", yMin: 0, yMax: 100, bucket: h.bucket,
-        threshold: { value: state.th.radio_cu_warn, label: `drempel ${nf(state.th.radio_cu_warn)}%` } });
+        threshold: { value: state.th.radio_cu_warn, label: `${L("drempel", "threshold")} ${nf(state.th.radio_cu_warn)}%` } });
       MEcharts.lineChart($("#dr-ch-rt"), { series: bands.map((b) => ({ name: `${b} GHz`, color: BAND_COLOR[b], data: h.radios[b].map((p) => [p.t, p.retry_pct]) })), unit: "%", yMin: 0, bucket: h.bucket,
-        threshold: { value: state.th.radio_retry_warn, label: `drempel ${nf(state.th.radio_retry_warn)}%` } });
+        threshold: { value: state.th.radio_retry_warn, label: `${L("drempel", "threshold")} ${nf(state.th.radio_retry_warn)}%` } });
     }
-    MEcharts.lineChart($("#dr-ch-sys"), { series: [{ name: "CPU", color: C.cyan, data: h.device.map((p) => [p.t, p.cpu]) }, { name: "Geheugen", color: C.violet, data: h.device.map((p) => [p.t, p.mem]) }], unit: "%", yMin: 0, yMax: 100, bucket: h.bucket });
+    MEcharts.lineChart($("#dr-ch-sys"), { series: [{ name: "CPU", color: C.cyan, data: h.device.map((p) => [p.t, p.cpu]) }, { name: L("Geheugen", "Memory"), color: C.violet, data: h.device.map((p) => [p.t, p.mem]) }], unit: "%", yMin: 0, yMax: 100, bucket: h.bucket });
     $("#dr-events").innerHTML = eventsHTML(h.events.slice(0, 60));
   }
 
@@ -1890,23 +1914,23 @@
     $("#drawer-icon").innerHTML = icon(c.wired ? "cable" : "laptop");
     $("#drawer-title").textContent = c.name;
     $("#drawer-sub").textContent = `${c.vendor || ""} · ${c.ip} · ${c.mac}`;
-    const conn = c.wired ? `${esc(dm[c.sw_mac]?.name || "–")} · poort ${c.sw_port ?? "?"}` : esc(dm[c.ap_mac]?.name || "–");
+    const conn = c.wired ? `${esc(dm[c.sw_mac]?.name || "–")} · ${L("poort", "port")} ${c.sw_port ?? "?"}` : esc(dm[c.ap_mac]?.name || "–");
     let body = `<div class="card">${kv(c.wired
-      ? [["Verbonden met", conn], ["Type", "Bedraad"], ["Netwerk", esc(c.network || "–")], ["Verbonden sinds", dur(c.uptime)], ["IP", esc(c.ip)], ["Score", `${c.score}/100`]]
-      : [["Verbonden met", conn], ["Band", `${c.band} GHz · kanaal ${c.channel}`], ["Standaard", proto(c.proto)], ["Signaal", signalBars(c.signal, c.band)], ["Ruis", `${nf(c.noise)} dBm`],
-        ["Retries", `${nf(c.retry_pct, 1)}%`], ["Ervaring", nf(c.satisfaction)], ["Snelheid", `${nf(c.tx_rate_mbps)} / ${nf(c.rx_rate_mbps)} Mbit/s`],
-        ["Met deze AP sinds", c.assoc_ts ? new Date(c.assoc_ts * 1000).toLocaleString("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : dur(c.uptime)]])}
+      ? [[L("Verbonden met", "Connected to"), conn], ["Type", L("Bedraad", "Wired")], [L("Netwerk", "Network"), esc(c.network || "–")], [L("Verbonden sinds", "Connected for"), dur(c.uptime)], ["IP", esc(c.ip)], ["Score", `${c.score}/100`]]
+      : [[L("Verbonden met", "Connected to"), conn], ["Band", `${c.band} GHz · ${L("kanaal", "channel")} ${c.channel}`], [L("Standaard", "Standard"), proto(c.proto)], [L("Signaal", "Signal"), signalBars(c.signal, c.band)], [L("Ruis", "Noise"), `${nf(c.noise)} dBm`],
+        ["Retries", `${nf(c.retry_pct, 1)}%`], [L("Ervaring", "Experience"), nf(c.satisfaction)], [L("Snelheid", "Speed"), `${nf(c.tx_rate_mbps)} / ${nf(c.rx_rate_mbps)} Mbit/s`],
+        [L("Met deze AP sinds", "On this AP since"), c.assoc_ts ? new Date(c.assoc_ts * 1000).toLocaleString(LOC, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : dur(c.uptime)]])}
       <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         ${c.wired ? "" : reconnectBtn(c.mac).replace('class="linkbtn"', 'class="btn"')}${pauseMenu(c.mac)}
-        <span class="muted" style="font-size:12px">${c.wired ? "" : "Opnieuw verbinden: kort los, daarna kiest het zelf de beste AP. "}Pauzeren: geen internet of netwerk tot de tijd om is.</span></div></div>`;
+        <span class="muted" style="font-size:12px">${c.wired ? "" : L("Opnieuw verbinden: kort los, daarna kiest het zelf de beste AP. ", "Reconnect: briefly disconnects, then it picks the best AP itself. ")}${L("Pauzeren: geen internet of netwerk tot de tijd om is.", "Pause: no internet or network until the time is up.")}</span></div></div>`;
     body += relatedIssues((i) => i.client_mac === c.mac);
     if (!c.wired) {
-      body += `<div class="card"><div class="card-head"><h3>Signaalsterkte</h3>${rangeSeg("dr-range")}</div><div id="dr-ch-sig"></div></div>
-        <div class="card"><div class="card-head"><h3>Retries</h3><span class="muted">% opnieuw verstuurde pakketten</span></div><div id="dr-ch-rt"></div></div>
-        <div class="card"><div class="card-head"><h3>Wifi-ervaring</h3></div><div id="dr-ch-sat"></div></div>`;
+      body += `<div class="card"><div class="card-head"><h3>${L("Signaalsterkte", "Signal strength")}</h3>${rangeSeg("dr-range")}</div><div id="dr-ch-sig"></div></div>
+        <div class="card"><div class="card-head"><h3>Retries</h3><span class="muted">${L("% opnieuw verstuurde pakketten", "% of packets resent")}</span></div><div id="dr-ch-rt"></div></div>
+        <div class="card"><div class="card-head"><h3>${L("Wifi-ervaring", "Wifi experience")}</h3></div><div id="dr-ch-sat"></div></div>`;
     }
-    body += `<div class="card"><div class="card-head"><h3>Patroon</h3><span class="muted">afgelopen 7 dagen</span></div><div id="dr-pattern"><div class="chart-empty">Laden…</div></div></div>`;
-    if (!c.wired) body += `<div class="card"><h3 style="margin-bottom:8px">Roaming en verbindingen</h3><div class="events" id="dr-events"></div></div>`;
+    body += `<div class="card"><div class="card-head"><h3>${L("Patroon", "Pattern")}</h3><span class="muted">${L("afgelopen 7 dagen", "past 7 days")}</span></div><div id="dr-pattern"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
+    if (!c.wired) body += `<div class="card"><h3 style="margin-bottom:8px">${L("Roaming en verbindingen", "Roaming and connections")}</h3><div class="events" id="dr-events"></div></div>`;
     $("#drawer-body").innerHTML = body;
     loadClientPattern(c);
     if (!c.wired) { bindRange("dr-range", () => loadClientHistory(c)); await loadClientHistory(c); }
@@ -1915,12 +1939,13 @@
     const h = await api(`/api/history/client/${encodeURIComponent(c.mac)}?hours=${state.hours}`);
     if (state.drawer?.id !== c.mac) return;
     const s = h.series;
-    MEcharts.lineChart($("#dr-ch-sig"), { series: [{ name: "Signaal", color: C.cyan, data: s.map((p) => [p.t, p.signal]) }], unit: " dBm", bucket: h.bucket,
-      threshold: { value: sigLimits(c.band)[0], label: `drempel ${nf(sigLimits(c.band)[0])} dBm (${c.band} GHz)` } });
+    const th = L("drempel", "threshold");
+    MEcharts.lineChart($("#dr-ch-sig"), { series: [{ name: L("Signaal", "Signal"), color: C.cyan, data: s.map((p) => [p.t, p.signal]) }], unit: " dBm", bucket: h.bucket,
+      threshold: { value: sigLimits(c.band)[0], label: `${th} ${nf(sigLimits(c.band)[0])} dBm (${c.band} GHz)` } });
     MEcharts.lineChart($("#dr-ch-rt"), { series: [{ name: "Retries", color: C.violet, data: s.map((p) => [p.t, p.retry_pct]) }], unit: "%", yMin: 0, bucket: h.bucket,
-      threshold: { value: state.th.client_retry_warn, label: `drempel ${nf(state.th.client_retry_warn)}%` } });
-    MEcharts.lineChart($("#dr-ch-sat"), { series: [{ name: "Ervaring", color: C.mint, data: s.map((p) => [p.t, p.satisfaction]) }], yMin: 0, yMax: 100, bucket: h.bucket,
-      threshold: { value: state.th.client_satisfaction_warn, label: `drempel ${nf(state.th.client_satisfaction_warn)}` } });
+      threshold: { value: state.th.client_retry_warn, label: `${th} ${nf(state.th.client_retry_warn)}%` } });
+    MEcharts.lineChart($("#dr-ch-sat"), { series: [{ name: L("Ervaring", "Experience"), color: C.mint, data: s.map((p) => [p.t, p.satisfaction]) }], yMin: 0, yMax: 100, bucket: h.bucket,
+      threshold: { value: state.th.client_satisfaction_warn, label: `${th} ${nf(state.th.client_satisfaction_warn)}` } });
     $("#dr-events").innerHTML = eventsHTML(h.events.slice(0, 60));
   }
 
@@ -1929,11 +1954,11 @@
                   mode: store.get("world.mode", "flat"), globe: null,
                   data: null, after: 0, timer: null, seen: new Set(), focus: null,
                   conn: { dir: "all", sort: "last", q: "", cc: null, limit: 50 } };
-  const DIR = { out: ["Uitgaand", C.cyan, "arrow-up-right"], in: ["Inkomend", C.violet, "arrow-down-left"], blocked: ["Geblokkeerd", C.rose, "octagon"] };
+  const DIR = { out: [L("Uitgaand", "Outgoing"), C.cyan, "arrow-up-right"], in: [L("Inkomend", "Incoming"), C.violet, "arrow-down-left"], blocked: [L("Geblokkeerd", "Blocked"), C.rose, "octagon"] };
   const ccName = (() => {
     let dn = null;
-    try { dn = new Intl.DisplayNames(["nl"], { type: "region" }); } catch (e) { /* oude browser */ }
-    return (cc) => { try { return (cc && dn?.of(cc)) || cc || "Onbekend"; } catch (e) { return cc; } };
+    try { dn = new Intl.DisplayNames([LANG], { type: "region" }); } catch (e) { /* oude browser */ }
+    return (cc) => { try { return (cc && dn?.of(cc)) || cc || L("Onbekend", "Unknown"); } catch (e) { return cc; } };
   })();
   function bytes(b) {
     if (b == null) return "–";
@@ -1955,48 +1980,48 @@
     world.view = null;
     world.globe?.destroy(); world.globe = null;
     mount("wereld", `
-      <div class="page-head"><div><h1>Wereld</h1><p class="subtitle">Met welke landen je netwerk praat, live uit het verkeerslogboek van je gateway.</p></div>
-        <div class="seg" role="group" aria-label="Periode" id="w-range">${[[1, "1 u"], [6, "6 u"], [24, "24 u"], [48, "48 u"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${world.hours === h}">${l}</button>`).join("")}</div></div>
+      <div class="page-head"><div><h1>${L("Wereld", "World")}</h1><p class="subtitle">${L("Met welke landen je netwerk praat, live uit het verkeerslogboek van je gateway.", "Which countries your network talks to, live from your gateway's traffic log.")}</p></div>
+        <div class="seg" role="group" aria-label="${L("Periode", "Period")}" id="w-range">${[1, 6, 24, 48].map((h) => [h, `${h} ${L("u", "h")}`]).map(([h, l]) => `<button data-h="${h}" aria-pressed="${world.hours === h}">${l}</button>`).join("")}</div></div>
       <div id="w-banner"></div>
-      <section class="grid kpis" id="w-kpis" aria-label="Samenvatting"></section>
+      <section class="grid kpis" id="w-kpis" aria-label="${L("Samenvatting", "Summary")}"></section>
       <section class="card world-card">
-        <div class="card-head"><div class="chips" role="group" aria-label="Soort verkeer" id="w-show">${Object.entries(DIR).map(([k, [l, col]]) => `<button class="chip" data-k="${k}" aria-pressed="${!!world.show[k]}"><i class="sw" style="background:${col}"></i>${l}</button>`).join("")}</div>
-          <div class="w-head-r"><div class="seg" role="group" aria-label="Weergave" id="w-mode">${[["flat", "Plat"], ["globe", "Globe"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${world.mode === k}">${l}</button>`).join("")}</div>
+        <div class="card-head"><div class="chips" role="group" aria-label="${L("Soort verkeer", "Traffic type")}" id="w-show">${Object.entries(DIR).map(([k, [l, col]]) => `<button class="chip" data-k="${k}" aria-pressed="${!!world.show[k]}"><i class="sw" style="background:${col}"></i>${l}</button>`).join("")}</div>
+          <div class="w-head-r"><div class="seg" role="group" aria-label="${L("Weergave", "View")}" id="w-mode">${[["flat", L("Plat", "Flat")], ["globe", "Globe"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${world.mode === k}">${l}</button>`).join("")}</div>
           <span class="muted" id="w-live-sub"><span class="live-dot" aria-hidden="true"></span>live</span></div></div>
         <div class="world-wrap" id="w-map">
           <div class="globe-host" id="w-globe" hidden></div>
           <svg viewBox="0 0 ${W.w} ${W.h}" role="img" aria-labelledby="w-map-title" preserveAspectRatio="xMidYMid meet">
-            <title id="w-map-title">Wereldkaart met verbindingen per land</title>
+            <title id="w-map-title">${L("Wereldkaart met verbindingen per land", "World map with connections per country")}</title>
             <g class="land">${Object.entries(W.countries).filter(([, c]) => c.d).map(([cc, c]) => `<path data-cc="${cc}" d="${c.d}"/>`).join("")}</g>
             <g class="arcs" id="w-arcs"></g><g class="pulses" id="w-pulses"></g><g id="w-home"></g><g class="marks" id="w-marks"></g><g class="labels" id="w-labels"></g>
           </svg>
-          <div class="zoom-ctl" role="group" aria-label="Zoomen">
-            <button data-z="in" aria-label="Inzoomen" title="Inzoomen">+</button>
-            <button data-z="out" aria-label="Uitzoomen" title="Uitzoomen">−</button>
-            <button data-z="reset" aria-label="Hele wereld" title="Hele wereld">${icon("globe")}</button>
+          <div class="zoom-ctl" role="group" aria-label="${L("Zoomen", "Zoom")}">
+            <button data-z="in" aria-label="${L("Inzoomen", "Zoom in")}" title="${L("Inzoomen", "Zoom in")}">+</button>
+            <button data-z="out" aria-label="${L("Uitzoomen", "Zoom out")}" title="${L("Uitzoomen", "Zoom out")}">−</button>
+            <button data-z="reset" aria-label="${L("Hele wereld", "Whole world")}" title="${L("Hele wereld", "Whole world")}">${icon("globe")}</button>
           </div>
           <div class="tooltip" id="w-tip"></div>
         </div>
         <div class="legend-row" id="w-legend"></div>
       </section>
       <section class="grid cols-2" style="margin-top:16px">
-        <div class="card"><div class="card-head"><h2 style="margin:0">Landen</h2><span class="muted" id="w-cty-sub"></span></div><div class="rank w-rank" id="w-cty"></div></div>
-        <div class="card"><div class="card-head"><h2 style="margin:0">Live</h2><span class="muted">nieuwste eerst</span></div><ol class="ticker" id="w-ticker" aria-live="off"></ol></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">${L("Landen", "Countries")}</h2><span class="muted" id="w-cty-sub"></span></div><div class="rank w-rank" id="w-cty"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">Live</h2><span class="muted">${L("nieuwste eerst", "newest first")}</span></div><ol class="ticker" id="w-ticker" aria-live="off"></ol></div>
       </section>
       <section class="card" id="w-conn" style="margin-top:16px">
-        <div class="card-head"><h2 style="margin:0">Verbindingen</h2><span class="muted" id="w-conn-sub"></span></div>
+        <div class="card-head"><h2 style="margin:0">${L("Verbindingen", "Connections")}</h2><span class="muted" id="w-conn-sub"></span></div>
         <div class="toolbar">
-          <div class="chips" role="group" aria-label="Richting" id="w-conn-dir">${[["all", "Alles", null], ["out", "Uitgaand", C.cyan], ["in", "Inkomend", C.violet], ["blocked", "Geblokkeerd", C.rose]].map(([k, l, col]) => `<button class="chip" data-d="${k}" aria-pressed="${world.conn.dir === k}">${col ? `<i class="sw" style="background:${col}"></i>` : ""}${l}</button>`).join("")}</div>
+          <div class="chips" role="group" aria-label="${L("Richting", "Direction")}" id="w-conn-dir">${[["all", L("Alles", "All"), null], ["out", DIR.out[0], C.cyan], ["in", DIR.in[0], C.violet], ["blocked", DIR.blocked[0], C.rose]].map(([k, l, col]) => `<button class="chip" data-d="${k}" aria-pressed="${world.conn.dir === k}">${col ? `<i class="sw" style="background:${col}"></i>` : ""}${l}</button>`).join("")}</div>
           <span id="w-conn-cc"></span>
-          <div class="seg" role="group" aria-label="Sorteren" id="w-conn-sort">${[["last", "Laatst"], ["bytes", "Meeste data"], ["count", "Vaakst"]].map(([k, l]) => `<button data-s="${k}" aria-pressed="${world.conn.sort === k}">${l}</button>`).join("")}</div>
-          <label class="search"><span class="sr-only">Zoeken in verbindingen</span>${icon("search")}<input class="input" id="w-conn-q" type="search" placeholder="Apparaat, domein, land of poort" value="${esc(world.conn.q)}"></label>
+          <div class="seg" role="group" aria-label="${L("Sorteren", "Sort")}" id="w-conn-sort">${[["last", L("Laatst", "Latest")], ["bytes", L("Meeste data", "Most data")], ["count", L("Vaakst", "Most often")]].map(([k, l]) => `<button data-s="${k}" aria-pressed="${world.conn.sort === k}">${l}</button>`).join("")}</div>
+          <label class="search"><span class="sr-only">${L("Zoeken in verbindingen", "Search connections")}</span>${icon("search")}<input class="input" id="w-conn-q" type="search" placeholder="${L("Apparaat, domein, land of poort", "Device, domain, country or port")}" value="${esc(world.conn.q)}"></label>
         </div>
         <div class="table-wrap" id="w-conn-table"></div>
         <div class="wiz-actions" style="margin-top:12px;justify-content:center" id="w-conn-more"></div>
       </section>
       <section class="grid cols-2" style="margin-top:16px">
-        <div class="card"><div class="card-head"><h2 style="margin:0">Apparaten</h2><span class="muted">meeste internetverkeer</span></div><div class="rank w-rank" id="w-cli"></div></div>
-        <div class="card"><div class="card-head"><h2 style="margin:0">Bestemmingen</h2><span class="muted">meeste data</span></div><div class="rank w-rank" id="w-dom"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">${L("Apparaten", "Devices")}</h2><span class="muted">${L("meeste internetverkeer", "most internet traffic")}</span></div><div class="rank w-rank" id="w-cli"></div></div>
+        <div class="card"><div class="card-head"><h2 style="margin:0">${L("Bestemmingen", "Destinations")}</h2><span class="muted">${L("meeste data", "most data")}</span></div><div class="rank w-rank" id="w-dom"></div></div>
       </section>`);
     $("#w-range").addEventListener("click", (e) => {
       const b = e.target.closest("button[data-h]"); if (!b) return;
@@ -2180,21 +2205,22 @@
     document.querySelectorAll("#w-cty [data-cc]").forEach((n) => n.classList.toggle("hl", n.dataset.cc === cc));
   }
   const blockWhat = (b) => {   // "Telnet (poort 23)" of de naam van de IPS-regel
-    const svc = b.what && !/^(OTHER|Onbekend)$/i.test(b.what) ? b.what.replace(/_/g, " ") : null;
-    return svc ? (b.port ? `${svc} (poort ${b.port})` : svc) : b.port ? `poort ${b.port}` : "verbinding";
+    const svc = b.what && !/^(OTHER|Onbekend|Unknown)$/i.test(b.what) ? b.what.replace(/_/g, " ") : null;
+    const port = L("poort", "port");
+    return svc ? (b.port ? `${svc} (${port} ${b.port})` : svc) : b.port ? `${port} ${b.port}` : L("verbinding", "connection");
   };
   function countryTip(c) {
     const row = (k, l, v) => (v ? `<div class="tt-row"><span><i class="sw" style="background:${DIR[k][1]}"></i>${l}</span><b>${v}</b></div>` : "");
     return `<div class="tt-time">${esc(ccName(c.cc))}</div>
-      ${row("out", "Uitgaand", c.out_n ? `${nf(c.out_n)} × · ${bytes(c.bytes_out ?? c.up + c.down)}` : "")}
-      ${row("in", "Inkomend", c.in_n ? `${nf(c.in_n)} ×` : "")}
-      ${row("blocked", "Geblokkeerd", c.blocked_n ? `${nf(c.blocked_n)} ×` : "")}
+      ${row("out", DIR.out[0], c.out_n ? `${nf(c.out_n)} × · ${bytes(c.bytes_out ?? c.up + c.down)}` : "")}
+      ${row("in", DIR.in[0], c.in_n ? `${nf(c.in_n)} ×` : "")}
+      ${row("blocked", DIR.blocked[0], c.blocked_n ? `${nf(c.blocked_n)} ×` : "")}
       ${c.blocked?.length ? `<div class="tt-list tt-blocked">${c.blocked.slice(0, 4).map((b) => `<div>
         <div>${esc(blockWhat(b))} → ${esc(b.target)}</div>
-        <div class="muted">${nf(b.n)}× · ${esc(b.by)}${b.sources > 1 ? ` · ${b.sources} adressen` : ""} · laatst ${stamp(b.last)}</div></div>`).join("")}</div>` : ""}
+        <div class="muted">${nf(b.n)}× · ${esc(b.by)}${b.sources > 1 ? ` · ${b.sources} ${L("adressen", "addresses")}` : ""} · ${L("laatst", "last")} ${stamp(b.last)}</div></div>`).join("")}</div>` : ""}
       ${c.domains?.length ? `<div class="tt-list">${c.domains.slice(0, 3).map((d) => `<div>${esc(d.name)} <span class="muted">${bytes(d.bytes)}</span></div>`).join("")}</div>` : ""}
       ${c.clients?.length ? `<div class="tt-list muted">${c.clients.slice(0, 3).map((x) => esc(x.name)).join(" · ")}</div>` : ""}
-      <div class="tt-hint">Klik voor alle verbindingen</div>`;
+      <div class="tt-hint">${L("Klik voor alle verbindingen", "Click for all connections")}</div>`;
   }
   async function loadWorld() {
     let d;
@@ -2202,16 +2228,16 @@
     if (current !== "wereld") return;
     world.data = d;
     world.byCc = Object.fromEntries(d.countries.map((c) => [c.cc, c]));
-    $("#w-banner").innerHTML = d.available === false ? `<div class="banner err">${icon("info")}<span>Verbindingen zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).</span></div>`
-      : d.error ? `<div class="banner err">${icon("info")}<span>Verbindingen ophalen lukte niet: ${esc(d.error)}</span></div>` : "";
-    const t = d.totals, per = world.hours === 1 ? "het afgelopen uur" : `de afgelopen ${world.hours} uur`;
+    $("#w-banner").innerHTML = d.available === false ? `<div class="banner err">${icon("info")}<span>${L("Verbindingen zijn alleen beschikbaar via de uitgebreide UniFi-API (API-key of lokaal account).", "Connections are only available via the extended UniFi API (API key or local account).")}</span></div>`
+      : d.error ? `<div class="banner err">${icon("info")}<span>${L("Verbindingen ophalen lukte niet", "Fetching connections failed")}: ${esc(d.error)}</span></div>` : "";
+    const t = d.totals, per = world.hours === 1 ? L("het afgelopen uur", "the past hour") : L(`de afgelopen ${world.hours} uur`, `the past ${world.hours} hours`);
     const kpi = (k, ic, label, v, sub, hint) => `<button class="card compact kpi kpi-link" data-kpi="${k}" title="${hint}"><div class="label">${icon(ic)}${label}${icon("chevron", "kpi-go")}</div><div class="value">${v}</div><div class="sub">${sub}</div></button>`;
     $("#w-kpis").innerHTML =
-      kpi("countries", "globe", "Landen", nf(t.countries), per, "Naar de landenlijst") +
-      kpi("out", "arrow-up-right", "Uitgaand", nf(t.out_n), "verbindingen", "Toon de uitgaande verbindingen") +
-      kpi("in", "arrow-down-left", "Inkomend", nf(t.in_n), "van internet naar binnen", "Toon de inkomende verbindingen") +
-      kpi("bytes", "activity", "Data", bytes(t.bytes), "op en neer", "Toon de verbindingen met de meeste data") +
-      kpi("blocked", "octagon", "Geblokkeerd", nf(t.blocked_n), "door IPS en firewall", "Toon wat er geblokkeerd is");
+      kpi("countries", "globe", L("Landen", "Countries"), nf(t.countries), per, L("Naar de landenlijst", "To the country list")) +
+      kpi("out", "arrow-up-right", DIR.out[0], nf(t.out_n), L("verbindingen", "connections"), L("Toon de uitgaande verbindingen", "Show the outgoing connections")) +
+      kpi("in", "arrow-down-left", DIR.in[0], nf(t.in_n), L("van internet naar binnen", "from the internet inwards"), L("Toon de inkomende verbindingen", "Show the incoming connections")) +
+      kpi("bytes", "activity", "Data", bytes(t.bytes), L("op en neer", "up and down"), L("Toon de verbindingen met de meeste data", "Show the connections with the most data")) +
+      kpi("blocked", "octagon", DIR.blocked[0], nf(t.blocked_n), L("door IPS en firewall", "by IPS and firewall"), L("Toon wat er geblokkeerd is", "Show what was blocked"));
     renderWorld(); renderWorldLists(); loadConn();
   }
   function renderWorld() {
@@ -2252,8 +2278,8 @@
       return `<text data-cc="${c.cc}" x="${x}" y="${y}" dy="${small ? "-0.8em" : "0"}">${esc(ccName(c.cc))}</text>`;
     }).join("");
     $("#w-home").innerHTML = `<circle class="home-ring" cx="${home[0]}" cy="${home[1]}" r="7"/><circle class="home-dot" cx="${home[0]}" cy="${home[1]}" r="3"/>`;
-    $("#w-legend").innerHTML = `<span><i class="sw" style="background:${C.cyan}"></i>Uitgaand: eigen apparaat → internet</span><span><i class="sw" style="background:${C.violet}"></i>Inkomend: internet → eigen apparaat</span>
-      <span><i class="sw" style="background:${C.rose}"></i>Geblokkeerd: tegengehouden door IPS of firewall</span><span>Kleur van een land: hoeveel data, dikte van de boog: hoeveel verkeer</span>`;
+    $("#w-legend").innerHTML = `<span><i class="sw" style="background:${C.cyan}"></i>${L("Uitgaand: eigen apparaat → internet", "Outgoing: own device → internet")}</span><span><i class="sw" style="background:${C.violet}"></i>${L("Inkomend: internet → eigen apparaat", "Incoming: internet → own device")}</span>
+      <span><i class="sw" style="background:${C.rose}"></i>${L("Geblokkeerd: tegengehouden door IPS of firewall", "Blocked: stopped by IPS or firewall")}</span><span>${L("Kleur van een land: hoeveel data, dikte van de boog: hoeveel verkeer", "Colour of a country: how much data; thickness of the arc: how much traffic")}</span>`;
     if (world.focus) { const f = world.focus; world.focus = null; setFocus(f); }
     if (world.globe) {
       const ga = [];
@@ -2295,7 +2321,7 @@
       return;
     }
     map.classList.add("globe-mode"); host.hidden = false;
-    try { await ensureGlobe(); } catch (e) { host.innerHTML = `<div class="empty">De globe kon niet laden.</div>`; return; }
+    try { await ensureGlobe(); } catch (e) { host.innerHTML = `<div class="empty">${L("De globe kon niet laden.", "The globe could not load.")}</div>`; return; }
     if (world.mode !== "globe" || world.globe || !host.isConnected) return;
     world.globe = window.SonarGlobe.mount(host, {
       onHover(cc, x, y) {
@@ -2318,22 +2344,22 @@
     const cs = d.countries.filter((c) => c.cc !== d.home || c.out_n).sort((a, b) => b.bytes - a.bytes || (b.blocked_n || 0) - (a.blocked_n || 0));
     const max = Math.max(1, ...cs.map((c) => c.bytes));
     const unk = d.totals.unknown_n || 0;
-    $("#w-cty-sub").textContent = `${plural(cs.length, "land", "landen")}${unk ? ` · ${nf(unk)} verbindingen zonder land` : ""}`;
-    $("#w-cty-sub").title = unk ? "UniFi geeft niet bij elke verbinding een land mee, bijvoorbeeld bij DNS naar publieke resolvers." : "";
+    $("#w-cty-sub").textContent = `${plural(cs.length, L("land", "country"), L("landen", "countries"))}${unk ? ` · ${nf(unk)} ${L("verbindingen zonder land", "connections without a country")}` : ""}`;
+    $("#w-cty-sub").title = unk ? L("UniFi geeft niet bij elke verbinding een land mee, bijvoorbeeld bij DNS naar publieke resolvers.", "UniFi does not include a country with every connection, for example DNS to public resolvers.") : "";
     $("#w-cty").innerHTML = cs.length ? cs.slice(0, 25).map((c) => `
-      <div class="rank-row w-row" data-cc="${c.cc}" tabindex="0" title="Klik om in te zoomen op ${esc(ccName(c.cc))}"><div class="rank-main"><div class="rank-name"><span class="cc">${esc(c.cc)}</span>${esc(ccName(c.cc))}${c.cc === d.home ? ` <span class="muted">(thuis)</span>` : ""}</div>
-        <div class="cell-sub">${[c.out_n ? `${nf(c.out_n)} uit` : "", c.in_n ? `${nf(c.in_n)} in` : "", c.blocked_n ? `<span class="t-critical">${nf(c.blocked_n)} geblokkeerd</span>` : ""].filter(Boolean).join(" · ")}${c.domains?.[0] ? ` · ${esc(c.domains[0].name)}` : c.blocked?.[0] ? ` · ${esc(blockWhat(c.blocked[0]))} → ${esc(c.blocked[0].target)}` : ""}</div></div>
+      <div class="rank-row w-row" data-cc="${c.cc}" tabindex="0" title="${L("Klik om in te zoomen op", "Click to zoom in on")} ${esc(ccName(c.cc))}"><div class="rank-main"><div class="rank-name"><span class="cc">${esc(c.cc)}</span>${esc(ccName(c.cc))}${c.cc === d.home ? ` <span class="muted">(${L("thuis", "home")})</span>` : ""}</div>
+        <div class="cell-sub">${[c.out_n ? `${nf(c.out_n)} ${L("uit", "out")}` : "", c.in_n ? `${nf(c.in_n)} in` : "", c.blocked_n ? `<span class="t-critical">${nf(c.blocked_n)} ${L("geblokkeerd", "blocked")}</span>` : ""].filter(Boolean).join(" · ")}${c.domains?.[0] ? ` · ${esc(c.domains[0].name)}` : c.blocked?.[0] ? ` · ${esc(blockWhat(c.blocked[0]))} → ${esc(c.blocked[0].target)}` : ""}</div></div>
         <div class="rank-bar">${meter(100 * c.bytes / max)}</div><span class="num rank-n">${bytes(c.bytes)}</span></div>`).join("")
-      : `<div class="empty">Nog geen verbindingen in deze periode.</div>`;
+      : `<div class="empty">${L("Nog geen verbindingen in deze periode.", "No connections in this period yet.")}</div>`;
     const cmax = Math.max(1, ...d.clients.map((c) => c.bytes));
     $("#w-cli").innerHTML = d.clients.length ? d.clients.map((c) => `
       <div class="rank-row"><div class="rank-main"><div class="rank-name">${c.mac && cliByMac()[c.mac] ? `<button class="linkbtn plain" data-open="client" data-id="${esc(c.mac)}">${esc(c.name || c.mac)}</button>` : esc(c.name || "–")}</div>
-        <div class="cell-sub">${nf(c.n)} verbindingen · ${plural(c.countries, "land", "landen")}</div></div>
-        <div class="rank-bar">${meter(100 * c.bytes / cmax)}</div><span class="num rank-n">${bytes(c.bytes)}</span></div>`).join("") : `<div class="empty">Geen gegevens</div>`;
+        <div class="cell-sub">${nf(c.n)} ${L("verbindingen", "connections")} · ${plural(c.countries, L("land", "country"), L("landen", "countries"))}</div></div>
+        <div class="rank-bar">${meter(100 * c.bytes / cmax)}</div><span class="num rank-n">${bytes(c.bytes)}</span></div>`).join("") : `<div class="empty">${L("Geen gegevens", "No data")}</div>`;
     const dmax = Math.max(1, ...d.domains.map((x) => x.bytes));
     $("#w-dom").innerHTML = d.domains.length ? d.domains.map((x) => `
-      <div class="rank-row"><div class="rank-main"><div class="rank-name">${esc(x.name)}</div><div class="cell-sub">${x.cc ? `<span class="cc">${esc(x.cc)}</span>${esc(ccName(x.cc))} · ` : ""}${nf(x.n)} verbindingen</div></div>
-        <div class="rank-bar">${meter(100 * x.bytes / dmax)}</div><span class="num rank-n">${bytes(x.bytes)}</span></div>`).join("") : `<div class="empty">Geen gegevens</div>`;
+      <div class="rank-row"><div class="rank-main"><div class="rank-name">${esc(x.name)}</div><div class="cell-sub">${x.cc ? `<span class="cc">${esc(x.cc)}</span>${esc(ccName(x.cc))} · ` : ""}${nf(x.n)} ${L("verbindingen", "connections")}</div></div>
+        <div class="rank-bar">${meter(100 * x.bytes / dmax)}</div><span class="num rank-n">${bytes(x.bytes)}</span></div>`).join("") : `<div class="empty">${L("Geen gegevens", "No data")}</div>`;
   }
   function setConn(patch, scroll) {
     Object.assign(world.conn, patch, { limit: 50 });
@@ -2352,26 +2378,26 @@
     let d;
     try { d = await api(`/api/world/connections?${qs}`); } catch (e) { return; }
     if (current !== "wereld") return;
-    $("#w-conn-cc").innerHTML = c.cc ? `<button class="chip" aria-pressed="true" data-clear-cc title="Filter op land weghalen"><span class="cc">${esc(c.cc)}</span>${esc(ccName(c.cc))} ${icon("x")}</button>` : "";
+    $("#w-conn-cc").innerHTML = c.cc ? `<button class="chip" aria-pressed="true" data-clear-cc title="${L("Filter op land weghalen", "Remove country filter")}"><span class="cc">${esc(c.cc)}</span>${esc(ccName(c.cc))} ${icon("x")}</button>` : "";
     hydrateIcons($("#w-conn-cc"));
-    const per = world.hours === 1 ? "afgelopen uur" : `afgelopen ${world.hours} uur`;
-    $("#w-conn-sub").textContent = `${nf(d.total)} ${d.total === 1 ? "groep" : "groepen"} · ${per} · gelijke verbindingen samengevoegd`;
+    const per = world.hours === 1 ? L("afgelopen uur", "past hour") : L(`afgelopen ${world.hours} uur`, `past ${world.hours} hours`);
+    $("#w-conn-sub").textContent = `${nf(d.total)} ${d.total === 1 ? L("groep", "group") : L("groepen", "groups")} · ${per} · ${L("gelijke verbindingen samengevoegd", "identical connections merged")}`;
     const svc = (r) => {
       const s = r.service && !/^(OTHER)$/i.test(r.service) ? r.service.replace(/_/g, " ") : null;
-      return s && r.port ? `${s} · ${r.port}` : s || (r.port ? `poort ${r.port}` : "–");
+      return s && r.port ? `${s} · ${r.port}` : s || (r.port ? `${L("poort", "port")} ${r.port}` : "–");
     };
     const other = (r) => r.dir === "out"
-      ? `<div class="rank-name">${esc(r.dest || "–")}</div><div class="cell-sub">${r.cc ? `<span class="cc">${esc(r.cc)}</span>${esc(ccName(r.cc))}` : "land onbekend"}</div>`
-      : `<div class="rank-name">${r.cc ? `<span class="cc">${esc(r.cc)}</span>${esc(ccName(r.cc))}` : "onbekend"}</div><div class="cell-sub">${plural(r.remotes || 0, "adres", "adressen")}</div>`;
-    const dirTxt = (r) => r.dir === "blocked" ? `<span class="t-critical">${esc(r.by || "Geblokkeerd")}</span>` : DIR[r.dir][0];
-    $("#w-conn-table").innerHTML = d.rows.length ? `<table class="conn-table"><thead><tr><th>Laatst</th><th>Richting</th><th>Eigen apparaat</th><th>Andere kant</th><th>Dienst</th><th class="r">Aantal</th><th class="r">Data</th></tr></thead><tbody>
+      ? `<div class="rank-name">${esc(r.dest || "–")}</div><div class="cell-sub">${r.cc ? `<span class="cc">${esc(r.cc)}</span>${esc(ccName(r.cc))}` : L("land onbekend", "country unknown")}</div>`
+      : `<div class="rank-name">${r.cc ? `<span class="cc">${esc(r.cc)}</span>${esc(ccName(r.cc))}` : L("onbekend", "unknown")}</div><div class="cell-sub">${plural(r.remotes || 0, L("adres", "address"), L("adressen", "addresses"))}</div>`;
+    const dirTxt = (r) => r.dir === "blocked" ? `<span class="t-critical">${esc(r.by || DIR.blocked[0])}</span>` : DIR[r.dir][0];
+    $("#w-conn-table").innerHTML = d.rows.length ? `<table class="conn-table"><thead><tr><th>${L("Laatst", "Last")}</th><th>${L("Richting", "Direction")}</th><th>${L("Eigen apparaat", "Own device")}</th><th>${L("Andere kant", "Other side")}</th><th>${L("Dienst", "Service")}</th><th class="r">${L("Aantal", "Count")}</th><th class="r">Data</th></tr></thead><tbody>
       ${d.rows.map((r) => `<tr style="cursor:default"><td class="num" title="${esc(fullStamp(r.last))}">${stamp(r.last)}</td>
         <td><span class="dir"><i class="sw" style="background:${DIR[r.dir][1]}"></i>${dirTxt(r)}</span></td>
         <td>${r.client_mac && cliByMac()[r.client_mac] ? `<button class="linkbtn plain" data-open="client" data-id="${esc(r.client_mac)}">${esc(r.client || "–")}</button>` : esc(r.client || "–")}</td>
         <td>${other(r)}</td><td class="muted">${esc(svc(r))}</td>
         <td class="r num">${nf(r.n)}</td><td class="r num">${r.bytes ? bytes(r.bytes) : "–"}</td></tr>`).join("")}</tbody></table>`
-      : `<div class="empty">Geen verbindingen gevonden${c.q || c.cc ? " met dit filter" : " in deze periode"}.</div>`;
-    $("#w-conn-more").innerHTML = d.rows.length < d.total ? `<button class="btn">Toon meer (${nf(d.total - d.rows.length)} over)</button>` : "";
+      : `<div class="empty">${L("Geen verbindingen gevonden", "No connections found")}${c.q || c.cc ? L(" met dit filter", " with this filter") : L(" in deze periode", " in this period")}.</div>`;
+    $("#w-conn-more").innerHTML = d.rows.length < d.total ? `<button class="btn">${L(`Toon meer (${nf(d.total - d.rows.length)} over)`, `Show more (${nf(d.total - d.rows.length)} left)`)}</button>` : "";
   }
   function renderTicker() {
     const el = $("#w-ticker");
@@ -2379,13 +2405,14 @@
     const rows = (world.live || []).filter((f) => world.show[f.dir]).slice(0, 18);
     el.innerHTML = rows.length ? rows.map((f) => {
       const [l, col] = DIR[f.dir];
-      const what = f.dir === "blocked" ? `${esc(f.service || "IPS-regel")}` : `${esc(f.domain || (f.port ? `poort ${f.port}` : "–"))}`;
+      const port = L("poort", "port");
+      const what = f.dir === "blocked" ? `${esc(f.service || L("IPS-regel", "IPS rule"))}` : `${esc(f.domain || (f.port ? `${port} ${f.port}` : "–"))}`;
       const who = f.dir === "out" ? `${esc(f.client_name || "–")} → ${what}`
-        : f.dir === "in" ? `${esc(ccName(f.cc))} → ${esc(f.client_name || "–")}${f.port ? ` <span class="muted">poort ${f.port}</span>` : ""}`
-        : `${what}${f.port ? ` <span class="muted">→ poort ${f.port}</span>` : ""}`;
+        : f.dir === "in" ? `${esc(ccName(f.cc))} → ${esc(f.client_name || "–")}${f.port ? ` <span class="muted">${port} ${f.port}</span>` : ""}`
+        : `${what}${f.port ? ` <span class="muted">→ ${port} ${f.port}</span>` : ""}`;
       return `<li><span class="num muted">${hhmm(f.ts)}</span><i class="sw" style="background:${col}" title="${l}"></i>
         <span class="t-main">${who}</span><span class="t-cc" title="${esc(ccName(f.cc))}">${esc(f.cc || "–")}</span><span class="num muted t-b">${f.up + f.down ? bytes(f.up + f.down) : ""}</span></li>`;
-    }).join("") : `<li class="empty">Wachten op verbindingen…</li>`;
+    }).join("") : `<li class="empty">${L("Wachten op verbindingen…", "Waiting for connections…")}</li>`;
   }
   function pulse(f) {
     if (world.globe) { if (world.show[f.dir]) world.globe.pulse(f.dir, f.cc); return; }
@@ -2420,6 +2447,18 @@
     world.timer = setTimeout(worldLoop, 8000);
   }
   // ------------------------------------------------------------------ init
+  if (LANG === "en") {   // vaste teksten in index.html
+    document.querySelectorAll("[data-en]").forEach((n) => { n.textContent = n.dataset.en; });
+    document.querySelectorAll("[data-en-label]").forEach((n) => { n.setAttribute("aria-label", n.dataset.enLabel); if (n.title) n.title = n.dataset.enLabel; });
+  }
+  $("#lang-top").outerHTML = langSwitch();
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-lang]");
+    if (!b || b.dataset.lang === LANG) return;
+    document.querySelectorAll("[data-lang]").forEach((x) => { x.disabled = true; });
+    try { await post("/api/language", { language: b.dataset.lang }); location.reload(); }
+    catch (err) { document.querySelectorAll("[data-lang]").forEach((x) => { x.disabled = false; }); alert(err.message); }
+  });
   hydrateIcons(document);
   $("#drawer-close").onclick = closeDrawer;
   $("#scrim").onclick = closeDrawer;
@@ -2447,7 +2486,8 @@
   let rt;
   window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); renderUsage(); } if (current === "wereld") renderWorld(); if (current === "apparaten" && devView.mode === "map") renderTopo(); if (state.drawer) renderDrawer(); }, 250); });
   window.addEventListener("hashchange", route);
-  route();
-  refresh();
-  setInterval(refresh, 30000);
+  const start = () => { route(); refresh(); setInterval(refresh, 30000); };
+  // Nog geen taal gekozen: de pagina volgde de browser; leg die keuze vast, zodat ook meldingen in die taal gaan.
+  if (document.documentElement.dataset.langSet === "0") post("/api/language", { language: LANG }).catch(() => {}).finally(start);
+  else start();
 })();

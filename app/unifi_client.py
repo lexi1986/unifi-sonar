@@ -18,6 +18,7 @@ import httpx
 
 from . import segments
 from .config import Settings
+from .i18n import L
 
 log = logging.getLogger(__name__)
 
@@ -516,7 +517,7 @@ class UnifiClient:
             sites = (await self.http.get(f"{base}/sites", headers=h)).raise_for_status().json()["data"]
             site = next((x for x in sites if x.get("internalReference") == self.s.site), None)
             if site is None:
-                raise RuntimeError(f"NoSiteContext: site '{self.s.site}' niet gevonden")
+                raise RuntimeError(L(f"NoSiteContext: site '{self.s.site}' niet gevonden", f"NoSiteContext: site '{self.s.site}' not found"))
             self._site_id = site["id"]
         sb = f"{base}/sites/{self._site_id}"
         devices = (await self.http.get(f"{sb}/devices?limit=200", headers=h)).raise_for_status().json()["data"]
@@ -588,7 +589,8 @@ class UnifiClient:
     # ----------------------------------------------------------- internet
     def _legacy_only(self) -> bool:
         if self.source not in ("legacy-key", "legacy-login"):
-            raise RuntimeError("Alleen beschikbaar via de uitgebreide API (API-key of lokaal account)")
+            raise RuntimeError(L("Alleen beschikbaar via de uitgebreide API (API-key of lokaal account)",
+                                 "Only available via the extended API (API key or local account)"))
         return self.source == "legacy-key"
 
     async def gateway(self, mac: str) -> dict:
@@ -666,7 +668,7 @@ class UnifiClient:
     async def reconnect(self, mac: str) -> None:
         """Laat een wifi-client opnieuw verbinden (UniFi 'kick-sta'); hij kiest dan zelf opnieuw een AP."""
         if self.source not in ("legacy-key", "legacy-login"):
-            raise RuntimeError("Opnieuw verbinden kan alleen via de uitgebreide API")
+            raise RuntimeError(L("Opnieuw verbinden kan alleen via de uitgebreide API", "Reconnecting only works via the extended API"))
         headers = self._write_headers()
         r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/cmd/stamgr", headers=headers,
                                  json={"cmd": "kick-sta", "mac": mac.lower()})
@@ -678,7 +680,7 @@ class UnifiClient:
         """Apparaat blokkeren of weer toelaten (UniFi 'block-sta'/'unblock-sta'): geblokkeerd kan het niet
         verbinden met wifi of het netwerk. Sonar gebruikt dit voor 'internet pauzeren'."""
         if self.source not in ("legacy-key", "legacy-login"):
-            raise RuntimeError("Pauzeren kan alleen via de uitgebreide API")
+            raise RuntimeError(L("Pauzeren kan alleen via de uitgebreide API", "Pausing only works via the extended API"))
         r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/cmd/stamgr", headers=self._write_headers(),
                                  json={"cmd": "block-sta" if blocked else "unblock-sta", "mac": mac.lower()})
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
@@ -709,4 +711,4 @@ class UnifiClient:
                 log.warning("Bron %s mislukt: %s", src, e)
                 self.errors[src] = e
                 last_err = e
-        raise RuntimeError(f"Geen enkele UniFi-bron werkt: {last_err}")
+        raise RuntimeError(L(f"Geen enkele UniFi-bron werkt: {last_err}", f"No UniFi source works: {last_err}"))

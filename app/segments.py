@@ -5,6 +5,8 @@ from __future__ import annotations
 import ipaddress
 import re
 
+from .i18n import L
+
 # Fabrikanten (OUI) die vrijwel alleen slimme apparaten maken. Bewust zonder Apple, Samsung, Google, Amazon,
 # Xiaomi en TP-Link: die maken ook telefoons, laptops of routers.
 SMART_VENDORS = (
@@ -36,10 +38,10 @@ def smart_reason(c: dict) -> str | None:
     v = (c.get("vendor") or "").lower()
     for s in SMART_VENDORS:
         if s in v:
-            return f"fabrikant {vendor_short(c['vendor'])}"
+            return L(f"fabrikant {vendor_short(c['vendor'])}", f"vendor {vendor_short(c['vendor'])}")
     h = c.get("hostname") or ""
     if h and SMART_HOST.search(h):
-        return f"naam {h}"
+        return L(f"naam {h}", f"name {h}")
     return None
 
 

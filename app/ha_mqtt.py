@@ -13,32 +13,36 @@ import struct
 import time
 
 from . import VERSION
+from . import i18n
+from .i18n import L
 
 log = logging.getLogger(__name__)
 NODE = "unifi_sonar"
 BASE = f"sonar/{NODE}"
 DEFAULTS = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "prefix": "homeassistant"}
 
-# (sleutel, naam, eenheid, device_class, state_class, icoon)
+# (sleutel, naam (nl, en), eenheid, device_class, state_class, icoon). De sleutels (en dus de entity-id's in HA)
+# blijven gelijk; alleen de getoonde naam volgt de taal.
 SENSORS = [
-    ("score", "Netwerkscore", None, None, "measurement", "mdi:radar"),
-    ("issues", "Openstaande meldingen", None, None, "measurement", "mdi:alert-circle-outline"),
-    ("critical", "Kritieke meldingen", None, None, "measurement", "mdi:alert-octagon-outline"),
-    ("clients", "Clients online", None, None, "measurement", "mdi:devices"),
-    ("clients_wifi", "Wifi-clients", None, None, "measurement", "mdi:wifi"),
-    ("devices_online", "UniFi-apparaten online", None, None, "measurement", "mdi:access-point-network"),
-    ("latency", "Internetlatency", "ms", "duration", "measurement", "mdi:timer-outline"),
-    ("down_now", "Download nu", "Mbit/s", "data_rate", "measurement", "mdi:download"),
-    ("up_now", "Upload nu", "Mbit/s", "data_rate", "measurement", "mdi:upload"),
-    ("speed_down", "Speedtest download", "Mbit/s", "data_rate", "measurement", "mdi:speedometer"),
-    ("speed_up", "Speedtest upload", "Mbit/s", "data_rate", "measurement", "mdi:speedometer"),
-    ("speed_ping", "Speedtest ping", "ms", "duration", "measurement", "mdi:timer-outline"),
-    ("usage_today", "Datagebruik vandaag", "GB", "data_size", "total_increasing", "mdi:chart-bar"),
-    ("usage_month", "Datagebruik deze maand", "GB", "data_size", "total_increasing", "mdi:chart-bar"),
-    ("new_devices", "Nieuwe apparaten", None, None, "measurement", "mdi:new-box"),
-    ("ips_24h", "IPS-blokkades (24 uur)", None, None, "measurement", "mdi:shield-alert-outline"),
+    ("score", ("Netwerkscore", "Network score"), None, None, "measurement", "mdi:radar"),
+    ("issues", ("Openstaande meldingen", "Open issues"), None, None, "measurement", "mdi:alert-circle-outline"),
+    ("critical", ("Kritieke meldingen", "Critical issues"), None, None, "measurement", "mdi:alert-octagon-outline"),
+    ("clients", ("Clients online", "Clients online"), None, None, "measurement", "mdi:devices"),
+    ("clients_wifi", ("Wifi-clients", "Wifi clients"), None, None, "measurement", "mdi:wifi"),
+    ("devices_online", ("UniFi-apparaten online", "UniFi devices online"), None, None, "measurement", "mdi:access-point-network"),
+    ("latency", ("Internetlatency", "Internet latency"), "ms", "duration", "measurement", "mdi:timer-outline"),
+    ("down_now", ("Download nu", "Download now"), "Mbit/s", "data_rate", "measurement", "mdi:download"),
+    ("up_now", ("Upload nu", "Upload now"), "Mbit/s", "data_rate", "measurement", "mdi:upload"),
+    ("speed_down", ("Speedtest download", "Speed test download"), "Mbit/s", "data_rate", "measurement", "mdi:speedometer"),
+    ("speed_up", ("Speedtest upload", "Speed test upload"), "Mbit/s", "data_rate", "measurement", "mdi:speedometer"),
+    ("speed_ping", ("Speedtest ping", "Speed test ping"), "ms", "duration", "measurement", "mdi:timer-outline"),
+    ("usage_today", ("Datagebruik vandaag", "Data usage today"), "GB", "data_size", "total_increasing", "mdi:chart-bar"),
+    ("usage_month", ("Datagebruik deze maand", "Data usage this month"), "GB", "data_size", "total_increasing", "mdi:chart-bar"),
+    ("new_devices", ("Nieuwe apparaten", "New devices"), None, None, "measurement", "mdi:new-box"),
+    ("ips_24h", ("IPS-blokkades (24 uur)", "IPS blocks (24 hours)"), None, None, "measurement", "mdi:shield-alert-outline"),
 ]
-BINARY = [("internet", "Internet", "connectivity"), ("controller", "UniFi-controller bereikbaar", "connectivity")]
+BINARY = [("internet", ("Internet", "Internet"), "connectivity"),
+          ("controller", ("UniFi-controller bereikbaar", "UniFi controller reachable"), "connectivity")]
 
 
 def config(settings) -> dict:
@@ -96,8 +100,14 @@ async def _read_packet(reader: asyncio.StreamReader) -> tuple[int, bytes]:
     return head, await reader.readexactly(n) if n else b""
 
 
-CONNACK_ERR = {1: "protocolversie niet ondersteund", 2: "client-id geweigerd", 3: "broker niet beschikbaar",
-               4: "gebruikersnaam of wachtwoord onjuist", 5: "niet gemachtigd"}
+CONNACK_ERR = {1: ("protocolversie niet ondersteund", "protocol version not supported"),
+               2: ("client-id geweigerd", "client id rejected"), 3: ("broker niet beschikbaar", "broker unavailable"),
+               4: ("gebruikersnaam of wachtwoord onjuist", "wrong username or password"),
+               5: ("niet gemachtigd", "not authorized")}
+
+
+def _connack(code) -> str:
+    return L(*CONNACK_ERR[code]) if code in CONNACK_ERR else str(code)
 
 
 async def try_connect(cfg: dict, timeout: float = 6) -> str | None:
@@ -105,16 +115,17 @@ async def try_connect(cfg: dict, timeout: float = 6) -> str | None:
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(cfg["host"], int(cfg["port"])), timeout)
     except Exception as e:  # noqa: BLE001
-        return f"Kan {cfg['host']}:{cfg['port']} niet bereiken ({type(e).__name__})"
+        return L(f"Kan {cfg['host']}:{cfg['port']} niet bereiken ({type(e).__name__})",
+                 f"Cannot reach {cfg['host']}:{cfg['port']} ({type(e).__name__})")
     try:
         writer.write(connect_packet(f"{NODE}_test", cfg["username"], cfg["password"], f"{BASE}/test"))
         await writer.drain()
         head, body = await asyncio.wait_for(_read_packet(reader), timeout)
         if head >> 4 != 2 or len(body) < 2:
-            return "Onverwacht antwoord van de broker"
-        return None if body[1] == 0 else f"Broker weigert: {CONNACK_ERR.get(body[1], body[1])}"
+            return L("Onverwacht antwoord van de broker", "Unexpected reply from the broker")
+        return None if body[1] == 0 else L("Broker weigert: ", "Broker refuses: ") + _connack(body[1])
     except Exception as e:  # noqa: BLE001
-        return f"Geen antwoord van de broker ({type(e).__name__})"
+        return L(f"Geen antwoord van de broker ({type(e).__name__})", f"No reply from the broker ({type(e).__name__})")
     finally:
         writer.close()
 
@@ -174,7 +185,8 @@ class HAMqtt:
         head, body = await asyncio.wait_for(_read_packet(reader), 10)
         if head >> 4 != 2 or len(body) < 2 or body[1] != 0:
             writer.close()
-            raise RuntimeError("Broker weigert: " + CONNACK_ERR.get(body[1] if len(body) > 1 else 0, "onbekend"))
+            code = body[1] if len(body) > 1 else 0
+            raise RuntimeError(L("Broker weigert: ", "Broker refuses: ") + (_connack(code) if code else L("onbekend", "unknown")))
         self.writer = writer
         self.status.update(connected=True, error=None, since=int(time.time()))
         log.info("MQTT verbonden met %s:%s", c["host"], c["port"])
@@ -209,12 +221,13 @@ class HAMqtt:
     def discovery(self) -> list[tuple[str, str]]:
         p = self.cfg["prefix"].strip("/") or "homeassistant"
         url = (getattr(self.s, "notify", None) or {}).get("base_url") or None
-        dev = {"identifiers": [NODE], "name": "UniFi Sonar", "manufacturer": "UniFi Sonar", "model": "Netwerkdashboard",
+        dev = {"identifiers": [NODE], "name": "UniFi Sonar", "manufacturer": "UniFi Sonar",
+               "model": L("Netwerkdashboard", "Network dashboard"),
                "sw_version": VERSION, **({"configuration_url": url} if url else {})}
         avail = {"availability_topic": f"{BASE}/status"}
         out = []
         for key, name, unit, dc, sc, ic in SENSORS:
-            cfg = {"name": name, "unique_id": f"{NODE}_{key}", "object_id": f"sonar_{key}", "state_topic": f"{BASE}/state",
+            cfg = {"name": L(*name), "unique_id": f"{NODE}_{key}", "object_id": f"sonar_{key}", "state_topic": f"{BASE}/state",
                    "value_template": f"{{{{ value_json.{key} }}}}", "icon": ic, "device": dev, **avail}
             if unit:
                 cfg["unit_of_measurement"] = unit
@@ -226,11 +239,11 @@ class HAMqtt:
                 cfg["json_attributes_topic"] = f"{BASE}/issues"
             out.append((f"{p}/sensor/{NODE}/{key}/config", json.dumps(cfg)))
         for key, name, dc in BINARY:
-            cfg = {"name": name, "unique_id": f"{NODE}_{key}", "object_id": f"sonar_{key}", "state_topic": f"{BASE}/state",
+            cfg = {"name": L(*name), "unique_id": f"{NODE}_{key}", "object_id": f"sonar_{key}", "state_topic": f"{BASE}/state",
                    "value_template": f"{{{{ 'ON' if value_json.{key} else 'OFF' }}}}", "device_class": dc, "device": dev, **avail}
             out.append((f"{p}/binary_sensor/{NODE}/{key}/config", json.dumps(cfg)))
         out.append((f"{p}/button/{NODE}/speedtest/config", json.dumps({
-            "name": "Speedtest starten", "unique_id": f"{NODE}_speedtest", "object_id": "sonar_speedtest",
+            "name": L("Speedtest starten", "Start speed test"), "unique_id": f"{NODE}_speedtest", "object_id": "sonar_speedtest",
             "command_topic": f"{BASE}/speedtest/set", "icon": "mdi:speedometer", "device": dev, **avail})))
         return out
 
@@ -260,7 +273,7 @@ class HAMqtt:
             "ips_24h": len(db.ips_events(now - 86400, "external")),
             "internet": wan.get("up") is not False, "controller": self.col.last_error is None,
         }
-        attrs = {"meldingen": [f"{i['severity']}: {i['title']}" for i in issues[:15]]}
+        attrs = {"meldingen": [f"{i['severity']}: {i18n.issue(i)['title']}" for i in issues[:15]]}
         return state, attrs
 
     def publish_state(self) -> None:

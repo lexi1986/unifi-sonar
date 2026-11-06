@@ -18,11 +18,14 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import i18n
+from .i18n import L
+
 log = logging.getLogger(__name__)
 
 KINDS = ("homeassistant", "ntfy", "discord", "slack", "webhook")
 RANK = {"critical": 0, "warning": 1, "info": 2}
-LABEL = {"critical": "Kritiek", "warning": "Waarschuwing", "info": "Info"}
+LABEL = {"critical": ("Kritiek", "Critical"), "warning": ("Waarschuwing", "Warning"), "info": ("Info", "Info")}
 COLOR = {"critical": 0xFB7185, "warning": 0xFFBE5C, "info": 0x39D8F4, "ok": 0x48E0B4}
 BUNDLE_AT = 4               # vanaf zoveel nieuwe meldingen in één keer: bundelen
 CONTROLLER_DOWN_AFTER = 300  # seconden zonder verbinding voordat we waarschuwen
@@ -126,8 +129,9 @@ class Notifier:
         return f"{base}/#/{path}" if base else ""
 
     def _issue_msg(self, i: dict, event: str) -> dict:
-        prefix = {"opened": "", "escalated": "Ernstiger: ", "resolved": "Opgelost: "}[event]
-        text = i["detail"] if event == "resolved" else f"{i['detail']}\n\nAdvies: {i['advice']}"
+        i = i18n.issue(i)
+        prefix = {"opened": "", "escalated": L("Ernstiger: ", "Escalated: "), "resolved": L("Opgelost: ", "Resolved: ")}[event]
+        text = i["detail"] if event == "resolved" else f"{i['detail']}\n\n{L('Advies', 'Advice')}: {i['advice']}"
         target = f"clients/{i['client_mac']}" if i.get("client_mac") else "issues"
         return {"event": event, "severity": "ok" if event == "resolved" else i["severity"],
                 "title": prefix + i["title"], "text": text, "url": self._link(target),
@@ -136,16 +140,18 @@ class Notifier:
 
     def _bundle_msg(self, items: list[dict]) -> dict:
         worst = min((i["severity"] for i in items), key=RANK.get)
-        lines = [f"• {LABEL[i['severity']]}: {i['title']}" for i in items[:12]]
+        lines = [f"• {L(*LABEL[i['severity']])}: {i18n.issue(i)['title']}" for i in items[:12]]
         if len(items) > 12:
-            lines.append(f"… en nog {len(items) - 12}")
-        return {"event": "bundle", "severity": worst, "title": f"{len(items)} nieuwe meldingen in je netwerk",
+            lines.append(L(f"… en nog {len(items) - 12}", f"… and {len(items) - 12} more"))
+        return {"event": "bundle", "severity": worst,
+                "title": L(f"{len(items)} nieuwe meldingen in je netwerk", f"{len(items)} new issues in your network"),
                 "text": "\n".join(lines), "url": self._link("issues"),
                 "data": {"keys": [i["key"] for i in items]}}
 
     def test_msg(self) -> dict:
-        return {"event": "test", "severity": "info", "title": "Testbericht van UniFi Sonar",
-                "text": "Als je dit leest, komen meldingen goed aan.", "url": self._link("issues")}
+        return {"event": "test", "severity": "info", "title": L("Testbericht van UniFi Sonar", "Test message from UniFi Sonar"),
+                "text": L("Als je dit leest, komen meldingen goed aan.", "If you can read this, notifications arrive fine."),
+                "url": self._link("issues")}
 
     # ------------------------------------------------------------------ elke meting
     def baseline(self, ch_id: str, issues: list[dict]) -> None:
@@ -160,8 +166,9 @@ class Notifier:
         cfg = config(self.s)
         if self._down_sent:
             self._down_sent = False
-            await self._broadcast(cfg, {"event": "controller_up", "severity": "ok", "title": "UniFi-controller weer bereikbaar",
-                                        "text": "UniFi Sonar meet weer.", "url": self._link()})
+            await self._broadcast(cfg, {"event": "controller_up", "severity": "ok",
+                                        "title": L("UniFi-controller weer bereikbaar", "UniFi controller reachable again"),
+                                        "text": L("UniFi Sonar meet weer.", "UniFi Sonar is measuring again."), "url": self._link()})
         self._down_since = None
         chans = [c for c in cfg["channels"] if c.get("enabled", True) and c.get("url")]
         if not chans:
@@ -229,12 +236,15 @@ class Notifier:
         h = snap.get("health") or {}
         top = [i for i in snap["issues"] if not i.get("group") and not i.get("muted")]
         top.sort(key=lambda i: RANK[i["severity"]])
-        lines = [f"Netwerkscore {h.get('score', '?')}/100 · {h.get('critical', 0)} kritiek · "
-                 f"{h.get('warning', 0)} waarschuwing · {h.get('info', 0)} info"]
-        lines += [f"• {LABEL[i['severity']]}: {i['title']}" for i in top[:15]]
+        lines = [L(f"Netwerkscore {h.get('score', '?')}/100 · {h.get('critical', 0)} kritiek · "
+                   f"{h.get('warning', 0)} waarschuwing · {h.get('info', 0)} info",
+                   f"Network score {h.get('score', '?')}/100 · {h.get('critical', 0)} critical · "
+                   f"{h.get('warning', 0)} warning · {h.get('info', 0)} info")]
+        lines += [f"• {L(*LABEL[i['severity']])}: {i18n.issue(i)['title']}" for i in top[:15]]
         if not top:
-            lines.append("Geen open meldingen.")
-        await self._broadcast(cfg, {"event": "digest", "severity": "info", "title": "Dagoverzicht van je netwerk",
+            lines.append(L("Geen open meldingen.", "No open issues."))
+        await self._broadcast(cfg, {"event": "digest", "severity": "info",
+                                    "title": L("Dagoverzicht van je netwerk", "Daily summary of your network"),
                                     "text": "\n".join(lines), "url": self._link("issues"),
                                     "data": {"health": h, "keys": [i["key"] for i in top]}})
 
@@ -246,6 +256,8 @@ class Notifier:
             return
         self._down_sent = True
         await self._broadcast(config(self.s), {
-            "event": "controller_down", "severity": "critical", "title": "UniFi Sonar kan de controller niet bereiken",
-            "text": f"Al {round((ts - self._down_since) / 60)} minuten geen meting. Laatste fout: {error[:300]}",
+            "event": "controller_down", "severity": "critical",
+            "title": L("UniFi Sonar kan de controller niet bereiken", "UniFi Sonar cannot reach the controller"),
+            "text": L(f"Al {round((ts - self._down_since) / 60)} minuten geen meting. Laatste fout: {error[:300]}",
+                      f"No reading for {round((ts - self._down_since) / 60)} minutes. Last error: {error[:300]}"),
             "url": self._link()})

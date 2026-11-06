@@ -12,8 +12,8 @@ def raw(**w):
             "firewall": [{"name": "IoT blok", "enabled": True, "action": "BLOCK"}, {"name": "Intern", "predefined": True}]}
 
 
-def msgs(a, b):
-    return [e["message"] for e in diff(a, b)]
+def msgs(a, b, lang="nl"):
+    return [e["message"][lang] for e in diff(a, b)]
 
 
 def test_config_changes_are_readable_and_hide_passwords():
@@ -25,6 +25,9 @@ def test_config_changes_are_readable_and_hide_passwords():
     assert "Wifi 'Thuis': Fast Roaming uit → aan" in m
     assert "Wifi 'Thuis': wachtwoord gewijzigd" in m
     assert "Wifi 'Thuis': minimale snelheid 2.4 GHz 1 Mbit/s → 6 Mbit/s" in m
+    en = msgs(a, b, "en")
+    assert "Wifi 'Thuis': Fast Roaming off → on" in en and "Wifi 'Thuis': password changed" in en
+    assert "Wifi 'Thuis': minimum rate 2.4 GHz 1 Mbit/s → 6 Mbit/s" in en
     assert msgs(a, a) == []
 
 
@@ -39,6 +42,9 @@ def test_added_removed_and_settings():
     assert "VPN-server 'OpenVPN': ingeschakeld aan → uit" in m
     assert "Port forward 'NAS' verwijderd" in m and "Wifi 'Gast' toegevoegd" in m
     assert "Instelling UPnP: aan → uit" in m
+    en = msgs(a, config_fingerprint(r, "z"), "en")
+    assert "VPN server 'OpenVPN': enabled on → off" in en and "Setting UPnP: on → off" in en
+    assert "Port forward 'NAS' removed" in en and "Wifi 'Gast' added" in en
     assert not any(x.startswith("Port forward 'NAS':") for x in m)               # geen losse regels per veld
 
 
@@ -47,6 +53,9 @@ def test_device_changes():
          "radios": [{"radio": "2.4", "channel": 11, "channel_auto": False, "width": 20, "tx_power_mode": "auto", "min_rssi": None}]}
     a = device_fingerprint([d])
     d2 = {**d, "bandsteering": "prefer_5g", "radios": [{**d["radios"][0], "channel": 6, "tx_power": 17}]}
-    m = [e["message"] for e in diff(a, device_fingerprint([d2]), {"aa": "AP Woonkamer"})]
-    assert m == ["AP Woonkamer · 2.4 GHz kanaal: 11 → 6", "AP Woonkamer · band steering: uit → voorkeur 5 GHz"]
+    evs = diff(a, device_fingerprint([d2]), {"aa": "AP Woonkamer"})
+    assert [e["message"]["nl"] for e in evs] == ["AP Woonkamer · 2.4 GHz kanaal: 11 → 6",
+                                                 "AP Woonkamer · band steering: uit → voorkeur 5 GHz"]
+    assert [e["message"]["en"] for e in evs] == ["AP Woonkamer · 2.4 GHz channel: 11 → 6",
+                                                 "AP Woonkamer · band steering: off → prefer 5 GHz"]
     assert diff(a, device_fingerprint([d, {"mac": "bb", "name": "Nieuw", "radios": []}])) == []   # nieuw apparaat: geen log

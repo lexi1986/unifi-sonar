@@ -7,6 +7,8 @@ import threading
 from collections import defaultdict
 from pathlib import Path
 
+from . import i18n
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS device_samples (ts INT, mac TEXT, state TEXT, cpu REAL, mem REAL, temp REAL,
     num_clients INT, satisfaction REAL, uptime REAL);
@@ -97,7 +99,7 @@ class DB:
                       (ts, None if w["up"] is None else int(w["up"]), w["latency_ms"], w["loss_pct"],
                        w.get("rx_bps"), w.get("tx_bps")))
             c.executemany("INSERT INTO events VALUES (?,?,?,?,?)", [
-                (e["ts"], e["kind"], e["entity_type"], e["entity_id"], e["message"]) for e in events])
+                (e["ts"], e["kind"], e["entity_type"], e["entity_id"], i18n.dump(e["message"])) for e in events])
 
     def set_kv(self, key: str, value: dict) -> None:
         with self.lock, self.conn:
@@ -108,7 +110,7 @@ class DB:
             return
         with self.lock, self.conn:
             self.conn.executemany("INSERT INTO events VALUES (?,?,?,?,?)", [
-                (e["ts"], e["kind"], e["entity_type"], e["entity_id"], e["message"]) for e in events])
+                (e["ts"], e["kind"], e["entity_type"], e["entity_id"], i18n.dump(e["message"])) for e in events])
 
     def get_kv(self, key: str) -> dict | None:
         rows = self.q("SELECT value FROM kv WHERE key=?", (key,))
@@ -137,9 +139,9 @@ class DB:
             self.conn.execute("DELETE FROM issues WHERE resolved_at IS NOT NULL AND resolved_at < ?", (before_ts,))
 
     # ------------------------------------------------------------- negeren
-    def mute(self, key: str, until: int | None, created: int, title: str) -> None:
+    def mute(self, key: str, until: int | None, created: int, title) -> None:
         with self.lock, self.conn:
-            self.conn.execute("INSERT OR REPLACE INTO muted VALUES (?,?,?,?)", (key, until, created, title))
+            self.conn.execute("INSERT OR REPLACE INTO muted VALUES (?,?,?,?)", (key, until, created, i18n.dump(title)))
 
     def unmute(self, key: str) -> None:
         with self.lock, self.conn:
@@ -150,7 +152,7 @@ class DB:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM muted WHERE until IS NOT NULL AND until <= ?", (now,))
             rows = self.conn.execute("SELECT * FROM muted ORDER BY created DESC").fetchall()
-        return {r["key"]: dict(r) for r in rows}
+        return {r["key"]: {**dict(r), "title": i18n.pick(r["title"])} for r in rows}
 
     # ----------------------------------------------------------------- IPS
     def store_ips(self, events: list[dict]) -> int:
@@ -286,8 +288,8 @@ class DB:
         return [dict(r) for r in self.q("SELECT ts, rx, tx FROM usage WHERE period=? AND ts>=? ORDER BY ts", (period, since))]
 
     def client_roams_since(self, mac: str, since: int) -> list[dict]:
-        return [dict(r) for r in self.q("SELECT ts, message FROM events WHERE kind='roam' AND entity_id=? AND ts>=? "
-                                        "ORDER BY ts DESC LIMIT 50", (mac, since))]
+        return [{**dict(r), "message": i18n.pick(r["message"])} for r in self.q(
+            "SELECT ts, message FROM events WHERE kind='roam' AND entity_id=? AND ts>=? ORDER BY ts DESC LIMIT 50", (mac, since))]
 
     def blocked_flows(self, since: int) -> list[dict]:
         return [dict(r) for r in self.q(
@@ -543,4 +545,5 @@ class DB:
         return out
 
     def events(self, since: int, limit: int = 200) -> list[dict]:
-        return [dict(r) for r in self.q("SELECT * FROM events WHERE ts>=? ORDER BY ts DESC LIMIT ?", (since, limit))]
+        return [{**dict(r), "message": i18n.pick(r["message"])}
+                for r in self.q("SELECT * FROM events WHERE ts>=? ORDER BY ts DESC LIMIT ?", (since, limit))]

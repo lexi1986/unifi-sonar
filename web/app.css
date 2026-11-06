@@ -704,3 +704,8 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .fl-edges { transition: opacity 220ms ease; }
 .fl-edges.hidden { opacity: 0; transition: none; }
 @media (prefers-reduced-motion: reduce) { .fl-node { transition: none; } }
+
+/* taalkeuze */
+#lang-top, .topbar .lang-seg { flex: none; }
+.lang-seg button { font-weight: 600; letter-spacing: .02em; }
+.topbar .lang-seg button { padding: 5px 9px; font-size: 12px; }

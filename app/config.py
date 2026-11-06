@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_KEYS = ("mode", "controller_url", "site", "api_key", "username", "password", "verify_tls",
-               "allowed_hosts", "notify", "home_country", "mqtt")
+               "allowed_hosts", "notify", "home_country", "mqtt", "language")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -79,6 +79,7 @@ class Settings:
     data_dir: str = "data"
     mock_seed_hours: int = 6
     home_country: str = "NL"   # waar de bogen op de wereldkaart vertrekken
+    language: str = ""         # "nl" of "en"; leeg = nog niet gekozen (dan volgt de app de browser)
     allowed_hosts: list = field(default_factory=list)   # extra hostnamen (instellingenpagina); env ALLOWED_HOSTS telt ook
     mqtt: dict = field(default_factory=dict)            # Home Assistant via MQTT, zie ha_mqtt.py
     notify: dict = field(default_factory=dict)          # meldingen naar buiten, zie notify.py
@@ -141,5 +142,6 @@ class Settings:
             db_path=_env("DB_PATH"),
             data_dir=_env("DATA_DIR", "data"),
             mock_seed_hours=int(_float("MOCK_SEED_HOURS", 6)),
+            language=_env("LANGUAGE").lower()[:2],
             thresholds=Thresholds.from_env(),
         )

@@ -4,6 +4,9 @@
 (function () {
   const NS = "http://www.w3.org/2000/svg";
   const SERIES = ["#39D8F4", "#9C84FF", "#48E0B4", "#FFBE5C", "#FB7185"];
+  const EN = document.documentElement.lang === "en";
+  const L = (nl, en) => (EN ? en : nl);
+  const LOC = L("nl-NL", "en-GB");
 
   function el(tag, attrs, parent) {
     const n = document.createElementNS(NS, tag);
@@ -25,15 +28,15 @@
     return ticks;
   }
 
-  const hhmm = (t) => new Date(t * 1000).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
-  const dayTime = (t) => new Date(t * 1000).toLocaleString("nl-NL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const hhmm = (t) => new Date(t * 1000).toLocaleTimeString(LOC, { hour: "2-digit", minute: "2-digit" });
+  const dayTime = (t) => new Date(t * 1000).toLocaleString(LOC, { weekday: "short", hour: "2-digit", minute: "2-digit" });
 
   function lineChart(container, opts) {
     const series = opts.series.filter((s) => s.data && s.data.some((p) => p[1] != null));
     container.innerHTML = "";
     container.classList.add("chart");
     if (!series.length) {
-      container.innerHTML = '<div class="chart-empty">Nog geen meetgegevens in deze periode</div>';
+      container.innerHTML = `<div class="chart-empty">${L("Nog geen meetgegevens in deze periode", "No readings in this period yet")}</div>`;
       return;
     }
     const fmt = opts.fmt || ((v) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1)).replace(".", ","));
@@ -76,7 +79,7 @@
     yt.filter((v) => v >= y0 && v <= y1).forEach((v) => {
       el("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: "grid-line" }, svg);
       const tx = el("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end", class: "axis-label" }, svg);
-      tx.textContent = Number.isInteger(v) ? v.toLocaleString("nl-NL") : fmt(v);
+      tx.textContent = Number.isInteger(v) ? v.toLocaleString(LOC) : fmt(v);
     });
     const nx = Math.max(2, Math.min(6, Math.floor(iw / 110)));
     for (let i = 0; i <= nx; i++) {
@@ -88,7 +91,7 @@
       const ty = y(opts.threshold.value);
       el("line", { x1: m.l, x2: W - m.r, y1: ty, y2: ty, class: "thr" }, svg);
       const tl = el("text", { x: W - m.r, y: ty - 5, "text-anchor": "end", class: "thr-label" }, svg);
-      tl.textContent = opts.threshold.label || `drempel ${fmt(opts.threshold.value)}${unit}`;
+      tl.textContent = opts.threshold.label || `${L("drempel", "threshold")} ${fmt(opts.threshold.value)}${unit}`;
     }
 
     const gap = (opts.bucket || 60) * 3;
@@ -115,7 +118,7 @@
     const cross = el("line", { y1: m.t, y2: m.t + ih, class: "cross", visibility: "hidden" }, svg);
     const dots = series.map((s, i) => el("circle", { r: 4, fill: s.color || SERIES[i], stroke: "#131C2B", "stroke-width": 2, visibility: "hidden" }, svg));
     const hit = el("rect", { x: m.l, y: m.t, width: iw, height: ih, class: "hit", tabindex: 0,
-      "aria-label": "Grafiek: gebruik pijltjestoetsen om waarden te bekijken" }, svg);
+      "aria-label": L("Grafiek: gebruik pijltjestoetsen om waarden te bekijken", "Chart: use the arrow keys to browse values") }, svg);
     const tip = document.createElement("div");
     tip.className = "tooltip";
     container.appendChild(tip);
@@ -171,8 +174,8 @@
     const n = opts.labels.length;
     container.innerHTML = "";
     container.classList.add("chart");
-    if (!n) { container.innerHTML = '<div class="chart-empty">Nog geen gegevens</div>'; return; }
-    const fmt = opts.fmt || ((v) => v.toLocaleString("nl-NL"));
+    if (!n) { container.innerHTML = `<div class="chart-empty">${L("Nog geen gegevens", "No data yet")}</div>`; return; }
+    const fmt = opts.fmt || ((v) => v.toLocaleString(LOC));
     if (series.length >= 2) {
       const lg = document.createElement("div");
       lg.className = "chart-legend";
@@ -189,7 +192,7 @@
     const y = (v) => m.t + ih - (v / y1) * ih;
     const slot = iw / n, bw = Math.max(2, Math.min(28, slot * 0.72));
     const xc = (i) => m.l + slot * i + slot / 2;
-    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": opts.label || "Staafgrafiek" });
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": opts.label || L("Staafgrafiek", "Bar chart") });
     container.appendChild(svg);
     yt.forEach((v) => {
       el("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: "grid-line" }, svg);
@@ -222,12 +225,12 @@
     tip.className = "tooltip";
     container.appendChild(tip);
     const hit = el("rect", { x: m.l, y: m.t, width: iw, height: ih, class: "hit", tabindex: 0,
-      "aria-label": "Grafiek: gebruik pijltjestoetsen om waarden te bekijken" }, svg);
+      "aria-label": L("Grafiek: gebruik pijltjestoetsen om waarden te bekijken", "Chart: use the arrow keys to browse values") }, svg);
     let cur = -1;
     function show(i) {
       cur = Math.max(0, Math.min(n - 1, i));
       bars.forEach((b, k) => b.classList.toggle("dim", k !== cur));
-      tip.innerHTML = `<div class="tt-time">${opts.tfmt(opts.labels[cur])}${cur === opts.highlight ? " · nog bezig" : ""}</div>` +
+      tip.innerHTML = `<div class="tt-time">${opts.tfmt(opts.labels[cur])}${cur === opts.highlight ? L(" · nog bezig", " · in progress") : ""}</div>` +
         series.map((s) => `<div class="tt-row"><span><i class="sw" style="background:${s.color};width:8px;height:8px;border-radius:2px"></i>${s.name}</span><b>${fmt(s.data[cur] || 0)}</b></div>`).join("") +
         `<div class="tt-row"><span>Totaal</span><b>${fmt(totals[cur])}</b></div>`;
       tip.classList.add("show");

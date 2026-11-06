@@ -22,7 +22,7 @@
     const canvas = document.createElement("canvas");
     canvas.className = "globe-canvas";
     canvas.setAttribute("role", "img");
-    canvas.setAttribute("aria-label", "Draaiende wereldbol met verbindingen per land");
+    canvas.setAttribute("aria-label", document.documentElement.lang === "en" ? "Rotating globe with connections per country" : "Draaiende wereldbol met verbindingen per land");
     host.appendChild(canvas);
     const ctx = canvas.getContext("2d");
     const bg = document.createElement("canvas");   // sterren en nevel: één keer per formaat tekenen
