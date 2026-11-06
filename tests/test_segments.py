@@ -130,3 +130,20 @@ def test_flows_between_networks():
     e3 = {(x["from"], x["to"]): x for x in segments.flows(segments.build(nets, ZONES, pols))["edges"]}
     assert e3[("net-default", "net-iot")]["status"] == "block"
     assert [r["name"] for r in e3[("net-default", "net-iot")]["rules"]] == ["Alles dicht"]
+
+
+def test_rule_targets_skip_vendor_names(tmp_path, monkeypatch):
+    monkeypatch.setenv("NO_DOTENV", "1")
+    from fastapi.testclient import TestClient
+    from app import main
+    st = Settings(mode="mock", db_path=str(tmp_path / "t.db"), mock_seed_hours=1)
+    col = Collector(st, DB(st.db_path))
+    asyncio.run(col.seed_history())
+    for c in col.latest["clients"]:
+        if c["ip"] == "192.168.1.22":   # Pi-hole zonder eigen naam: UniFi toont dan de fabrikant
+            c.update(name=c["vendor"], hostname=None)
+    monkeypatch.setattr(main.rt, "collector", col)
+    monkeypatch.setattr(main.rt, "db", col.db)
+    d = TestClient(main.app).get("/api/segments").json()
+    dns = d["matrix"]["cells"]["z-iot>z-int"]["rules"][1]
+    assert dns["targets"] == ["192.168.1.22"]

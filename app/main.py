@@ -839,7 +839,10 @@ def segments_api():
     clients = snap.get("clients", [])
     cnt = segments.counts(clients, seg)
     names = {d["ip"]: d["name"] for d in snap.get("devices", []) if d.get("ip")}
-    names.update({c["ip"]: c["name"] for c in clients if c.get("ip")})
+    for c in clients:   # zonder eigen naam valt UniFi terug op de fabrikant; dan liever hostnaam of IP-adres
+        if c.get("ip"):
+            real = c["name"] not in (c.get("vendor"), c.get("mac"), None, "")
+            names[c["ip"]] = c["name"] if real else (c.get("hostname") or c["ip"])
     cells = {}
     for k, c in ((seg.get("matrix") or {}).get("cells") or {}).items():
         cells[k] = {**c, "rules": [{**r, "targets": [names.get(ip, ip) for ip in r["ips"]]} for r in c["rules"]]}
