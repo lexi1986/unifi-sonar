@@ -121,6 +121,19 @@ REBOOT_T = 3 * 3600   # simulatietijd waarop AP Boven herstart
 PRINTER_T = 3.5 * 3600  # simulatietijd waarop de printer naar AP Schuur zakt
 CH5 = {AP_WK: 36, AP_BV: 100, AP_KT: 149, AP_SC: 44}   # AP Woonkamer en AP Schuur delen 36–48
 CH24 = {AP_WK: 6, AP_BV: 1, AP_KT: 6, AP_SC: 6}       # kanaal 11 blijft vrij
+DNS_LEAKS = [   # (apparaat, adres, poort, dienst, domein): DNS buiten je eigen DNS-server om
+    ("Fire TV", "8.8.8.8", 53, "DNS", None), ("Tesla", "1.1.1.1", 853, "DNS_OVER_TLS", "one.one.one.one"),
+    ("Nest Thermostaat", "8.8.4.4", 443, "HTTPS", "dns.google"),
+]
+DEMO_AUDIT_RULES = [
+    {"_id": "p-audit-1", "name": "Blokkeer IoT-camera", "action": "BLOCK", "enabled": True, "index": 10010, "predefined": False,
+     "protocol": "all", "connection_state_type": "ALL", "source": {"zone_id": "z-int", "matching_target": "ANY"},
+     "destination": {"zone_id": "z-iot", "matching_target": "IP", "ips": ["192.168.20.50"], "port_matching_type": "ANY"}},
+    {"_id": "p-audit-2", "name": "Tablet IoT tijdelijk", "action": "ALLOW", "enabled": True, "index": 10050, "predefined": False,
+     "protocol": "all", "connection_state_type": "ALL", "source": {"zone_id": "z-iot", "matching_target": "IP", "ips": ["192.168.20.50"]},
+     "destination": {"zone_id": "z-int", "matching_target": "ANY", "port_matching_type": "ANY"}},
+]
+NEIGHBOR_SSIDS = ["Ziggo-5G", "KPN-WiFi-2E4A", "H369A1B2C", "FRITZ!Box 7590 XL", "Odido-Thuis", "Buren", "TV-Kast", "Ziggo1234567"]
 AWAY = {"iPhone", "MacBook Pro", "Galaxy S24", "Laptop Werk", "Pixel 8", "Apple Watch", "Tesla"}   # overdag weg
 
 
@@ -381,6 +394,16 @@ class MockNetwork:
                         "source": {"ip": ip, "mac": mac, "client_name": who, "port": rnd.randint(30000, 60000)},
                         "destination": {"ip": ext, "port": port, "domains": [domain], "region": cc},
                         "traffic_data": {"bytes_tx": int(b * 0.08), "bytes_rx": int(b * 0.92)}})
+        for who, ip_, port, svc, dom in DNS_LEAKS:   # apparaten die om je eigen DNS-server heen gaan
+            if rnd.random() < dt / 600 and who in names:
+                mac, ip = names[who]
+                t_end = ts - rnd.randint(0, int(dt))
+                out.append({"id": f"mockdns-{t_end}-{mac}", "action": "allowed", "direction": "outgoing",
+                            "protocol": "UDP" if port == 53 else "TCP", "flow_start_time": (t_end - 2) * 1000,
+                            "flow_end_time": t_end * 1000, "in": {"network_name": "Default"}, "out": {"network_name": "WAN"},
+                            "service": svc, "risk": "low", "source": {"ip": ip, "mac": mac, "client_name": who, "port": 41000},
+                            "destination": {"ip": ip_, "port": port, "domains": [dom] if dom else [], "region": "US"},
+                            "traffic_data": {"bytes_tx": 120, "bytes_rx": 260}})
         for k in range(int(dt / 60 * 2)):   # van buiten naar binnen: VPN, Home Assistant en de open SSH-poort
             host, port, svc, cc, size = rnd.choice(FLOW_IN)
             mac, ip = names[host]
@@ -428,6 +451,7 @@ class MockNetwork:
             forwards = [f for f in forwards if f["name"] != "Oude camera"]
         settings = settings + [{"key": "global_switch", "stp_version": "rstp", "auto_stp_edge_detection_enabled": False}]
         zones, policies = self.firewall()
+        policies = policies + DEMO_AUDIT_RULES   # voor de firewall-audit: een regel die nooit raakt en één die IoT openzet
         return {"wlans": wlans, "settings": settings, "forwards": forwards, "networks": networks,
                 "zones": zones, "firewall": policies}
 
@@ -489,9 +513,9 @@ class MockNetwork:
         ]
         networks = [
             {"_id": "net-default", "name": "Default", "purpose": "corporate", "ip_subnet": "192.168.1.1/24",
-             "firewall_zone_id": "z-int"},
+             "firewall_zone_id": "z-int", "dhcpd_dns_enabled": True, "dhcpd_dns_1": "192.168.1.22"},
             {"_id": "net-iot", "name": "IoT", "purpose": "corporate", "vlan": 20, "vlan_enabled": True,
-             "ip_subnet": "192.168.20.1/24", "firewall_zone_id": "z-iot"},
+             "ip_subnet": "192.168.20.1/24", "firewall_zone_id": "z-iot", "dhcpd_dns_enabled": True, "dhcpd_dns_1": "192.168.1.22"},
             {"_id": "net-wg", "name": "WireGuard", "purpose": "remote-user-vpn", "vpn_type": "wireguard-server", "enabled": True, "local_port": 51820},
             {"_id": "net-ovpn", "name": "OpenVPN", "purpose": "remote-user-vpn", "vpn_type": "openvpn-server", "enabled": True,
              "local_port": 1194, "vpn_protocol": "TCP"},
@@ -597,6 +621,70 @@ class MockNetwork:
             out.append({"time": self.speedtest_last["rundate"] * 1000, **{k: self.speedtest_last[k] for k in ("xput_download", "xput_upload", "latency")},
                         "server": {"city": "Amsterdam", "provider": "Demo"}})
         return out
+
+    # ------------------------------------------------------------ inzichten
+    def insights(self, now: int) -> dict:
+        """Zoals UnifiClient.insights: storingen, verbindingspogingen, anomalieën en wifi in de buurt."""
+        day = 86400
+        midnight = int(time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1)))
+        outages = [(midnight - 20 * 60, 12 * 60), (midnight - 6 * day + 9 * 3600, 300), (midnight - 19 * day, 2 * 3600 + 300),
+                   (midnight - 47 * day, 40)]   # vaste tijdstippen: dezelfde storing houdt dezelfde id
+        health = []
+        for d in range(90, 0, -1):
+            t = now - d * day
+            health.append({"ts": t, "down": any(t <= o < t + day for o, _ in outages), "loss": d in (8, 33), "lat": d in (8, 21)})
+        total = sum(s for _, s in outages)
+        wan = [{"wan": "WAN", "isp": "Glasvezel NL", "uptime": round(100 * (1 - total / (90 * day)), 3),
+                "outages": [{"id": f"mock-out-{o}", "ts": o, "seconds": s} for o, s in outages], "health": health}]
+        conn = {"2.4": {"attempts": 64, "failed": 7, "success": 89.0, "assoc": 100.0, "auth": 91.0, "dhcp": 89.0, "dns": 89.0},
+                "5": {"attempts": 118, "failed": 1, "success": 99.0, "assoc": 100.0, "auth": 99.0, "dhcp": 99.0, "dns": 99.0},
+                "all": {"attempts": 182, "failed": 8, "success": 95.6, "assoc": 100.0, "auth": 96.0, "dhcp": 95.6, "dns": 95.6}}
+        mac = {n: _mac(0x100 + i) for i, (n, *_r) in enumerate(WIRELESS)}
+        anomalies = []
+        for name, kind, times in (("iPhone", "USER_HIGH_TCP_LATENCY", 3), ("Fire TV", "USER_HIGH_DNS_LATENCY", 4),
+                                  ("Tesla", "USER_HIGH_TCP_PACKET_LOSS", 2), ("Ring Deurbel", "USER_SLEEPY_CLIENT", 5),
+                                  ("Sonos Keuken", "USER_POOR_STREAM_EFF", 1)):
+            anomalies += [{"type": kind, "mac": mac[name], "ts": now - 3600 * (k * 3 + 1)} for k in range(times)]
+        rnd = random.Random(3)
+        neighbors = []
+        # (kanaal, aantal, sterk): alleen bij AP Woonkamer staan de buren luid op kanaal 6
+        heard = {AP_WK: [(6, 6, True), (11, 1, False), (1, 2, False), (36, 2, False), (149, 1, False)],
+                 AP_BV: [(1, 3, False), (6, 2, False), (100, 2, False), (36, 1, False)],
+                 AP_KT: [(6, 3, False), (1, 1, False), (149, 1, False)], AP_SC: [(6, 1, False), (44, 1, False)]}
+        for ap, chans in heard.items():
+            for ch, n, strong in chans:
+                for k in range(n):
+                    band = "2.4" if ch <= 14 else "5"
+                    neighbors.append({"bssid": f"02:00:{ch:02x}:{k:02x}:{list(APS).index(ap):02x}:01", "ssid": rnd.choice(NEIGHBOR_SSIDS),
+                                      "ap_mac": ap, "band": band, "channel": ch, "width": 20 if band == "2.4" else 80,
+                                      "signal": rnd.randint(-70, -58) if strong else rnd.randint(-90, -78), "ubnt": False,
+                                      "age": 30, "security": "wpapsk"})
+        return {"wan_history": wan, "wifi_connectivity": conn, "anomalies": anomalies, "neighbors": neighbors}
+
+    def client_usage(self, period: str, now: int) -> list[dict]:
+        """Zoals stat/report/hourly.user en daily.user: verkeer per apparaat (tx = download, rx = upload)."""
+        rnd = random.Random(17 if period == "day" else 18)
+        heavy = {"TV Woonkamer": (9e9, 0.02), "Apple TV Boven": (4e9, 0.02), "PS5": (6e9, 0.05), "MacBook Pro": (3e9, 0.3),
+                 "NAS Synology": (1.5e9, 2.5), "Camera Voordeur": (0.2e9, 12), "Camera Oprit": (0.2e9, 10),
+                 "Kantoor-PC": (2e9, 0.2), "iPhone": (1.2e9, 0.15), "Galaxy S24": (0.9e9, 0.15), "Laptop Werk": (1.5e9, 0.4)}
+        rows = []
+        step, n = (86400, 35) if period == "day" else (3600, 48)
+        t0 = now - now % step
+        allc = [(n_, _mac(0x100 + i)) for i, (n_, *_r) in enumerate(WIRELESS)] + [(n_, _mac(0x200 + i)) for i, (n_, *_r) in enumerate(WIRED)]
+        for k in range(n, -1, -1):
+            ts = t0 - k * step
+            for name, mac in allc:
+                base, ratio = heavy.get(name, (0.05e9, 0.2))
+                down = base * rnd.lognormvariate(0, 0.5) * (step / 86400) * (1.4 if period == "hour" and 18 <= time.localtime(ts).tm_hour < 23 else 1)
+                rows.append({"time": ts * 1000, "user": mac, "tx_bytes": down, "rx_bytes": down * ratio * rnd.uniform(0.6, 1.4)})
+        return rows
+
+    def dpi(self) -> list[dict]:
+        """Zoals stat/stadpi by_cat (alleen met 'Traffic Identification' aan)."""
+        idx = {n: _mac(0x200 + i) for i, (n, *_r) in enumerate(WIRED)} | {n: _mac(0x100 + i) for i, (n, *_r) in enumerate(WIRELESS)}
+        cats = {"TV Woonkamer": {4: 8.1e9, 13: 0.4e9}, "PS5": {8: 5.2e9, 4: 0.9e9, 14: 0.3e9}, "MacBook Pro": {13: 1.1e9, 5: 0.8e9, 4: 0.6e9, 14: 0.4e9},
+                "iPhone": {24: 0.5e9, 4: 0.4e9, 0: 0.1e9, 13: 0.2e9}, "Apple TV Boven": {4: 3.6e9}}
+        return [{"mac": idx[n], "by_cat": [{"cat": c, "rx_bytes": b, "tx_bytes": b * 0.04} for c, b in v.items()]} for n, v in cats.items()]
 
     def snapshot(self, dt: float) -> tuple[list, list, list]:
         self.advance(dt)

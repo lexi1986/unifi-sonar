@@ -26,6 +26,7 @@ class EmptyDB:
     def client_ap_stats(self, mac, since): return getattr(self, "ap_stats", {}).get(mac, {"aps": [], "switches": 0})
     def ips_ignores(self): return getattr(self, "ignores", [])
     def speedtests(self, since): return getattr(self, "tests", [])
+    def outages(self, since): return getattr(self, "outs", [])
     def q(self, *a): return [{"n": 0}]
 
 

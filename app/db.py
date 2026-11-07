@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS usage (period TEXT, ts INT, rx REAL, tx REAL, PRIMARY
 CREATE TABLE IF NOT EXISTS pauses (mac TEXT PRIMARY KEY, until INT, created INT, name TEXT);
 CREATE TABLE IF NOT EXISTS known_clients (mac TEXT PRIMARY KEY, first_seen INT, name TEXT, hostname TEXT,
     private INT, approved INT, rotated_from TEXT);
+CREATE TABLE IF NOT EXISTS wan_outages (id TEXT PRIMARY KEY, ts INT, seconds INT, wan TEXT);
+CREATE TABLE IF NOT EXISTS client_usage (period TEXT, ts INT, mac TEXT, down REAL, up REAL, PRIMARY KEY (period, ts, mac));
+CREATE TABLE IF NOT EXISTS schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, macs TEXT, days TEXT,
+    start TEXT, stop TEXT, enabled INT);
+CREATE TABLE IF NOT EXISTS selftests (ts INT, mac TEXT, name TEXT, room TEXT, ap TEXT, band TEXT, signal REAL,
+    down REAL, up REAL, ping REAL);
 CREATE INDEX IF NOT EXISTS ix_ips ON ips_events(ts);
 CREATE INDEX IF NOT EXISTS ix_dev ON device_samples(mac, ts);
 CREATE INDEX IF NOT EXISTS ix_radio ON radio_samples(mac, ts);
@@ -137,6 +143,8 @@ class DB:
             for t in TS_TABLES:
                 self.conn.execute(f"DELETE FROM {t} WHERE ts < ?", (before_ts,))
             self.conn.execute("DELETE FROM issues WHERE resolved_at IS NOT NULL AND resolved_at < ?", (before_ts,))
+            self.conn.execute("DELETE FROM client_usage WHERE period='hour' AND ts < ?", (before_ts,))
+            self.conn.execute("DELETE FROM client_usage WHERE period='day' AND ts < ?", (before_ts - 400 * 86400,))
 
     # ------------------------------------------------------------- negeren
     def mute(self, key: str, until: int | None, created: int, title) -> None:
@@ -286,6 +294,61 @@ class DB:
 
     def usage(self, period: str, since: int) -> list[dict]:
         return [dict(r) for r in self.q("SELECT ts, rx, tx FROM usage WHERE period=? AND ts>=? ORDER BY ts", (period, since))]
+
+    # ------------------------------------------------------------- internetstoringen
+    def store_outages(self, rows: list[dict]) -> int:
+        """Storingen uit UniFi bewaren (UniFi zelf houdt ze 90 dagen); geeft het aantal nieuwe terug."""
+        with self.lock, self.conn:
+            before = self.conn.total_changes
+            self.conn.executemany("INSERT OR IGNORE INTO wan_outages VALUES (?,?,?,?)",
+                                  [(r["id"], r["ts"], r["seconds"], r.get("wan") or "WAN") for r in rows])
+            return self.conn.total_changes - before
+
+    def outages(self, since: int) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM wan_outages WHERE ts + seconds >= ? ORDER BY ts DESC", (since,))]
+
+    # ------------------------------------------------------------- verbruik per apparaat
+    def store_client_usage(self, period: str, rows: list[dict]) -> None:
+        with self.lock, self.conn:
+            self.conn.executemany("INSERT OR REPLACE INTO client_usage VALUES (?,?,?,?,?)",
+                                  [(period, r["ts"], r["mac"], r["down"], r["up"]) for r in rows])
+
+    def client_usage_totals(self, period: str, since: int, until: int | None = None) -> dict[str, dict]:
+        """Per apparaat het totaal over [since, until)."""
+        rows = self.q("SELECT mac, SUM(down) down, SUM(up) up FROM client_usage WHERE period=? AND ts>=? AND ts<? GROUP BY mac",
+                      (period, since, until or 2 ** 40))
+        return {r["mac"]: {"down": r["down"] or 0, "up": r["up"] or 0} for r in rows}
+
+    def client_usage_series(self, mac: str, period: str, since: int) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT ts, down, up FROM client_usage WHERE period=? AND mac=? AND ts>=? ORDER BY ts",
+                                        (period, mac, since))]
+
+    # ------------------------------------------------------------- vaste pauzetijden
+    def schedules(self) -> list[dict]:
+        return [{**dict(r), "macs": json.loads(r["macs"] or "[]"), "days": json.loads(r["days"] or "[]"), "enabled": bool(r["enabled"])}
+                for r in self.q("SELECT * FROM schedules ORDER BY id")]
+
+    def save_schedule(self, s: dict) -> int:
+        vals = (s["name"], json.dumps(s["macs"]), json.dumps(s["days"]), s["start"], s["stop"], int(s["enabled"]))
+        with self.lock, self.conn:
+            if s.get("id"):
+                self.conn.execute("UPDATE schedules SET name=?, macs=?, days=?, start=?, stop=?, enabled=? WHERE id=?", (*vals, s["id"]))
+                return s["id"]
+            return self.conn.execute("INSERT INTO schedules (name, macs, days, start, stop, enabled) VALUES (?,?,?,?,?,?)", vals).lastrowid
+
+    def delete_schedule(self, sid: int) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM schedules WHERE id=?", (sid,))
+
+    # ------------------------------------------------------------- wifi-metingen vanaf een apparaat
+    def add_selftest(self, r: dict) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("INSERT INTO selftests VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              (r["ts"], r.get("mac"), r.get("name"), r.get("room"), r.get("ap"), r.get("band"), r.get("signal"),
+                               r.get("down"), r.get("up"), r.get("ping")))
+
+    def selftests(self, limit: int = 100) -> list[dict]:
+        return [dict(r) for r in self.q("SELECT * FROM selftests ORDER BY ts DESC LIMIT ?", (limit,))]
 
     def client_roams_since(self, mac: str, since: int) -> list[dict]:
         return [{**dict(r), "message": i18n.pick(r["message"])} for r in self.q(

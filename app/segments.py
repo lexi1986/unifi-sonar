@@ -132,7 +132,43 @@ def build(networks: list[dict] | None, zones: list[dict] | None, policies: list[
             z = zone_by_id.get(n.get("firewall_zone_id")) or net_zone.get(n.get("_id"))
             vpn.append({"id": n.get("_id"), "name": n.get("name") or "VPN", "subnet": n.get("ip_subnet"), "kind": "vpn",
                         "zone_id": (z or {}).get("_id"), "zone": (z or {}).get("name"), "enabled": bool(n.get("enabled", True))})
-    return {"segments": segs, "vpn": vpn, "matrix": matrix, "zones_available": matrix is not None}
+    return {"segments": segs, "vpn": vpn, "matrix": matrix, "zones_available": matrix is not None,
+            "audit": audit(zones, policies, segs) if matrix else []}
+
+
+def audit(zones: list[dict] | None, policies: list[dict] | None, segs: list[dict]) -> list[dict]:
+    """Firewall-controle op je eigen regels:
+    * 'shadowed': een regel die nooit aan de beurt komt, omdat een eerdere regel voor hetzelfde zonepaar al alles afvangt;
+    * 'opens': een toestaan-regel die een apart netwerk (IoT, gasten) onbeperkt bij je hoofdnetwerk laat;
+    * 'exposed': een toestaan-regel van internet naar binnen zonder beperking op adres of poort."""
+    zname = {z.get("_id"): z.get("name") or "?" for z in zones or []}
+    zkey = {z.get("_id"): z.get("zone_key") for z in zones or []}
+    internal = {z.get("_id") for z in zones or [] if z.get("zone_key") == "internal"}
+    apart = {s["zone_id"] for s in segs if s["kind"] in ("iot", "other", "guest") and s.get("zone_id") and s["zone_id"] not in internal}
+    custom = [p for p in policies or [] if not p.get("predefined") and p.get("connection_state_type") != "RESPOND_ONLY"]
+    pairs: dict[tuple, list[dict]] = {}
+    for p in sorted(custom, key=lambda p: p.get("index") or 0):
+        pairs.setdefault(((p.get("source") or {}).get("zone_id"), (p.get("destination") or {}).get("zone_id")), []).append(p)
+    out = []
+    for (src, dst), rules in pairs.items():
+        names = {"src": zname.get(src, "?"), "dst": zname.get(dst, "?")}
+        catch = None
+        for p in rules:
+            if not p.get("enabled", True):
+                continue
+            s = _policy_summary(p)
+            if catch:
+                out.append({"type": "shadowed", "rule": s["name"], "by": catch["name"], "by_action": catch["action"], **names})
+                continue
+            if s["full"]:
+                catch = s
+            if s["action"] != "allow" or s["port"] or s["ips"] or s["dst_nets"] or s["proto"]:
+                continue
+            if src in apart and dst in internal:
+                out.append({"type": "opens", "rule": s["name"], "src_ips": s["src_ips"], **names})
+            elif zkey.get(src) == "external" and (dst in internal or dst in apart):
+                out.append({"type": "exposed", "rule": s["name"], "src_ips": s["src_ips"], **names})
+    return out
 
 
 # ------------------------------------------------------------------ verkeersstromen tussen netwerken

@@ -3,6 +3,7 @@ events, slaat alles op en draait de issue-regels."""
 from __future__ import annotations
 
 import asyncio
+import httpx
 import random
 import logging
 import time
@@ -16,7 +17,8 @@ from . import changes, i18n
 from .i18n import L
 from .ha_mqtt import HAMqtt
 from .unifi_client import (UnifiClient, config_from_raw, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
-                           normalize_speedtests, wan_rates)
+                           normalize_speedtests, wan_rates, normalize_client_usage, normalize_dpi)
+from . import advisories, schedules
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +71,12 @@ class Collector:
         self._usage_checked = 0
         self.ha = HAMqtt(settings, self)
         self._flows_checked = 0
+        self.insights: dict = db.get_kv("insights") or {}   # storingen, verbindingspogingen, anomalieën, buren-wifi
+        self._ins_checked = 0
+        self._cu_checked = 0
+        self.dpi: list[dict] = []
+        self.advisories: dict = db.get_kv("advisories") or {}
+        self._adv_checked = 0
 
     async def _fetch(self, dt: float) -> dict:
         if self.mock:
@@ -220,6 +228,126 @@ class Collector:
                 self.sysinfo = await self.client.sysinfo() or self.sysinfo
             except Exception as e:  # noqa: BLE001
                 self.optional["sysinfo"] = str(e)
+
+    # ------------------------------------------------------------ inzichten
+    async def _collect_insights(self, ts: int) -> None:
+        """Elk kwartier: internetstoringen (90 dagen), verbindingspogingen, anomalieën en wifi in de buurt."""
+        if ts - self._ins_checked < 900:
+            return
+        self._ins_checked = ts
+        try:
+            data = self.mock.insights(ts) if self.mock else await self.client.insights(ts)
+        except Exception as e:  # noqa: BLE001 – optioneel
+            log.warning("Inzichten ophalen: %s", e)
+            self.optional["insights"] = str(e)
+            return
+        self.optional["insights"] = None if data is not None else L("alleen via de uitgebreide API", "only via the extended API")
+        if not data:
+            return
+        for w in data.get("wan_history") or []:
+            self.db.store_outages([{**o, "wan": w["wan"]} for o in w["outages"]])
+        self.insights = {**self.insights, **data, "ts": ts}
+        self.db.set_kv("insights", self.insights)
+
+    async def sync_client_usage(self, force: bool = False) -> None:
+        """Verkeer per apparaat (per uur en per dag) en, als UniFi dat meet, per categorie. Elk uur."""
+        now = int(time.time())
+        if not force and now - self._cu_checked < 3600:
+            return
+        self._cu_checked = now
+        try:
+            for period, back in (("hour", 48 * 3600), ("day", 35 * 86400)):
+                if self.mock:
+                    rows = normalize_client_usage(self.mock.client_usage(period, now))
+                else:
+                    if self.client.source not in ("legacy-key", "legacy-login"):
+                        return
+                    rows = await self.client.client_usage(period, now - back, now)
+                self.db.store_client_usage(period, rows)
+            self.dpi = normalize_dpi(self.mock.dpi()) if self.mock else await self.client.client_dpi()
+            self.optional["client_usage"] = None
+        except Exception as e:  # noqa: BLE001 – optioneel
+            log.warning("Verbruik per apparaat: %s", e)
+            self.optional["client_usage"] = str(e)
+
+    async def _collect_advisories(self, ts: int) -> None:
+        """Beveiligingsadviezen van Ubiquiti: elke 6 uur de openbare feed (demo: ingebouwde voorbeelden)."""
+        if (self.s.advisories is False) or ts - self._adv_checked < 6 * 3600:
+            return
+        self._adv_checked = ts
+        if self.mock:
+            self.advisories = {"items": advisories.demo(ts), "fetched": ts, "error": None}
+            return
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http:
+                items = await advisories.fetch(http)
+            self.advisories = {"items": items, "fetched": ts, "error": None}
+        except Exception as e:  # noqa: BLE001 – internet weg of feed veranderd: oude lijst houden
+            log.info("Beveiligingsadviezen: %s", e)
+            self.advisories = {**self.advisories, "error": str(e)[:200]}
+        self.db.set_kv("advisories", self.advisories)
+
+    def _track_wan_ip(self, snap: dict, ts: int) -> None:
+        """Publiek IP-adres gewijzigd? Op de tijdlijn, en een melding die een dag blijft staan."""
+        ip = (snap.get("wan") or {}).get("wan_ip") or ""
+        if not ip:
+            return
+        kv = self.db.get_kv("wan_ip") or {}
+        if kv.get("ip") and kv["ip"] != ip:
+            kv = {"ip": ip, "old": kv["ip"], "changed": ts}
+            self.db.add_events([{"ts": ts, "kind": "wan_ip", "entity_type": "wan", "entity_id": "wan",
+                                 "message": i18n.bi(f"Publiek IP-adres gewijzigd: {kv['old']} → {ip}",
+                                                    f"Public IP address changed: {kv['old']} → {ip}")}])
+            self.db.set_kv("wan_ip", kv)
+        elif not kv.get("ip"):
+            self.db.set_kv("wan_ip", {"ip": ip})
+        snap["wan_ip_change"] = kv if kv.get("changed") and ts - kv["changed"] < 86400 else None
+
+    async def _apply_schedules(self, ts: int) -> None:
+        """Vaste pauzetijden afdwingen. Wat een schema blokkeerde, laat het ook weer toe (een handmatige pauze niet)."""
+        sch = self.db.schedules()
+        want = schedules.wanted(sch, ts)
+        state = self.db.get_kv("sched_blocked") or {}
+        manual = {p["mac"] for p in self.db.pauses()}
+        names = {c["mac"]: c["name"] for c in (self.latest or {}).get("clients", [])}
+        changed = False
+        for mac, w in want.items():
+            if mac in state or mac in manual:
+                if mac in state and state[mac].get("until") != w["until"]:
+                    state[mac] = {**state[mac], "until": w["until"]}
+                    changed = True
+                continue
+            try:
+                await self.set_blocked(mac, True)
+            except Exception as e:  # noqa: BLE001 – volgende ronde opnieuw
+                log.warning("Schema '%s' voor %s: %s", w["name"], mac, e)
+                continue
+            state[mac] = {"schedule": w["name"], "until": w["until"], "name": names.get(mac, mac)}
+            until = time.strftime("%H:%M", time.localtime(w["until"]))
+            nm = state[mac]["name"]
+            self.db.add_events([{"ts": ts, "kind": "client_leave", "entity_type": "client", "entity_id": mac,
+                                 "message": i18n.bi(f"{nm}: gepauzeerd volgens '{w['name']}' tot {until}",
+                                                    f"{nm}: paused by '{w['name']}' until {until}")}])
+            changed = True
+        for mac in [m for m in state if m not in want]:
+            if mac not in manual:
+                try:
+                    await self.set_blocked(mac, False)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Schema opheffen voor %s: %s", mac, e)
+                    continue
+                nm = state[mac].get("name", mac)
+                self.db.add_events([{"ts": ts, "kind": "client_join", "entity_type": "client", "entity_id": mac,
+                                     "message": i18n.bi(f"{nm}: pauzetijd '{state[mac].get('schedule')}' voorbij",
+                                                        f"{nm}: pause time '{state[mac].get('schedule')}' over")}])
+            del state[mac]
+            changed = True
+        if changed:
+            self.db.set_kv("sched_blocked", state)
+
+    async def release_schedule(self, sid: int | None = None) -> None:
+        """Na wijzigen of verwijderen van een schema: meteen opnieuw toepassen."""
+        await self._apply_schedules(int(time.time()))
 
     # ------------------------------------------------------------ internet pauzeren
     async def set_blocked(self, mac: str, blocked: bool) -> None:
@@ -377,10 +505,16 @@ class Collector:
         await self._collect_ips(ts, dt or self.s.poll_seconds)
         await self._collect_flows(ts, dt or self.s.poll_seconds)
         await self._collect_config(ts)
+        await self._collect_insights(ts)
+        await self._apply_schedules(ts)
+        self._track_wan_ip(snap, ts)
         snap["config"] = self.config
+        snap["insights"] = self.insights_for_rules(snap)
         if not self.mock or ts >= time.time() - 120:   # demo: alleen bij echte metingen, niet tijdens het vullen
             await self.sync_speedtests()
             await self.sync_usage()
+        await self.sync_client_usage()       # zelf elk uur (wandklok), dus ook tijdens het vullen van de demo maar één keer
+        await self._collect_advisories(ts)
         # In beide talen, zodat wisselen van taal direct werkt en ook opgeloste meldingen meegaan.
         tr = i18n.both(lambda: rules.evaluate(snap, self.db, self.s.thresholds, ts))
         issues = i18n.merge_issues(tr["nl"], tr["en"])
@@ -392,6 +526,12 @@ class Collector:
         self.last_ok = ts
         self.last_error = None
         return snap
+
+    def insights_for_rules(self, snap: dict) -> dict:
+        si = self.sysinfo or {}
+        inv = advisories.inventory(snap.get("devices", []), si.get("network_version"))
+        items = (self.advisories or {}).get("items") or [] if self.s.advisories is not False else []
+        return {**self.insights, "advisories": advisories.match(items, inv)}
 
     async def language_changed(self) -> None:
         """Andere taal gekozen: Home Assistant krijgt de sensornamen opnieuw in die taal."""

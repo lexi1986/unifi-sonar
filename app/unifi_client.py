@@ -106,6 +106,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
             "mac": d.get("mac"),
             "name": d.get("name") or d.get("model") or d.get("mac"),
             "model": d.get("model_name") or d.get("model", ""),
+            "model_code": d.get("model", ""),
             "type": dtype,
             "state": DEVICE_STATE.get(d.get("state"), "unknown"),
             "version": d.get("version", ""),
@@ -229,7 +230,24 @@ def config_from_raw(raw: dict) -> dict:
     fw = raw.get("firewall")
     cfg["segments"] = segments.build(raw.get("networks"), raw.get("zones"),
                                      fw if raw.get("zones") is not None else None)
+    cfg["dns_servers"] = dns_servers(raw.get("networks"))
     return cfg
+
+
+def dns_servers(networks: list[dict] | None) -> list[str] | None:
+    """De DNS-servers die je via DHCP uitdeelt (bijvoorbeeld AdGuard of Pi-hole). Leeg = de gateway zelf.
+    None = onbekend (geen netwerkgegevens)."""
+    if networks is None:
+        return None
+    out = []
+    for n in networks:
+        if n.get("purpose") not in ("corporate", "guest") or not n.get("dhcpd_dns_enabled"):
+            continue
+        for i in range(1, 5):
+            ip = (n.get(f"dhcpd_dns_{i}") or "").strip()
+            if ip and ip not in out:
+                out.append(ip)
+    return out
 
 
 def normalize_vpn(networks: list[dict]) -> list[dict]:
@@ -353,6 +371,78 @@ def normalize_flow(f: dict) -> dict:
         "risk": f.get("risk"),
         "reason": _block_reason(f) if blocked else None,
     }
+
+
+BAND_OF = {"ng": "2.4", "na": "5", "6e": "6", "2g": "2.4", "5g": "5", "6g": "6"}
+
+
+def normalize_wan_history(agg: dict) -> list[dict]:
+    """Uit het dashboard van UniFi (aggregated-dashboard): per internetverbinding de beschikbaarheid, de storingen
+    en de gezondheid per tijdvak. UniFi zelf toont internetgebeurtenissen maar 24 uur; dit gaat 90 dagen terug."""
+    out = []
+    for w in ((agg or {}).get("wan_history") or {}).get("wan_history_details") or []:
+        out.append({
+            "wan": w.get("network_group") or "WAN", "isp": w.get("isp_name") or "", "uptime": w.get("uptime"),
+            "outages": [{"id": str(o.get("id") or o.get("timestamp")), "ts": int((o.get("timestamp") or 0) / 1000),
+                         "seconds": int(o.get("downtime_in_seconds") or 0)} for o in w.get("downtime_history") or []],
+            "health": [{"ts": int((h.get("timestamp") or 0) / 1000), "down": bool(h.get("wan_downtime")),
+                        "loss": bool(h.get("packet_loss")), "lat": bool(h.get("high_latency"))}
+                       for h in w.get("health_history") or [] if not h.get("not_reported")],
+        })
+    return out
+
+
+def normalize_wifi_connectivity(agg: dict) -> dict:
+    """Verbindingspogingen per band: hoeveel lukten, en in welke stap het misging (koppelen, inloggen, IP, DNS)."""
+    out = {}
+    for r in ((agg or {}).get("wifi_connectivity") or {}).get("radio_connectivity") or []:
+        a = r.get("attempts") or {}
+        band = "all" if r.get("radio_filter") == "all" else BAND_OF.get(r.get("radio_filter"), r.get("radio_filter"))
+        out[band] = {"attempts": int(a.get("total_attempts") or 0), "failed": int(a.get("failed_client_connections") or 0),
+                     "success": a.get("success_ratio"), "assoc": a.get("association_ratio"),
+                     "auth": a.get("authentication_ratio"), "dhcp": a.get("dhcp_ratio"), "dns": a.get("dns_ratio")}
+    return out
+
+
+def normalize_anomalies(rows: list[dict]) -> list[dict]:
+    """stat/anomalies: wat UniFi zelf opviel (hoge vertraging, slapende client…), één regel per keer."""
+    out = []
+    for r in rows or []:
+        for t in r.get("timestamps") or ([r.get("datetime")] if r.get("datetime") else []):
+            out.append({"type": r.get("anomaly") or "?", "mac": (r.get("mac") or "").lower(), "ts": int(t / 1000) if t > 1e11 else int(t)})
+    return out
+
+
+def normalize_neighbors(rows: list[dict]) -> list[dict]:
+    """stat/rogueap: wifi-netwerken in de buurt zoals je eigen AP's ze horen."""
+    out = []
+    for r in rows or []:
+        band = BAND_OF.get(r.get("band") or r.get("radio"))
+        if not band or not r.get("channel"):
+            continue
+        sig = r.get("signal") if r.get("signal") is not None else (r.get("rssi") - 95 if r.get("rssi") is not None else None)
+        out.append({"bssid": (r.get("bssid") or "").lower(), "ssid": r.get("essid") or "", "ap_mac": (r.get("ap_mac") or "").lower(),
+                    "band": band, "channel": int(r["channel"]), "width": int(r.get("bw") or 20), "signal": sig,
+                    "ubnt": bool(r.get("is_ubnt")), "age": r.get("age"), "security": r.get("security") or ""})
+    return out
+
+
+def normalize_client_usage(rows: list[dict]) -> list[dict]:
+    """stat/report/daily.user en hourly.user. Vanuit het netwerk gezien: tx = naar het apparaat (download),
+    rx = van het apparaat (upload). Het gaat om al het verkeer, dus ook binnen je eigen netwerk."""
+    return [{"ts": int(r["time"] / 1000), "mac": (r.get("user") or r.get("oid") or "").lower(),
+             "down": float(r.get("tx_bytes") or 0), "up": float(r.get("rx_bytes") or 0)}
+            for r in rows or [] if r.get("time") and (r.get("user") or r.get("oid"))]
+
+
+def normalize_dpi(rows: list[dict]) -> list[dict]:
+    """stat/stadpi (by_cat): verkeer per apparaat per categorie. Leeg als 'Traffic Identification' uit staat."""
+    out = []
+    for r in rows or []:
+        mac = (r.get("mac") or "").lower()
+        for c in r.get("by_cat") or []:
+            out.append({"mac": mac, "cat": c.get("cat"), "down": float(c.get("rx_bytes") or 0), "up": float(c.get("tx_bytes") or 0)})
+    return out
 
 
 def normalize_usage(rows: list[dict]) -> list[dict]:
@@ -625,6 +715,46 @@ class UnifiClient:
                                        "start": since_s * 1000, "end": until_s * 1000})
         r.raise_for_status()
         return normalize_usage(r.json().get("data", []))
+
+    # ----------------------------------------------------------- inzichten (alleen lezen)
+    async def insights(self, now: int) -> dict | None:
+        """Internetstoringen (90 dagen), verbindingspogingen per band, UniFi-anomalieën en wifi in de buurt.
+        None = niet beschikbaar met deze bron. Elk onderdeel mag apart mislukken."""
+        if self.source not in ("legacy-key", "legacy-login"):
+            return None
+        h, out = self._write_headers(), {}
+        r = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/aggregated-dashboard?historySeconds={90 * 86400}",
+                                headers=h)
+        if r.status_code == 200:
+            agg = r.json()
+            out["wan_history"] = normalize_wan_history(agg)
+            r24 = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/aggregated-dashboard?historySeconds=86400",
+                                      headers=h)
+            out["wifi_connectivity"] = normalize_wifi_connectivity(r24.json() if r24.status_code == 200 else {})
+        for key, path, norm in (("anomalies", "stat/anomalies", normalize_anomalies),
+                                ("neighbors", "stat/rogueap", normalize_neighbors)):
+            try:
+                out[key] = norm(await self._legacy(path, self.source == "legacy-key"))
+            except Exception as e:  # noqa: BLE001 – optioneel
+                log.info("%s: %s", path, e)
+        return out
+
+    async def client_usage(self, period: str, since_s: int, until_s: int) -> list[dict]:
+        """Verkeer per apparaat per uur of per dag."""
+        self._legacy_only()
+        report = {"hour": "hourly", "day": "daily"}[period]
+        r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/stat/report/{report}.user",
+                                 headers=self._write_headers(),
+                                 json={"attrs": ["rx_bytes", "tx_bytes", "time", "user"], "start": since_s * 1000, "end": until_s * 1000})
+        r.raise_for_status()
+        return normalize_client_usage(r.json().get("data", []))
+
+    async def client_dpi(self) -> list[dict]:
+        self._legacy_only()
+        r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/stat/stadpi", headers=self._write_headers(),
+                                 json={"type": "by_cat"})
+        r.raise_for_status()
+        return normalize_dpi(r.json().get("data", []))
 
     async def fetch_ips(self, since_ms: int, until_ms: int) -> list[dict] | None:
         """Door de IPS geblokkeerde flows. None = niet beschikbaar met deze bron."""

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-from . import segments
+from . import rules_extra, segments
 from .config import Thresholds
 from .i18n import L
 
@@ -421,6 +421,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
         _vpn_checks(out, cfg, db, ts)
     if cfg.get("segments"):
         _segment_checks(out, snap, cfg["segments"], name)
+    rules_extra.run_all(out, snap, db, ts, _issue)
     out.sort(key=lambda i: (SEVERITY_ORDER[i["severity"]], i["category"], i["title"]))
     return out
 

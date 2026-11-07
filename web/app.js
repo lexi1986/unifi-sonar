@@ -365,7 +365,7 @@
         <div class="card"><div class="card-head"><h2 style="margin:0">${L("Wat vraagt aandacht", "Needs attention")}</h2><a href="#/issues" class="linkbtn">${L("Alle issues", "All issues")}</a></div><div class="issue-list" id="ov-issues"></div></div>
         <div class="card"><div class="card-head"><h2 style="margin:0">${L("Netwerk", "Network")}</h2><span class="muted" id="ov-topo-sub"></span></div><div class="topo" id="ov-topo"></div></div>
       </section>
-      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Wifi per access point", "Wifi per access point")}</h2><span class="muted">${L(`gemiddelden over 15 minuten · drempel bezetting ${nf(state.th.radio_cu_warn)}%`, `15-minute averages · utilization threshold ${nf(state.th.radio_cu_warn)}%`)}</span></div><div class="table-wrap" style="border:0;background:none" id="ov-aps"></div></section>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Wifi per access point", "Wifi per access point")}</h2><span class="muted">${L(`gemiddelden over 15 minuten · drempel bezetting ${nf(state.th.radio_cu_warn)}%`, `15-minute averages · utilization threshold ${nf(state.th.radio_cu_warn)}%`)}</span></div><div class="table-wrap" style="border:0;background:none" id="ov-aps"></div><p class="help" id="ov-conn" style="margin:10px 0 0"></p></section>
       <section class="grid cols-2">
         <div class="card"><div class="card-head"><h3>${L("Internetlatency", "Internet latency")}</h3><span class="muted" id="ov-lat-sub"></span></div><div id="ch-lat"></div></div>
         <div class="card"><div class="card-head"><h3>${L("Gemiddelde wifi-ervaring", "Average wifi experience")}</h3><span class="muted">${L("satisfaction-score 0–100", "satisfaction score 0–100")}</span></div><div id="ch-sat"></div></div>
@@ -477,8 +477,17 @@
         <td>${d.issue_count || d.client_issue_count ? badge(worstSev(d.mac, true), plural(d.issue_count + d.client_issue_count, L("melding", "issue"), L("meldingen", "issues"))) : badge("ok", "OK", "check")}</td></tr>`).join("")}
       </tbody></table>`;
     $("#ov-aps").querySelectorAll("tr[data-open]").forEach((n) => (n.onkeydown = (e) => e.key === "Enter" && openDrawer("device", n.dataset.id, n)));
-    loadOverviewCharts();
+    loadOverviewCharts(); loadConnectivity();
   };
+  async function loadConnectivity() {   // verbindingspogingen van het afgelopen etmaal, per band
+    let d;
+    try { d = await api("/api/wifi/connectivity"); } catch (e) { return; }
+    const el = $("#ov-conn"), a = d.bands.all; if (!el) return;
+    if (!a || !a.attempts) { el.textContent = ""; return; }
+    const per = ["2.4", "5", "6"].filter((b) => d.bands[b]?.attempts).map((b) => `${b} GHz ${nf(d.bands[b].success, 0)}%`).join(" · ");
+    el.innerHTML = `${icon(a.success < 90 ? "alert" : "check", a.success < 90 ? "t-warning" : "t-ok")} ${L(`Verbinden lukte in het afgelopen etmaal ${nf(a.success, 1)}% van de ${a.attempts} keer${a.failed ? ` (${a.failed} mislukt)` : ""}`,
+      `Connecting succeeded ${nf(a.success, 1)}% of ${a.attempts} times in the past day${a.failed ? ` (${a.failed} failed)` : ""}`)} · ${per}`;
+  }
   async function loadOverviewCharts() {
     const d = await api(`/api/history/overview?hours=${state.hours}`);
     const lat = d.wan.map((p) => [p.t, p.latency_ms]);
@@ -677,6 +686,7 @@
     mount("clients", `
       <div class="page-head"><div><h1>Clients</h1><p class="subtitle" id="cl-sub"></p></div></div>
       <section class="card paused-card" id="cl-paused" hidden></section>
+      <section class="card" id="cl-sched" style="margin-bottom:16px"></section>
       <div class="toolbar">
         <label class="search"><span class="sr-only">${L("Zoeken", "Search")}</span>${icon("search")}<input class="input" id="cl-q" placeholder="${L("Zoek op naam, IP, MAC of fabrikant", "Search by name, IP, MAC or vendor")}" value="${esc(state.cq)}"></label>
         <div class="chips" role="group" aria-label="Type" id="cl-kind">${[["all", L("Alle", "All")], ["wifi", "Wifi"], ["wired", L("Bedraad", "Wired")], ["issues", L("Met problemen", "With problems")]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ckind === v}">${l}</button>`).join("")}</div>
@@ -699,16 +709,95 @@
     $("#cl-table").addEventListener("keydown", (e) => { const r = e.target.closest("tr[data-id]"); if (r && e.key === "Enter") openDrawer("client", r.dataset.id, r); });
   }
   async function loadPauses() {
-    let d;
-    try { d = await api("/api/pauses"); } catch (e) { return; }
+    let d, s;
+    try { [d, s] = await Promise.all([api("/api/pauses"), api("/api/schedules")]); } catch (e) { return; }
     const el = $("#cl-paused");
     if (!el || current !== "clients") return;
-    el.hidden = !d.pauses.length;
+    sched.data = s;
+    if (!sched.edit) renderSchedules();
+    const bySched = Object.entries(s.paused || {}).filter(([m]) => !d.pauses.some((p) => p.mac === m));
+    el.hidden = !d.pauses.length && !bySched.length;
     el.innerHTML = `<div class="card-head"><h2 style="margin:0">${icon("power")}${L("Gepauzeerd", "Paused")}</h2><span class="muted">${L("geen internet of netwerk tot de tijd om is", "no internet or network until the time is up")}</span></div>
       ${d.pauses.map((p) => `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(p.name)}</div>
         <div class="cell-sub">${p.until ? L(`tot ${stamp(p.until)} · nog ${dur(p.until - d.now)}`, `until ${stamp(p.until)} · ${dur(p.until - d.now)} left`) : L("tot je hervat", "until you resume")} · ${L("sinds", "since")} ${stamp(p.created)}</div></div>
-        <button class="btn small" data-resume="${esc(p.mac)}">${icon("check")}${L("Hervatten", "Resume")}</button></div>`).join("")}`;
+        <button class="btn small" data-resume="${esc(p.mac)}">${icon("check")}${L("Hervatten", "Resume")}</button></div>`).join("")}
+      ${bySched.map(([m, a]) => `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(a.name)}</div>
+        <div class="cell-sub">${((sn) => L(`volgens '${sn}' tot ${stamp(a.until)}`, `by '${sn}' until ${stamp(a.until)}`))(esc(s.schedules.find((x) => x.id === a.id)?.name || ""))}</div></div>
+        <span class="badge">${icon("clock")}${L("Schema", "Schedule")}</span></div>`).join("")}`;
   }
+  // ---- vaste pauzetijden
+  const sched = { data: null, edit: null, q: "" };
+  const dayNames = () => DAYS;
+  const schedDays = (days) => (days.length === 7 ? L("elke dag", "every day") : days.join() === "0,1,2,3,4" ? L("ma–vr", "Mon–Fri")
+    : days.join() === "5,6" ? L("weekend", "weekend") : days.map((d) => DAYS[d]).join(" "));
+  function renderSchedules() {
+    const el = $("#cl-sched"); if (!el || !sched.data) return;
+    const e = sched.edit;
+    const head = `<div class="card-head"><h2 style="margin:0">${icon("clock")}${L("Vaste pauzetijden", "Fixed pause times")}</h2>
+      ${e ? "" : `<button class="btn small" data-sch="new">${L("Nieuw schema", "New schedule")}</button>`}</div>`;
+    if (!e) {
+      el.innerHTML = head + (sched.data.schedules.length ? sched.data.schedules.map((s) => `<div class="rank-row sched-row">
+          <div class="rank-main"><div class="rank-name">${esc(s.name)} ${s.until ? badge("warning", L(`actief tot ${stamp(s.until)}`, `active until ${stamp(s.until)}`)) : ""}${s.enabled ? "" : ` ${badge("", L("uit", "off"))}`}</div>
+          <div class="cell-sub">${schedDays(s.days)} · ${esc(s.start)}–${esc(s.stop)} · ${esc(s.devices.map((x) => x.name).slice(0, 4).join(", "))}${s.devices.length > 4 ? ` +${s.devices.length - 4}` : ""}</div></div>
+          <button class="linkbtn" data-sch="edit" data-id="${s.id}">${L("Wijzigen", "Edit")}</button></div>`).join("")
+        : `<p class="muted" style="margin:0">${L("Bijvoorbeeld: de apparaten van de kinderen op schooldagen van 21:00 tot 07:00 zonder internet. Sonar blokkeert ze dan in UniFi en laat ze daarna vanzelf weer toe.", "For example: the kids' devices without internet on school nights from 21:00 to 07:00. Sonar blocks them in UniFi and lets them back in afterwards.")}</p>`);
+      hydrateIcons(el);
+      return;
+    }
+    const q = sched.q.toLowerCase();
+    const all = [...state.snap.clients.map((c) => ({ mac: c.mac, name: c.name, sub: c.vendor || c.ip }))];
+    e.devices.forEach((x) => { if (!all.some((c) => c.mac === x.mac)) all.push({ mac: x.mac, name: x.name, sub: L("niet verbonden", "not connected") }); });
+    const list = all.filter((c) => !q || `${c.name} ${c.sub}`.toLowerCase().includes(q) || e.macs.includes(c.mac))
+      .sort((a, b) => (e.macs.includes(b.mac) - e.macs.includes(a.mac)) || a.name.localeCompare(b.name));
+    el.innerHTML = head + `<form class="sched-form" onsubmit="return false">
+      <div class="form-grid"><div class="field"><label for="sch-name">${L("Naam", "Name")}</label><input class="input" id="sch-name" maxlength="60" value="${esc(e.name)}" placeholder="${L("bijv. Kinderen", "e.g. Kids")}"></div>
+        <div class="field sched-times"><label>${L("Tijd", "Time")}</label><div><input class="input" type="time" id="sch-start" value="${esc(e.start)}"> – <input class="input" type="time" id="sch-stop" value="${esc(e.stop)}"></div></div></div>
+      <div class="field"><label>${L("Dagen", "Days")}</label><div class="chips" id="sch-days">${dayNames().map((n, i) => `<button type="button" class="chip" data-day="${i}" aria-pressed="${e.days.includes(i)}">${n}</button>`).join("")}</div>
+        <div class="help">${L("Een schema over middernacht hoort bij de dag waarop het begint.", "A schedule past midnight belongs to the day it starts.")}</div></div>
+      <div class="field"><label for="sch-q">${L("Apparaten", "Devices")} <span class="muted">(${e.macs.length})</span></label>
+        <input class="input" id="sch-q" placeholder="${L("Zoek een apparaat", "Search a device")}" value="${esc(sched.q)}">
+        <div class="sched-devs">${list.slice(0, 60).map((c) => `<label class="check"><input type="checkbox" data-mac="${esc(c.mac)}" ${e.macs.includes(c.mac) ? "checked" : ""}> ${esc(c.name)} <span class="muted">${esc(c.sub || "")}</span></label>`).join("")}</div></div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="sch-on" ${e.enabled ? "checked" : ""}> ${L("Schema aan", "Schedule on")}</label>
+      ${sched.err ? `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(sched.err)}</span></div>` : ""}
+      <div class="wiz-actions"><button type="button" class="btn primary" data-sch="save">${L("Opslaan", "Save")}</button><button type="button" class="btn ghost" data-sch="cancel">${L("Annuleren", "Cancel")}</button>
+        ${e.id ? `<button type="button" class="btn ghost" data-sch="delete">${L("Verwijderen", "Delete")}</button>` : ""}</div></form>`;
+    hydrateIcons(el);
+  }
+  function readSchedule() {
+    const e = sched.edit; if (!e) return;
+    e.name = $("#sch-name").value; e.start = $("#sch-start").value; e.stop = $("#sch-stop").value; e.enabled = $("#sch-on").checked;
+  }
+  $("#view").addEventListener("input", (ev) => { if (ev.target.id === "sch-q") { readSchedule(); sched.q = ev.target.value; renderSchedules(); const q = $("#sch-q"); q.focus(); q.setSelectionRange(q.value.length, q.value.length); } });
+  $("#view").addEventListener("change", (ev) => {
+    const c = ev.target.closest("[data-mac]"); if (!c || !sched.edit) return;
+    const m = c.dataset.mac, e = sched.edit;
+    e.macs = c.checked ? [...new Set([...e.macs, m])] : e.macs.filter((x) => x !== m);
+    if (c.checked && !e.devices.some((x) => x.mac === m)) e.devices.push({ mac: m, name: cliByMac()[m]?.name || m });
+    const lbl = $("#cl-sched .field label[for=sch-q] .muted"); if (lbl) lbl.textContent = `(${e.macs.length})`;
+  });
+  $("#view").addEventListener("click", async (ev) => {
+    const d = ev.target.closest("[data-day]");
+    if (d && sched.edit) { const i = +d.dataset.day, e = sched.edit; e.days = e.days.includes(i) ? e.days.filter((x) => x !== i) : [...e.days, i].sort(); d.setAttribute("aria-pressed", e.days.includes(i)); return; }
+    const b = ev.target.closest("[data-sch]"); if (!b) return;
+    const act = b.dataset.sch;
+    sched.err = null;
+    if (act === "new") { sched.edit = { name: "", start: "21:00", stop: "07:00", days: [0, 1, 2, 3, 4], macs: [], devices: [], enabled: true }; sched.q = ""; }
+    if (act === "edit") { const s = sched.data.schedules.find((x) => x.id === +b.dataset.id); sched.edit = JSON.parse(JSON.stringify(s)); sched.q = ""; }
+    if (act === "cancel") sched.edit = null;
+    if (act === "save" || act === "delete") {
+      readSchedule();
+      try {
+        if (act === "save") await post("/api/schedules/save", { id: sched.edit.id || null, name: sched.edit.name, macs: sched.edit.macs, days: sched.edit.days, start: sched.edit.start, stop: sched.edit.stop, enabled: sched.edit.enabled });
+        else if (confirm(L("Dit schema verwijderen?", "Delete this schedule?"))) await post("/api/schedules/delete", { id: sched.edit.id });
+        else return;
+        sched.edit = null;
+        await loadPauses();
+        await refresh();
+      } catch (err) { sched.err = err.message; }
+    }
+    renderSchedules();
+  });
+
   UPDATERS.clients = function () {
     loadPauses();
     const dm = devByMac();
@@ -747,7 +836,7 @@
 
   // ------------------------------------------------------------------ internet
   const net = { hours: store.get("net.hours", 24), live: [], timer: null, data: null, last: null, wasRunning: false,
-                usage: null, usagePeriod: store.get("net.usage", "day") };
+                usage: null, usagePeriod: store.get("net.usage", "day"), cuPeriod: store.get("net.cu", "day"), self: { busy: false } };
   const mb = (bps) => (bps == null ? null : bps / 1e6);
   const mbTxt = (v) => (v == null ? "–" : nf(v, v < 10 ? 1 : 0));
   const dateTxt = (t, withTime) => new Date(t * 1000).toLocaleString(LOC, withTime ? { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short" });
@@ -767,6 +856,13 @@
           <div class="seg" role="group" aria-label="${L("Per dag of per maand", "Per day or per month")}" id="net-usage-seg">${[["day", L("Per dag", "Per day")], ["month", L("Per maand", "Per month")]].map(([k, l]) => `<button data-p="${k}" aria-pressed="${net.usagePeriod === k}">${l}</button>`).join("")}</div></div>
         <div class="usage-kpis" id="net-usage-kpis"></div><div id="net-usage-chart"></div>
         <p class="help" id="net-usage-note" style="margin:8px 0 0"></p></section>
+      <section class="card" style="margin-bottom:16px" id="net-cu"><div class="card-head"><h3>${L("Verbruik per apparaat", "Usage per device")}</h3>
+          <div class="seg" role="group" aria-label="${L("Periode", "Period")}" id="net-cu-seg">${[["day", L("Vandaag", "Today")], ["week", L("7 dagen", "7 days")], ["month", L("30 dagen", "30 days")]].map(([k, l]) => `<button data-p="${k}" aria-pressed="${net.cuPeriod === k}">${l}</button>`).join("")}</div></div>
+        <div class="rank" id="net-cu-list"></div><p class="help" id="net-cu-note" style="margin:8px 0 0"></p></section>
+      <section class="grid cols-2" style="margin-bottom:16px">
+        <div class="card" id="net-out"><div class="card-head"><h3>${L("Storingen en beschikbaarheid", "Outages and availability")}</h3><span class="muted" id="net-out-sub"></span></div><div id="net-out-body"></div></div>
+        <div class="card" id="net-self" aria-live="polite"><div class="card-head"><h3>${L("Wifi-snelheid op deze plek", "Wifi speed at this spot")}</h3></div><div id="net-self-body"></div></div>
+      </section>
       <section class="card"><div class="card-head"><h3>${L("Speedtests", "Speed tests")}</h3><span class="muted" id="net-st-sub">${L("afgelopen 90 dagen", "past 90 days")}</span></div><div id="net-st-chart"></div>
         <div class="table-wrap" style="border:0;margin-top:12px" id="net-st-table"></div></section>`);
     $("#net-range").addEventListener("click", (e) => {
@@ -776,6 +872,14 @@
       loadInternet();
     });
     $("#net-test").addEventListener("click", (e) => { if (e.target.closest("[data-st=start]")) startSpeedtest(); });
+    $("#net-cu-seg").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-p]"); if (!b) return;
+      net.cuPeriod = b.dataset.p; store.set("net.cu", net.cuPeriod);
+      $("#net-cu-seg").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+      loadClientUsage();
+    });
+    $("#net-cu-list").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("client", n.dataset.id, n); });
+    $("#net-self").addEventListener("click", (e) => { if (e.target.closest("[data-self=start]")) runSelftest(); });
     $("#net-usage-seg").addEventListener("click", (e) => {
       const b = e.target.closest("[data-p]"); if (!b) return;
       net.usagePeriod = b.dataset.p; store.set("net.usage", net.usagePeriod);
@@ -814,7 +918,106 @@
     $("#net-st-table").innerHTML = st.length ? `<table><thead><tr><th>${L("Wanneer", "When")}</th><th class="r">Download</th><th class="r">Upload</th><th class="r">Ping</th><th>Server</th></tr></thead><tbody>
       ${st.slice(-10).reverse().map((r) => `<tr style="cursor:default"><td class="num">${dateTxt(r.ts, true)}</td><td class="r num">${mbTxt(r.down)} Mbit/s</td><td class="r num">${mbTxt(r.up)} Mbit/s</td><td class="r num">${r.latency == null ? "–" : nf(r.latency) + " ms"}</td><td class="muted">${esc(r.server || "–")}</td></tr>`).join("")}</tbody></table>`
       : `<div class="empty">${L("Nog geen speedtests. Start er hierboven een.", "No speed tests yet. Start one above.")}</div>`;
-    renderNetKpis(); renderTest(); loadUsage();
+    renderNetKpis(); renderTest(); loadUsage(); loadClientUsage(); loadOutages(); if (!net.self.busy) loadSelftests();
+  }
+  // ---- verbruik per apparaat
+  async function loadClientUsage() {
+    let d;
+    try { d = await api(`/api/usage/clients?period=${net.cuPeriod}`); } catch (e) { return; }
+    const el = $("#net-cu-list"); if (!el) return;
+    const max = Math.max(1, ...d.rows.map((r) => r.total));
+    el.innerHTML = d.rows.length ? d.rows.slice(0, 15).map((r) => `<div class="rank-row cu-row"><div class="rank-main">
+        <div class="rank-name">${cliByMac()[r.mac] ? `<button class="linkbtn plain" data-open="client" data-id="${esc(r.mac)}">${esc(r.name)}</button>` : esc(r.name)}</div>
+        <div class="cell-sub">↓ ${gb(r.down)} · ↑ ${gb(r.up)}${r.cats.length ? ` · ${r.cats.map((c) => esc(c.cat)).join(", ")}` : ""}</div></div>
+        <div class="rank-bar">${meter(100 * r.total / max)}</div><span class="num rank-n">${gb(r.total)}</span></div>`).join("")
+      : `<div class="empty">${d.error ? `${L("Ophalen lukte niet", "Fetching failed")}: ${esc(d.error)}` : L("Nog geen gegevens; UniFi levert ze per uur.", "No data yet; UniFi delivers it hourly.")}</div>`;
+    $("#net-cu-note").textContent = d.rows.length ? L(`${d.devices} apparaten. Het gaat om al het verkeer, dus ook binnen je netwerk (bijvoorbeeld camera's naar je NAS).${d.dpi ? "" : " Per categorie (video, games…) ziet Sonar het pas als 'Traffic Identification' in UniFi aanstaat."}`,
+      `${d.devices} devices. This is all traffic, including within your network (for example cameras to your NAS).${d.dpi ? "" : " Per category (video, games…) is only shown once 'Traffic Identification' is on in UniFi."}`) : "";
+  }
+  // ---- internetstoringen
+  async function loadOutages() {
+    let d;
+    try { d = await api("/api/outages"); } catch (e) { return; }
+    const el = $("#net-out-body"); if (!el) return;
+    if (!d.available) {
+      el.innerHTML = `<p class="muted">${d.error ? esc(d.error) : L("Storingen zijn alleen te zien via de uitgebreide UniFi-API.", "Outages are only available via the extended UniFi API.")}</p>`;
+      return;
+    }
+    const pct = (v) => `${nf(v, v >= 99.995 ? 0 : v >= 99.9 ? 3 : 2)}%`;
+    const tile = (k, v) => `<div class="usage-kpi"><div class="k">${k}</div><div class="v ${v < 99.5 ? "t-warning" : ""}">${pct(v)}</div></div>`;
+    $("#net-out-sub").textContent = d.isp || "";
+    const fmtDur = (s) => (s < 90 ? `${s} s` : dur(s));
+    el.innerHTML = `<div class="usage-kpis">${tile(L("24 uur", "24 hours"), d.uptime.day)}${tile(L("7 dagen", "7 days"), d.uptime.week)}${tile(L("30 dagen", "30 days"), d.uptime.month)}${tile(L("90 dagen", "90 days"), d.uptime.quarter)}</div>
+      <div class="out-months">${d.months.map((m) => `<div class="out-month" title="${esc(`${m.n} ${L("storingen", "outages")} · ${fmtDur(m.seconds)}`)}"><span>${new Date(m.ts * 1000).toLocaleDateString(LOC, { month: "short" })}</span>
+        <b class="num ${m.uptime < 99.5 ? "t-warning" : ""}">${pct(m.uptime)}</b><small class="muted">${m.n ? `${m.n}× · ${fmtDur(m.seconds)}` : L("geen", "none")}</small></div>`).join("")}</div>
+      ${d.outages.length ? `<div class="table-wrap" style="border:0;margin-top:10px"><table><thead><tr><th>${L("Begin", "Start")}</th><th class="r">${L("Duur", "Duration")}</th><th>${L("Verbinding", "Connection")}</th></tr></thead><tbody>
+        ${d.outages.slice(0, 12).map((o) => `<tr style="cursor:default"><td class="num" title="${esc(fullStamp(o.ts))}">${dateTxt(o.ts, true)}</td><td class="r num">${fmtDur(o.seconds)}</td><td class="muted">${esc(o.wan)}</td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="empty">${icon("check")}<div>${L("Geen storingen in de afgelopen 90 dagen", "No outages in the past 90 days")}</div></div>`}
+      <p class="help" style="margin:8px 0 0">${L("UniFi zelf toont internetgebeurtenissen maar 24 uur; Sonar bewaart de storingen, handig als je je provider wilt bellen.", "UniFi itself only shows internet events for 24 hours; Sonar keeps the outages, handy if you want to call your provider.")}</p>`;
+    hydrateIcons(el);
+  }
+  // ---- wifi-snelheid meten vanaf dit apparaat (naar Sonar, dus over je eigen netwerk)
+  async function loadSelftests(result) {
+    let d;
+    try { d = await api("/api/selftests"); } catch (e) { return; }
+    const el = $("#net-self-body"); if (!el || net.self.busy) return;
+    if (result) net.self.last = result;
+    const r = net.self.last;
+    el.innerHTML = `${r ? `<div class="st-result"><div><div class="k">Download</div><div class="v">${mbTxt(r.down)}<small>Mbit/s</small></div></div>
+        <div><div class="k">Upload</div><div class="v">${mbTxt(r.up)}<small>Mbit/s</small></div></div>
+        <div><div class="k">Ping</div><div class="v">${r.ping == null ? "–" : nf(r.ping)}<small>ms</small></div></div></div>
+        <p class="muted" style="margin:6px 0 0">${esc([r.name, r.ap, r.band ? `${r.band} GHz` : null, r.signal != null ? `${r.signal} dBm` : null].filter(Boolean).join(" · "))}</p>` : ""}
+      <div class="self-form"><label class="sr-only" for="self-room">${L("Kamer", "Room")}</label>
+        <input class="input" id="self-room" maxlength="40" placeholder="${L("Waar ben je? (bijv. zolder)", "Where are you? (e.g. attic)")}" value="${esc(store.get("self.room", ""))}">
+        <button class="btn primary" data-self="start">${icon("gauge")}${L("Meten", "Measure")}</button></div>
+      <p class="help">${L("Meet de snelheid tussen dit apparaat en Sonar, dus je wifi (of kabel) zelf, los van internet. Duurt ongeveer 15 seconden.", "Measures the speed between this device and Sonar, so your wifi (or cable) itself, independent of the internet. Takes about 15 seconds.")}</p>
+      ${d.rows.length ? `<div class="table-wrap" style="border:0;margin-top:8px"><table><thead><tr><th>${L("Wanneer", "When")}</th><th>${L("Waar", "Where")}</th><th class="r">↓ Mbit/s</th><th class="r">↑ Mbit/s</th></tr></thead><tbody>
+        ${d.rows.slice(0, 10).map((x) => `<tr style="cursor:default"><td class="num">${dateTxt(x.ts, true)}</td><td><div>${esc(x.room || x.name || "–")}</div><div class="cell-sub">${esc([x.room ? x.name : null, x.ap, x.band ? `${x.band} GHz` : null, x.signal != null ? `${x.signal} dBm` : null].filter(Boolean).join(" · "))}</div></td>
+          <td class="r num">${mbTxt(x.down)}</td><td class="r num">${mbTxt(x.up)}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
+    hydrateIcons(el);
+  }
+  async function runSelftest() {
+    const el = $("#net-self-body"); if (!el || net.self.busy) return;
+    const room = ($("#self-room")?.value || "").trim(); store.set("self.room", room);
+    net.self.busy = true;
+    const show = (phase, v) => { el.innerHTML = `<div class="self-run"><span class="live-dot"></span><b>${phase}</b>${v != null ? ` <span class="num">${mbTxt(v)} Mbit/s</span>` : ""}</div>`; };
+    try {
+      show("Ping");
+      const pings = [];
+      for (let i = 0; i < 8; i++) { const t = performance.now(); await fetch("/api/selftest/ping", { cache: "no-store" }); pings.push(performance.now() - t); }
+      pings.sort((a, b) => a - b);
+      const ping = pings[Math.floor(pings.length / 2)];
+      // download: groter blok tot het ~4 seconden duurt
+      let down = 0, mb = 8;
+      for (let round = 0; round < 3; round++) {
+        show("Download", down || null);
+        const t = performance.now(), r = await fetch(`/api/selftest/down?mb=${mb}`, { cache: "no-store" });
+        const reader = r.body.getReader(); let n = 0;
+        for (;;) { const { done, value } = await reader.read(); if (done) break; n += value.length; const s = (performance.now() - t) / 1000; if (s > 0.3) show("Download", (n * 8) / s / 1e6); }
+        const s = (performance.now() - t) / 1000;
+        down = (n * 8) / s / 1e6;
+        if (s > 3) break;
+        mb = Math.min(400, Math.ceil(mb * Math.max(2, 4 / s)));
+      }
+      let up = 0, size = 4 << 20;
+      for (let round = 0; round < 3; round++) {
+        show("Upload", up || null);
+        const blob = new Uint8Array(size); crypto.getRandomValues(blob.subarray(0, 65536));
+        const t = performance.now();
+        await fetch("/api/selftest/up", { method: "POST", body: blob, headers: { "Content-Type": "application/octet-stream" } });
+        const s = (performance.now() - t) / 1000;
+        up = (size * 8) / s / 1e6;
+        if (s > 3) break;
+        size = Math.min(300 << 20, Math.ceil(size * Math.max(2, 4 / s)));
+      }
+      const res = await post("/api/selftest/result", { down, up, ping, room });
+      net.self.busy = false;
+      loadSelftests(res.result);
+    } catch (err) {
+      net.self.busy = false;
+      el.innerHTML = `<div class="banner err">${icon("octagon")}<span>${esc(err.message)}</span></div>`;
+      setTimeout(loadSelftests, 4000);
+    }
   }
   async function loadUsage() {
     try { net.usage = await api("/api/usage"); } catch (e) { return; }
@@ -952,6 +1155,8 @@
       </section>
       <section class="card" style="margin-bottom:16px" id="sec-seg-card"><div class="card-head"><h2 style="margin:0">${L("Netwerkscheiding", "Network segmentation")}</h2><span class="muted" id="sec-seg-sub"></span></div>
         <div class="seg-nets" id="sec-seg-nets"></div><div id="sec-seg-matrix"></div><div id="sec-seg-issues"></div></section>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Firewall, DNS en adviezen", "Firewall, DNS and advisories")}</h2><span class="muted" id="sec-checks-sub"></span></div><div class="issue-list" id="sec-checks"></div></section>
+      <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Beveiligingsadviezen van Ubiquiti", "Ubiquiti security advisories")}</h2><span class="muted" id="sec-adv-sub"></span></div><div id="sec-adv"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Open naar internet", "Open to the internet")}</h2><span class="muted" id="sec-expo-sub"></span></div><div id="sec-expo"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>${L("Blokkades in de tijd", "Blocks over time")}</h3><span class="muted" id="sec-bucket"></span></div><div id="sec-chart"></div></section>
       <div class="toolbar"><div class="chips" role="group" aria-label="${L("Bron", "Source")}" id="sec-scope">${[["all", L("Alles", "All")], ["internal", L("Eigen apparaten", "Own devices")], ["external", L("Van buiten", "From outside")]].map(([v, l]) => `<button class="chip" data-s="${v}" aria-pressed="${secState.scope === v}">${l}</button>`).join("")}</div>
@@ -972,8 +1177,42 @@
     });
     $("#sec-ignored").onclick = (e) => { secState.ignored = !secState.ignored; e.currentTarget.setAttribute("aria-pressed", secState.ignored); UPDATERS.beveiliging(); };
     bindIssueActions($("#sec-seg-issues"), renderSegIssues);
+    bindIssueActions($("#sec-checks"), renderSecChecks);
+    $("#sec-adv").addEventListener("change", async (e) => {
+      if (e.target.id !== "adv-on") return;
+      try { await post("/api/advisories/settings", { enabled: e.target.checked }); } catch (err) { alert(err.message); }
+      loadAdvisories(); refresh();
+    });
     bindFlow($("#sec-seg-matrix"));
   }
+  // ---- firewall-audit, DNS om je DNS-server heen en beveiligingsadviezen
+  const CHECK_KEYS = ["fw_", "dns_leak:", "advisory:"];
+  function renderSecChecks() {
+    const el = $("#sec-checks"); if (!el) return;
+    const list = (state.issues || []).filter((i) => !i.resolved_at && CHECK_KEYS.some((k) => i.key.startsWith(k)))
+      .sort((a, b) => (a.muted - b.muted) || ({ critical: 0, warning: 1, info: 2 }[a.severity] - { critical: 0, warning: 1, info: 2 }[b.severity]));
+    const open = list.filter((i) => !i.muted);
+    $("#sec-checks-sub").textContent = list.length ? L(`${open.length} bevinding${open.length === 1 ? "" : "en"}${list.length > open.length ? `, ${list.length - open.length} genegeerd` : ""}`,
+      `${open.length} finding${open.length === 1 ? "" : "s"}${list.length > open.length ? `, ${list.length - open.length} ignored` : ""}`) : "";
+    el.innerHTML = open.length ? open.map((i) => issueHTML(i, state.issues, false)).join("")
+      : `<div class="empty">${icon("check")}<div>${L("Geen regels die niets doen of je netwerk openzetten, en geen apparaten die om je DNS-server heen gaan.", "No rules that do nothing or open your network, and no devices bypassing your DNS server.")}</div></div>`;
+  }
+  async function loadAdvisories() {
+    let d;
+    try { d = await api("/api/advisories"); } catch (e) { return; }
+    const el = $("#sec-adv"); if (!el || current !== "beveiliging") return;
+    const hits = d.items.filter((x) => x.affects).length;
+    $("#sec-adv-sub").textContent = d.enabled && d.fetched ? L(`bijgewerkt ${stamp(d.fetched)}`, `updated ${stamp(d.fetched)}`) : "";
+    el.innerHTML = `${d.enabled ? (d.items.length ? `<div class="adv-list">${d.items.map((x) => `<div class="adv-row ${x.affects ? "hit" : ""}">
+        <div style="min-width:0"><a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" class="rank-name">${esc(x.title)}</a>
+          <div class="cell-sub">${new Date(x.ts * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short", year: "numeric" })} · ${esc(x.products.slice(0, 3).join(", "))}${x.products.length > 3 ? "…" : ""}</div></div>
+        <div class="adv-badges">${x.score != null ? `<span class="num muted">${nf(x.score, 1)}</span>` : ""}${x.affects ? badge("critical", L("Geldt voor jou", "Affects you"), "alert") : badge("ok", L("Niet voor jou", "Not for you"), "check")}</div></div>`).join("")}</div>`
+        : `<p class="muted">${d.error ? `${L("Ophalen lukte niet", "Fetching failed")}: ${esc(d.error)}` : L("Nog niet opgehaald.", "Not fetched yet.")}</p>`) : ""}
+      <p class="help" style="margin:10px 0 0">${hits ? "" : d.enabled && d.items.length ? `${L("Geen van de recente adviezen geldt voor jouw firmware.", "None of the recent advisories apply to your firmware.")} ` : ""}${L("Sonar haalt elke 6 uur de openbare lijst van Ubiquiti op en vergelijkt die met de firmware van je apparaten. Er gaat niets van jouw netwerk mee.", "Every 6 hours Sonar fetches Ubiquiti's public list and compares it with your devices' firmware. Nothing from your network is sent.")}</p>
+      <label class="check" style="margin-top:8px"><input type="checkbox" id="adv-on" ${d.enabled ? "checked" : ""}> ${L("Beveiligingsadviezen ophalen", "Fetch security advisories")}</label>`;
+    hydrateIcons(el);
+  }
+
   // ------------------------------------------------------------------ netwerkscheiding
   let segData = null;
   const SEG_KIND = { main: [L("Hoofdnetwerk", "Main network"), "home"], iot: [L("Slimme apparaten", "Smart devices"), "plug"],
@@ -1294,7 +1533,7 @@
   }
   const srcLabel = (e) => `${esc(e.src_name && e.src_name !== e.src_ip ? e.src_name : e.src_ip)}${e.src_name && e.src_name !== e.src_ip ? `<div class="cell-sub">${esc(e.src_ip)}</div>` : ""}`;
   UPDATERS.beveiliging = async function () {
-    loadSegments();
+    loadSegments(); renderSecChecks(); loadAdvisories();
     const d = await api(`/api/ips?hours=${secState.hours}&scope=${secState.scope}&ignored=${secState.ignored}`);
     if (current !== "beveiliging") return;
     const s = d.summary;
@@ -1699,7 +1938,7 @@
   const EV = {
     device_offline: ["octagon", "bad"], device_online: ["check", "good"], device_reboot: ["power", "bad"], device_upgrade: ["check", "good"],
     port_down: ["plug", "bad"], port_up: ["plug", "good"], roam: ["roam", "roam"], client_join: ["wifi", "good"], client_leave: ["wifi", ""],
-    config: ["settings", "cfg"],
+    config: ["settings", "cfg"], wan_ip: ["globe", "cfg"],
   };
   const EKIND = { all: null, config: ["config"], device: ["device_offline", "device_online", "device_reboot", "device_upgrade"], port: ["port_down", "port_up"], roam: ["roam"], client: ["client_join", "client_leave"] };
   function eventsHTML(evts) {
@@ -1798,6 +2037,7 @@
           <div class="toolbar" style="margin-bottom:12px"><div class="seg" role="group" aria-label="Band" id="dr-hm-band">${d.radios.map((r) => `<button data-b="${r.radio}" aria-pressed="${r.radio === (hm.mac === d.mac ? hm.band : d.radios[0].radio)}">${r.radio} GHz</button>`).join("")}</div>
           <div class="seg" role="group" aria-label="${L("Meting", "Metric")}" id="dr-hm-metric">${[["cu", L("Bezetting", "Utilization")], ["interference", L("Storing", "Interference")], ["clients", "Clients"]].map(([k, l]) => `<button data-m="${k}" aria-pressed="${k === hm.metric}">${l}</button>`).join("")}</div></div>
           <div id="dr-heat"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
+      body += `<div class="card"><div class="card-head"><h3>${L("Wifi in de buurt", "Nearby wifi")}</h3><span class="muted" id="dr-nb-sub"></span></div><div id="dr-nb"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
       const cl = state.snap.clients.filter((c) => c.ap_mac === d.mac).sort((a, b) => (a.satisfaction ?? 100) - (b.satisfaction ?? 100));
       body += `<div class="card"><h3 style="margin-bottom:8px">${L("Clients op dit access point", "Clients on this access point")}</h3><div class="table-wrap" style="border:0"><table><thead><tr><th>${L("Naam", "Name")}</th><th>Band</th><th>${L("Signaal", "Signal")}</th><th class="r">Retries</th><th class="r">${L("Ervaring", "Experience")}</th></tr></thead><tbody>
         ${cl.map((c) => `<tr data-id="${esc(c.mac)}" data-client tabindex="0"><td class="cell-name">${esc(c.name)}</td><td>${c.band} GHz</td><td>${signalBars(c.signal, c.band)}</td><td class="r num ${level("retry", c.retry_pct) !== "ok" ? "t-" + level("retry", c.retry_pct) : ""}">${nf(c.retry_pct, 1)}%</td><td class="r num">${nf(c.satisfaction)}</td></tr>`).join("")}
@@ -1823,8 +2063,33 @@
     $("#drawer-body").innerHTML = body;
     $("#dr-goclients")?.addEventListener("click", () => { state.cuplink = d.mac; state.ckind = "issues"; closeDrawer(); location.hash = "#/clients"; $("#view").dataset.mounted = ""; update(); });
     bindRange("dr-range", () => loadDeviceHistory(d));
-    if (d.radios.length) loadDevicePattern(d);
+    if (d.radios.length) { loadDevicePattern(d); loadNeighbors(d); }
     await loadDeviceHistory(d);
+  }
+
+  // ---- wifi in de buurt: per kanaal hoe druk het is voor deze AP
+  async function loadNeighbors(ap) {
+    let d;
+    try { d = await api(`/api/neighbors/${encodeURIComponent(ap.mac)}`); } catch (e) { return; }
+    const el = $("#dr-nb"); if (!el || state.drawer?.id !== ap.mac) return;
+    if (!d.available) { el.innerHTML = `<p class="muted">${L("Alleen te zien via de uitgebreide UniFi-API.", "Only available via the extended UniFi API.")}</p>`; return; }
+    $("#dr-nb-sub").textContent = L(`${d.total} netwerken gehoord`, `${d.total} networks heard`);
+    const band = (b) => {
+      const rows = d.channels[b] || [];
+      if (!rows.length) return "";
+      const max = Math.max(1, ...rows.map((r) => r.load)), best = Math.min(...rows.filter((r) => !r.own.length && (r.interference ?? 0) < 40).map((r) => r.load).concat([Infinity]));
+      return `<h4 class="sub-h">${b} GHz</h4><div class="nb-rows">${rows.map((r) => {
+        const lv = r.load >= 1000 ? "critical" : r.load >= 100 ? "warning" : "ok";
+        return `<div class="nb-row ${r.current ? "cur" : ""}"><span class="num nb-ch">${r.channel}</span>${meter(Math.max(3, 100 * Math.log10(1 + r.load) / Math.log10(1 + max)), lv)}
+          <span class="cell-sub">${r.neighbors ? L(`${r.neighbors} buren`, `${r.neighbors} neighbours`) : L("geen buren", "no neighbours")}${r.strongest != null ? ` · ${r.strongest} dBm` : ""}${r.own.length ? ` · ${L("eigen", "own")}: ${esc(r.own.join(", "))}` : ""}${r.interference != null ? ` · ${L("gemeten storing", "measured interference")} ${r.interference}%` : ""}</span>
+          <span>${r.current ? badge("info", L("nu", "now")) : (r.interference ?? 0) >= 40 ? badge("warning", L("storing", "interference"), "alert") : !r.own.length && r.load === best && r.load * 4 < (rows.find((x) => x.current)?.load || 0) ? badge("ok", L("rustigst", "quietest"), "check") : ""}</span></div>`;
+      }).join("")}</div>`;
+    };
+    el.innerHTML = `${band("2.4")}${band("5")}
+      <details class="nb-list"><summary>${L("Sterkste netwerken in de buurt", "Strongest nearby networks")}</summary>
+        <div class="table-wrap" style="border:0"><table><thead><tr><th>SSID</th><th>Band</th><th class="r">${L("Kanaal", "Channel")}</th><th class="r">${L("Signaal", "Signal")}</th></tr></thead><tbody>
+        ${d.neighbors.slice(0, 15).map((n) => `<tr style="cursor:default"><td>${esc(n.ssid || L("(verborgen)", "(hidden)"))}</td><td>${n.band} GHz</td><td class="r num">${n.channel}</td><td class="r num">${n.signal ?? "–"} dBm</td></tr>`).join("")}</tbody></table></div></details>
+      <p class="help" style="margin:8px 0 0">${L("Hoe voller de balk, hoe meer (en hoe sterker) buren op dat kanaal. Storing die niet van wifi komt (magnetrons, babyfoons) ziet Sonar alleen op kanalen waar deze AP eerder zelf op zat (zolang die historie bewaard is).", "The fuller the bar, the more (and stronger) neighbours on that channel. Non-wifi interference (microwaves, baby monitors) is only known for channels this AP used before (as long as that history is kept).")}</p>`;
   }
 
   // ------------------------------------------------------------------ patronen (heatmaps)
@@ -1930,10 +2195,26 @@
         <div class="card"><div class="card-head"><h3>${L("Wifi-ervaring", "Wifi experience")}</h3></div><div id="dr-ch-sat"></div></div>`;
     }
     body += `<div class="card"><div class="card-head"><h3>${L("Patroon", "Pattern")}</h3><span class="muted">${L("afgelopen 7 dagen", "past 7 days")}</span></div><div id="dr-pattern"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
+    body += `<div class="card"><div class="card-head"><h3>${L("Verbruik", "Usage")}</h3><span class="muted" id="dr-cu-sub"></span></div><div id="dr-cu"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
     if (!c.wired) body += `<div class="card"><h3 style="margin-bottom:8px">${L("Roaming en verbindingen", "Roaming and connections")}</h3><div class="events" id="dr-events"></div></div>`;
     $("#drawer-body").innerHTML = body;
-    loadClientPattern(c);
+    loadClientPattern(c); loadClientUsageChart(c);
     if (!c.wired) { bindRange("dr-range", () => loadClientHistory(c)); await loadClientHistory(c); }
+  }
+  async function loadClientUsageChart(c) {
+    let d;
+    try { d = await api(`/api/usage/client/${encodeURIComponent(c.mac)}`); } catch (e) { return; }
+    const el = $("#dr-cu"); if (!el || state.drawer?.id !== c.mac) return;
+    if (!d.days.length) { el.innerHTML = `<div class="chart-empty">${L("Nog geen verbruik bekend", "No usage known yet")}</div>`; return; }
+    const tot = d.days.reduce((a, r) => a + r.down + r.up, 0);
+    $("#dr-cu-sub").textContent = L(`${gb(tot)} in ${d.days.length} dagen`, `${gb(tot)} in ${d.days.length} days`);
+    el.innerHTML = `<div id="dr-cu-chart"></div>${d.cats.length ? `<div class="cu-cats">${d.cats.slice(0, 6).map((x) => `<span class="chip" style="cursor:default">${esc(x.cat)} <b class="num">${gb(x.down + x.up)}</b></span>`).join("")}</div>` : ""}`;
+    MEcharts.barChart($("#dr-cu-chart"), {
+      labels: d.days.map((r) => r.ts), height: 170, highlight: d.days.length - 1,
+      series: [{ name: "Download", color: C.cyan, data: d.days.map((r) => r.down / 1e9) }, { name: "Upload", color: C.violet, data: d.days.map((r) => r.up / 1e9) }],
+      fmt: (v) => `${nf(v, v < 10 && v > 0 ? 1 : 0)} GB`, label: L("Verbruik per dag", "Usage per day"),
+      xfmt: (t) => new Date(t * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short" }),
+      tfmt: (t) => new Date(t * 1000).toLocaleDateString(LOC, { weekday: "long", day: "numeric", month: "long" }) });
   }
   async function loadClientHistory(c) {
     const h = await api(`/api/history/client/${encodeURIComponent(c.mac)}?hours=${state.hours}`);

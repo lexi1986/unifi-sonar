@@ -541,21 +541,27 @@ def usage():
             "error": collector.optional.get("usage")}
 
 
-@app.get("/api/me")
-def me(request: Request, ip: str | None = Query(None, max_length=45)):
-    """Het apparaat waarmee je dit dashboard bekijkt, herkend aan het IP-adres van de browser."""
-    collector, db = _need()
+def _viewer(request: Request, collector, ip: str | None = None) -> tuple[str, dict | None]:
+    """Het IP-adres van de browser en de client die daarbij hoort (demo: de iPhone)."""
     addr = request.client.host if request.client else ""
     fwd = request.headers.get("x-forwarded-for", "")
     if fwd and addr in ("127.0.0.1", "::1"):   # achter een reverse proxy op dezelfde machine
         addr = fwd.split(",")[0].strip()
     if ip and collector.mock:   # alleen in de demo: een apparaat nadoen
         addr = ip
-    snap = collector.latest or {}
-    clients = snap.get("clients", [])
+    clients = (collector.latest or {}).get("clients", [])
     c = next((x for x in clients if x.get("ip") == addr), None)
     if c is None and collector.mock and not ip:
         c = next((x for x in clients if x["name"] == "iPhone"), None)   # demo: doe alsof je op de iPhone kijkt
+    return addr, c
+
+
+@app.get("/api/me")
+def me(request: Request, ip: str | None = Query(None, max_length=45)):
+    """Het apparaat waarmee je dit dashboard bekijkt, herkend aan het IP-adres van de browser."""
+    collector, db = _need()
+    addr, c = _viewer(request, collector, ip)
+    snap = collector.latest or {}
     if c is None:
         return {"found": False, "ip": addr}
     devs = {d["mac"]: d for d in snap.get("devices", [])}
@@ -570,6 +576,246 @@ def me(request: Request, ip: str | None = Query(None, max_length=45)):
                                               "assoc_ts", "uptime", "sw_port", "network")},
             "uplink": {"mac": up.get("mac"), "name": up.get("name"), "type": up.get("type")},
             "roams_today": db.client_roams_since(c["mac"], day0), "issues": issues}
+
+
+# ----------------------------------------------------------------------- internetstoringen
+@app.get("/api/outages")
+def outages():
+    """Storingen van de afgelopen 90 dagen (Sonar bewaart ze zelf ook langer) en de beschikbaarheid per periode."""
+    collector, db = _need()
+    now = int(time.time())
+    rows = db.outages(now - 400 * 86400)
+
+    def uptime(since: int) -> float:
+        down = sum(max(0, min(o["ts"] + o["seconds"], now) - max(o["ts"], since)) for o in rows)
+        return round(100 * (1 - down / (now - since)), 3)
+    lt = time.localtime(now)
+    months = []
+    for k in range(5, -1, -1):
+        y, m = lt.tm_year, lt.tm_mon - k
+        while m < 1:
+            y, m = y - 1, m + 12
+        start = int(time.mktime((y, m, 1, 0, 0, 0, 0, 0, -1)))
+        end = min(now, int(time.mktime((y + (m == 12), m % 12 + 1, 1, 0, 0, 0, 0, 0, -1))))
+        inside = [o for o in rows if o["ts"] < end and o["ts"] + o["seconds"] > start]
+        down = sum(max(0, min(o["ts"] + o["seconds"], end) - max(o["ts"], start)) for o in inside)
+        months.append({"ts": start, "uptime": round(100 * (1 - down / max(1, end - start)), 3), "n": len(inside), "seconds": down})
+    hist = ((collector.insights or {}).get("wan_history") or [])
+    return {"available": bool(hist) or bool(rows), "isp": hist[0]["isp"] if hist else None,
+            "uptime": {"day": uptime(now - 86400), "week": uptime(now - 7 * 86400), "month": uptime(now - 30 * 86400),
+                       "quarter": uptime(now - 90 * 86400)},
+            "outages": rows[:100], "months": months, "error": collector.optional.get("insights")}
+
+
+# ----------------------------------------------------------------------- verbruik per apparaat
+DPI_CAT = {0: ("Berichten", "Messaging"), 1: ("P2P", "P2P"), 3: ("Bestanden", "File transfer"), 4: ("Video en muziek", "Streaming"),
+           5: ("Mail en samenwerken", "Mail and collaboration"), 6: ("Bellen", "VoIP"), 8: ("Games", "Games"),
+           9: ("Netwerkbeheer", "Network management"), 10: ("Op afstand", "Remote access"), 13: ("Web", "Web"),
+           14: ("Updates", "Updates"), 15: ("Web-chat", "Web chat"), 17: ("Zakelijk", "Business"), 18: ("Netwerkprotocollen", "Network protocols"),
+           24: ("Sociale media", "Social media"), 255: ("Onbekend", "Unknown")}
+
+
+def _cat(c) -> str:
+    return L(*DPI_CAT[c]) if c in DPI_CAT else (str(c) if c is not None else L("Onbekend", "Unknown"))
+
+
+def _client_names(collector, db) -> dict[str, str]:
+    names = {r["mac"]: r["name"] or r["hostname"] for r in db.q("SELECT mac, name, hostname FROM known_clients")}
+    names.update({c["mac"]: c["name"] for c in (collector.latest or {}).get("clients", [])})
+    return names
+
+
+@app.get("/api/usage/clients")
+def usage_clients(period: str = Query("day", pattern="^(day|week|month)$")):
+    """Grootverbruikers: verkeer per apparaat vandaag, de afgelopen 7 of 30 dagen (ook verkeer binnen je netwerk)."""
+    collector, db = _need()
+    now = int(time.time())
+    day0 = int(time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1)))
+    since = {"day": day0, "week": day0 - 6 * 86400, "month": day0 - 29 * 86400}[period]
+    tot = db.client_usage_totals("day", since) if period != "day" else db.client_usage_totals("hour", day0)
+    if period == "day" and not tot:
+        tot = db.client_usage_totals("day", day0)
+    names = _client_names(collector, db)
+    cats: dict[str, list] = {}
+    for d in collector.dpi:
+        cats.setdefault(d["mac"], []).append({"cat": _cat(d["cat"]), "bytes": d["down"] + d["up"]})
+    rows = [{"mac": m, "name": names.get(m, m), "down": v["down"], "up": v["up"], "total": v["down"] + v["up"],
+             "cats": sorted(cats.get(m, []), key=lambda x: -x["bytes"])[:4]} for m, v in tot.items() if v["down"] + v["up"] > 0]
+    rows.sort(key=lambda r: -r["total"])
+    return {"period": period, "since": since, "rows": rows[:40], "devices": len(rows), "dpi": bool(collector.dpi),
+            "error": collector.optional.get("client_usage")}
+
+
+@app.get("/api/usage/client/{mac}")
+def usage_client(mac: str):
+    collector, db = _need()
+    mac, now = mac.lower(), int(time.time())
+    cats = sorted(({"cat": _cat(d["cat"]), "down": d["down"], "up": d["up"]} for d in collector.dpi if d["mac"] == mac),
+                  key=lambda x: -(x["down"] + x["up"]))
+    return {"days": db.client_usage_series(mac, "day", now - 31 * 86400),
+            "hours": db.client_usage_series(mac, "hour", now - 48 * 3600), "cats": cats, "dpi": bool(collector.dpi)}
+
+
+# ----------------------------------------------------------------------- wifi in de buurt
+@app.get("/api/neighbors/{mac}")
+def neighbors(mac: str):
+    """Wat een access point van de buren hoort, en hoe druk elk kanaal is."""
+    from .rules_extra import channel_history, channel_table
+    collector, db = _need()
+    snap, mac = collector.latest or {}, mac.lower()
+    ap = next((d for d in snap.get("devices", []) if d["mac"] == mac), None)
+    ins = collector.insights or {}
+    if not ap or ap["type"] != "ap":
+        raise HTTPException(404, L("Geen access point", "Not an access point"))
+    heard = sorted((n for n in ins.get("neighbors") or [] if n["ap_mac"] == mac), key=lambda n: -(n["signal"] or -100))
+    since = int(time.time()) - 30 * 86400
+    return {"available": "neighbors" in ins,
+            "channels": {b: channel_table(ap, b, ins, snap.get("devices", []), channel_history(db, mac, b, since)) for b in ("2.4", "5")},
+            "current": {r["radio"]: r.get("channel") for r in ap.get("radios") or []},
+            "neighbors": [{k: n[k] for k in ("ssid", "band", "channel", "width", "signal")} for n in heard[:40]], "total": len(heard)}
+
+
+@app.get("/api/wifi/connectivity")
+def wifi_connectivity():
+    collector, _ = _need()
+    return {"bands": (collector.insights or {}).get("wifi_connectivity") or {}}
+
+
+# ----------------------------------------------------------------------- vaste pauzetijden
+class ScheduleIn(BaseModel):
+    id: int | None = None
+    name: str = Field(default="", max_length=60)
+    macs: list[str] = Field(default_factory=list, max_length=100)
+    days: list[int] = Field(default_factory=list, max_length=7)
+    start: str = Field(default="21:00", max_length=5)
+    stop: str = Field(default="07:00", max_length=5)
+    enabled: bool = True
+
+
+@app.get("/api/schedules")
+def schedules_list():
+    from . import schedules as sched
+    collector, db = _need()
+    now = int(time.time())
+    names = _client_names(collector, db)
+    active = sched.wanted(db.schedules(), now)
+    return {"schedules": [{**s, "devices": [{"mac": m, "name": names.get(m, m)} for m in s["macs"]],
+                           "until": max((a["until"] for a in active.values() if a["id"] == s["id"]), default=None)}
+                          for s in db.schedules()],
+            "paused": {m: {**a, "name": names.get(m, m)} for m, a in active.items()}, "now": now}
+
+
+@app.post("/api/schedules/save")
+async def schedules_save(req: ScheduleIn):
+    from . import schedules as sched
+    collector, db = _need()
+    try:
+        s = sched.clean(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, {"name": L("Geef het schema een naam.", "Give the schedule a name."),
+                                  "same": L("Begin- en eindtijd zijn gelijk.", "Start and end time are the same.")}.get(
+                                      str(e), L("Ongeldige tijd (gebruik uu:mm).", "Invalid time (use hh:mm)."))) from e
+    sid = db.save_schedule(s)
+    await collector.release_schedule()
+    return {"ok": True, "id": sid}
+
+
+class ScheduleDel(BaseModel):
+    id: int
+
+
+@app.post("/api/schedules/delete")   # POST i.p.v. DELETE, zie /api/unmute
+async def schedules_delete(req: ScheduleDel):
+    collector, db = _need()
+    db.delete_schedule(req.id)
+    await collector.release_schedule()
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------- wifi-snelheid meten vanaf je apparaat
+_BLOCK = os.urandom(1 << 20)   # 1 MB willekeurige bytes (niet te comprimeren), herhaald voor de download
+
+
+@app.get("/api/selftest/ping")
+def selftest_ping():
+    return {"t": time.time()}
+
+
+@app.get("/api/selftest/down")
+def selftest_down(mb: int = Query(25, ge=1, le=500)):
+    from fastapi.responses import StreamingResponse
+
+    def chunks():
+        for _ in range(mb):
+            yield _BLOCK
+    return StreamingResponse(chunks(), media_type="application/octet-stream",
+                             headers={"Cache-Control": "no-store", "Content-Length": str(mb << 20)})
+
+
+@app.post("/api/selftest/up")
+async def selftest_up(request: Request):
+    n = 0
+    async for chunk in request.stream():
+        n += len(chunk)
+        if n > 600 << 20:
+            break
+    return {"bytes": n}
+
+
+class SelftestResult(BaseModel):
+    down: float = Field(ge=0, le=100000)
+    up: float = Field(ge=0, le=100000)
+    ping: float | None = Field(default=None, ge=0, le=10000)
+    room: str = Field(default="", max_length=40)
+
+
+@app.post("/api/selftest/result")
+def selftest_result(req: SelftestResult, request: Request):
+    """Een meting bewaren met wie en waar: het apparaat (aan het IP-adres), de AP, de band en het signaal op dat moment."""
+    collector, db = _need()
+    addr, c = _viewer(request, collector)
+    devs = {d["mac"]: d["name"] for d in (collector.latest or {}).get("devices", [])}
+    row = {"ts": int(time.time()), "mac": (c or {}).get("mac"), "name": (c or {}).get("name") or addr, "room": req.room.strip(),
+           "ap": devs.get((c or {}).get("ap_mac") or (c or {}).get("sw_mac") or ""), "band": None if (c or {}).get("wired") else (c or {}).get("band"),
+           "signal": (c or {}).get("signal"), "down": round(req.down, 1), "up": round(req.up, 1),
+           "ping": round(req.ping, 1) if req.ping is not None else None}
+    db.add_selftest(row)
+    return {"ok": True, "result": row}
+
+
+@app.get("/api/selftests")
+def selftests():
+    _, db = _need()
+    return {"rows": db.selftests(100)}
+
+
+# ----------------------------------------------------------------------- beveiligingsadviezen
+@app.get("/api/advisories")
+def advisories_list():
+    from . import advisories as adv
+    collector, _ = _need()
+    a = collector.advisories or {}
+    inv = adv.inventory((collector.latest or {}).get("devices", []), (collector.sysinfo or {}).get("network_version"))
+    return {"enabled": rt.settings.advisories is not False, "fetched": a.get("fetched"), "error": a.get("error"),
+            "items": adv.summary_list(a.get("items") or [], inv), "feed": adv.FEED}
+
+
+class AdvisorySettings(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/advisories/settings")
+async def advisories_settings(req: AdvisorySettings):
+    s = Settings.load(DATA_DIR)
+    s.advisories = rt.settings.advisories = req.enabled
+    s.save()
+    if rt.collector:
+        rt.collector._adv_checked = 0
+        if req.enabled:
+            await rt.collector._collect_advisories(int(time.time()))
+        else:
+            rt.collector.advisories = {}
+    return {"ok": True}
 
 
 @app.get("/api/internet")

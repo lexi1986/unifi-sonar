@@ -709,3 +709,33 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 #lang-top, .topbar .lang-seg { flex: none; }
 .lang-seg button { font-weight: 600; letter-spacing: .02em; }
 .topbar .lang-seg button { padding: 5px 9px; font-size: 12px; }
+
+/* internet: storingen, verbruik per apparaat, wifi-meting */
+.cu-row { grid-template-columns: minmax(0, 1fr) 120px 76px; }
+.cu-row .rank-n { white-space: nowrap; }
+.out-months { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.out-month { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--me-border); border-radius: var(--me-radius-md); background: var(--me-elevated); font-size: 12px; }
+.out-month span { color: var(--me-text-secondary); text-transform: capitalize; }
+.out-month b { font-size: 14px; }
+.self-form { display: flex; gap: 10px; margin-top: 12px; }
+.self-form .input { flex: 1; min-width: 0; }
+.self-run { display: flex; align-items: center; gap: 10px; padding: 18px 0; font-size: 15px; }
+@media (max-width: 640px) { .out-months { grid-template-columns: repeat(3, minmax(0, 1fr)); } .cu-row { grid-template-columns: minmax(0, 1fr) 60px 70px; } }
+.cu-cats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.nb-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.nb-row { display: grid; grid-template-columns: 34px minmax(60px, 140px) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 2px 6px; border-radius: 8px; }
+.nb-row.cur { background: var(--me-primary-tint); }
+.nb-ch { font-weight: 600; text-align: right; }
+.nb-list summary { cursor: pointer; color: var(--me-text-secondary); margin-top: 6px; }
+.sched-row { grid-template-columns: minmax(0, 1fr) auto; }
+.sched-times > div { display: flex; align-items: center; gap: 8px; }
+.sched-times .input { width: auto; }
+.sched-devs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; max-height: 260px; overflow: auto; margin-top: 8px; padding: 8px; border: 1px solid var(--me-border); border-radius: var(--me-radius-md); }
+.sched-devs .check { margin: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-head h2 .icon { margin-right: 8px; vertical-align: -3px; }
+.adv-list { display: flex; flex-direction: column; }
+.adv-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--me-border); }
+.adv-row:first-child { border-top: 0; }
+.adv-row a.rank-name { color: var(--me-text); text-decoration: none; font-weight: 600; }
+.adv-row a.rank-name:hover { color: var(--me-primary); text-decoration: underline; }
+.adv-badges { display: flex; align-items: center; gap: 8px; }
