@@ -12,6 +12,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
@@ -561,12 +562,16 @@ def normalize_integration(devices: list[dict], stats: dict[str, dict], clients: 
 
 # --------------------------------------------------------------------------- client
 
+RICH_RETRY_SECONDS = 300
+
+
 class UnifiClient:
     def __init__(self, settings: Settings):
         self.s = settings
         self.http = httpx.AsyncClient(base_url=settings.controller_url, verify=settings.verify_tls,
                                       timeout=20, follow_redirects=True)
         self.source: str | None = None   # "legacy-key", "legacy-login" of "integration"
+        self._retry_rich_at = 0.0        # wanneer we vanaf de beperkte bron weer de rijkere proberen
         self._logged_in = False
         self._csrf: str | None = None
         self._site_id: str | None = None
@@ -818,9 +823,15 @@ class UnifiClient:
             raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")
 
     async def fetch(self) -> dict:
-        """Kies automatisch de rijkste bron die werkt en onthoud die."""
+        """Kies automatisch de rijkste bron die werkt en onthoud die. Staan we op de beperkte officiële API, dan
+        proberen we elke 5 minuten weer de rijkere bronnen: één hapering mag ons daar niet blijvend laten staan."""
+        rich = ("legacy-key", "legacy-login")
         order = [self.source] if self.source else []
-        order += [s for s in ("legacy-key", "legacy-login", "integration") if s not in order]
+        order += [s for s in (*rich, "integration") if s not in order]
+        retrying = self.source == "integration" and time.monotonic() >= self._retry_rich_at
+        if retrying:
+            order = [*rich, "integration"]
+            self._retry_rich_at = time.monotonic() + RICH_RETRY_SECONDS
         last_err: Exception | None = None
         for src in order:
             if src == "legacy-key" and not self.s.api_key:
@@ -834,11 +845,13 @@ class UnifiClient:
                               else self._fetch_legacy(use_key=src == "legacy-key"))
                 if src != self.source:
                     log.info("UniFi-bron: %s", src)
+                    if src == "integration":
+                        self._retry_rich_at = time.monotonic() + RICH_RETRY_SECONDS
                 self.source = src
                 data["source"] = src
                 return data
             except Exception as e:  # noqa: BLE001 – volgende bron proberen
-                log.warning("Bron %s mislukt: %s", src, e)
+                log.log(logging.INFO if retrying and src in rich else logging.WARNING, "Bron %s mislukt: %s", src, e)
                 self.errors[src] = e
                 last_err = e
         raise RuntimeError(L(f"Geen enkele UniFi-bron werkt: {last_err}", f"No UniFi source works: {last_err}"))

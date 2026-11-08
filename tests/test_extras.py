@@ -162,3 +162,44 @@ def test_public_ip_change(demo):
     out = []
     rules_extra.public_ip(out, snap, __import__("app.rules", fromlist=["_issue"])._issue, None)
     assert out[0]["notify"] and "203.0.113.24" in out[0]["detail"]
+
+
+def test_source_recovers_after_a_hiccup(monkeypatch, tmp_path):
+    """Eén DNS-hapering mag Sonar niet blijvend op de beperkte officiële API laten staan."""
+    from app import unifi_client as uc
+    monkeypatch.setenv("NO_DOTENV", "1")
+    clock = [1000.0]
+    monkeypatch.setattr(uc.time, "monotonic", lambda: clock[0])
+    c = uc.UnifiClient(Settings(mode="live", controller_url="https://unifi.invalid", api_key="k", data_dir=str(tmp_path)))
+    legacy_ok, calls = [True], []
+
+    async def legacy(use_key):
+        calls.append("legacy")
+        if not legacy_ok[0]:
+            raise OSError("Temporary failure in name resolution")
+        return {}
+
+    async def integration():
+        calls.append("integration")
+        return {}
+
+    monkeypatch.setattr(c, "_fetch_legacy", legacy)
+    monkeypatch.setattr(c, "_fetch_integration", integration)
+    poll = lambda: asyncio.run(c.fetch())  # noqa: E731
+    assert poll()["source"] == "legacy-key"
+    legacy_ok[0] = False
+    assert poll()["source"] == "integration"          # de hapering: terugvallen mag
+    legacy_ok[0] = True
+    calls.clear()
+    clock[0] += 299
+    assert poll()["source"] == "integration" and calls == ["integration"]   # nog niet opnieuw proberen
+    clock[0] += 1
+    assert poll()["source"] == "legacy-key"           # na 5 minuten weer terug op de rijke bron
+    # werkt de rijke bron echt niet, dan blijft het bij één poging per 5 minuten
+    legacy_ok[0] = False
+    assert poll()["source"] == "integration"
+    clock[0] += 300
+    calls.clear()
+    assert poll()["source"] == "integration" and calls == ["legacy", "integration"]
+    calls.clear()
+    assert poll()["source"] == "integration" and calls == ["integration"]
