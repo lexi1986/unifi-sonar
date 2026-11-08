@@ -1,0 +1,45 @@
+# Changelog
+
+All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
+
+## 1.3.0 – 2026-11-08
+
+The first release on GitHub.
+
+### Added
+- **English**: the whole app, issues, advice, notifications and Home Assistant sensor names in English or Dutch. Switch with NL | EN in the top bar; the first start follows your browser language.
+- **DNS leaks**: devices that bypass your own DNS server (Pi-hole, AdGuard) with plain DNS, DNS-over-TLS or DNS-over-HTTPS.
+- **Firewall audit**: rules that never match, and allow rules that open your main network to IoT, guests or the internet.
+- **Ubiquiti security advisories** matched against the firmware of your devices and Network app (checked every 6 hours, can be switched off).
+- **Internet outages and availability** over 24 hours, 7, 30 and 90 days and per month.
+- **Usage per device**, per day, and per category when Traffic Identification is on.
+- **Failed Wi-Fi connections** per band, with the step where it went wrong, plus the anomalies UniFi itself noticed per device.
+- **Neighbouring networks and channel advice** per access point, using interference Sonar measured before (also from non-Wi-Fi sources).
+- **Fixed pause times** for groups of devices, also across midnight.
+- **Wi-Fi speed at this spot**: a speed test from your phone or laptop to Sonar, with room, AP, band and signal.
+- **Public IP changed** on the timeline and as a notification.
+- **Network segmentation**: networks, firewall zones, an interactive "access between networks" diagram, and smart-home devices on the main network.
+- **Change log** of settings, a **network map**, **pausing the internet** per device and **Home Assistant via MQTT** with auto-discovery.
+- **3D globe** on the world page, with flowing streams per connection.
+
+### Changed
+- Firewall rule targets show the hostname or IP address instead of the vendor name.
+
+## 1.2.0 – 2026-11-05
+
+### Added
+- `update` command inside the Proxmox container, like the community scripts.
+- World map with live connections per country, zooming, and details of blocked traffic.
+- "This device" on the overview, and data usage per day and month.
+- Notifications for new devices and rotating private Wi-Fi addresses.
+
+## 1.1.0 – 2026-11-05
+
+### Added
+- Sending notifications (Home Assistant, ntfy, Discord, Slack, webhook).
+- Wi-Fi settings checks, ports open to the internet, and patterns per device and access point.
+- Internet page with live traffic and a speed test on the gateway.
+
+## 1.0.0 – 2026-11-05
+
+- First version: overview, issues with explanation and advice, devices, clients, IPS, timeline and the setup wizard.

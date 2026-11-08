@@ -1,175 +1,164 @@
 # UniFi Sonar
 
-**Een slim dashboard voor je UniFi-netwerk dat in gewone taal vertelt wat er mis is, en wat je eraan kunt doen.**
+**English** · [Nederlands](README.nl.md)
 
-UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en alle clients), bewaart een paar weken historie en zoekt zelf naar problemen: zwak wifi-signaal, veel retries, drukke kanalen, kabelproblemen, apparaten die op de verkeerde AP blijven hangen, wifi-instellingen die je netwerk trager maken, poorten die openstaan naar internet en wat de IPS van je gateway tegenhoudt. Bij elke melding staat uitleg en een concreet advies, en als je wilt krijg je een bericht op je telefoon.
+**UniFi shows you what's happening. Sonar tells you what's wrong, and how to fix it.**
 
-> Onofficieel hobbyproject. Niet verbonden aan of goedgekeurd door Ubiquiti. "UniFi" is een merk van Ubiquiti Inc.
+UniFi Sonar is a self-hosted dashboard for your UniFi network. It reads your controller (gateway, switches, access points and every client), keeps a few weeks of history and hunts for problems on its own: weak Wi-Fi, devices stuck on a far-away access point, busy channels, flaky cables, devices that bypass your Pi-hole or AdGuard, firewall rules that don't do what you think, Ubiquiti security advisories for your exact firmware, and more. Every issue comes with a plain-language explanation and a concrete fix, and it can ping your phone or Home Assistant.
 
-> **English:** UniFi Sonar is also available in English. Switch with **NL | EN** in the top bar or under *Settings → Language*. On first use it follows your browser language. The dashboard, the issues and advice, notifications and the sensor names in Home Assistant all switch along.
+<p align="center"><img src="docs/screenshots/en/globe.gif" alt="The live 3D globe: every connection through your gateway as a stream of light" width="720"></p>
 
-![Netwerkoverzicht van UniFi Sonar (demodata)](docs/screenshots/overzicht.png)
+> Unofficial hobby project. Not affiliated with or endorsed by Ubiquiti. "UniFi" is a trademark of Ubiquiti Inc.
 
-## Wat het kan
+![Network overview with the demo data](docs/screenshots/en/overview.png)
 
-- **Overzicht:** netwerkscore, open meldingen, je netwerk als boom (gateway → switches → AP's), wifi per access point en grafieken van internetlatency en wifi-ervaring.
-- **Slimme meldingen:**
-  - zwak signaal (met aparte drempels voor 2,4 en 5/6 GHz), veel retries, slechte ervaringsscore, apparaten die steeds van AP wisselen
-  - drukke kanalen en storing van buren, overlappende 2,4 GHz-kanalen, een overbelaste AP
-  - pakketfouten op switchpoorten, links die wegvallen, gigabitpoorten die op 100 Mbit draaien, een bijna vol PoE-budget
-  - herstarts, offline apparaten, firmware-updates, hoge CPU, geheugen of temperatuur; geen alarm terwijl een apparaat wordt bijgewerkt, en een herstart door een firmware-update telt niet als probleem
-  - internetlatency, pieken en pakketverlies
-  - **groepering op oorzaak:** hebben meerdere apparaten op dezelfde AP problemen, dan wordt dat één melding "zwakke dekking". Valt (bijna) alles tegelijk weg, dan krijg je één melding dat de controller niets meer hoort, in plaats van tien losse
-  - **"blijft hangen":** vaste apparaten die al lang met zwak signaal op een verre AP zitten, terwijl ze de afgelopen week op een andere AP veel beter zaten. Ook na een herstart van een AP. Met een knop *Opnieuw verbinden*
-  - **wifi-instellingen:** AP's in hetzelfde 5 GHz-kanaalblok, een ongebruikt 2.4 GHz-kanaal, 40 MHz op 2.4 GHz, band steering of Fast Roaming uit, trage minimale datasnelheid, een te strenge minimum-RSSI en hoog zendvermogen op 2.4 GHz
-  - **open naar internet:** UPnP aan, UPnP-mappings op standaardpoorten, SSH/RDP/databases die voor iedereen openstaan en port forwards die vaak worden aangevallen
-  - **IPS:** een eigen apparaat dat door de IPS wordt geblokkeerd, krijgt een melding (aanvallen van buiten zijn juist het werk van de IPS)
-- **Nieuwe apparaten:** verschijnt er een apparaat dat Sonar nog nooit zag, dan krijg je een melding (ook als pushbericht) met fabrikant, netwerk en AP. Met *Ken ik* keur je het goed. Apparaten met een **wisselend privé-wifiadres** herkent Sonar aan hun hostnaam; dan krijg je een tip om het adres op *vast* te zetten, want anders begint de historie steeds opnieuw. Bij de eerste start worden alle bestaande apparaten stil goedgekeurd.
-- **Meldingen versturen** naar Home Assistant, ntfy, Discord, Slack of een eigen webhook. Pas na een instelbare wachttijd (geen bericht bij één uitschieter), een nieuw bericht als het erger wordt, een bericht als het is opgelost, veel tegelijk wordt één bundel, en desgewenst een dagoverzicht. Ook als de controller onbereikbaar is.
-- **Meldingen negeren** voor 1 dag, 1 week, 30 dagen of altijd, bijvoorbeeld een laadpaal die nu eenmaal op 100 Mbit draait. IPS-blokkades negeer je per adres, per regel of de combinatie.
-- **Dit apparaat:** op het overzicht zie je meteen hoe het apparaat waarmee je kijkt verbonden is: welke AP, band en kanaal, signaal, snelheid en hoe vaak het vandaag van AP wisselde, met een knop om opnieuw te verbinden.
-- **Internet:** live download- en uploadverkeer, latency, het verkeer over de afgelopen dagen, je **datagebruik per dag en per maand** (met een verwachting voor de hele maand) en een **speedtest** met één knop. De test draait op je gateway zelf, dus hij meet je echte internetverbinding en niet je wifi. Alle resultaten blijven bewaard, en zakt de snelheid ver onder wat normaal is voor jouw verbinding, dan krijg je een melding.
-- **Wereld:** een live wereldkaart van alle verbindingen door je gateway. Bogen naar elk land waar je apparaten mee praten, inkomend verkeer en wat de IPS of je regioblokkade tegenhield, met per land de belangrijkste domeinen en apparaten, en bij blokkades welke dienst en welk apparaat het doelwit was. Kies tussen een platte kaart en een draaiende 3D-globe tegen een sterrenhemel. Inzoomen kan met scrollen, slepen, knijpen of door op een land in de lijst te klikken. Klik op een van de tegels bovenaan voor de lijst met verbindingen, samengevoegd per apparaat en bestemming en te doorzoeken. De gegevens komen uit het verkeerslogboek dat UniFi zelf al bijhoudt: geen NetFlow, geen GeoIP-database en geen extra software nodig.
-- **Internetstoringen:** beschikbaarheid over 24 uur, 7, 30 en 90 dagen en per maand, met een lijst van alle storingen en hoe lang ze duurden. UniFi zelf toont internetgebeurtenissen maar 24 uur; Sonar bewaart ze, handig als je je provider wilt bellen. Viel het internet weg, dan krijg je een melding.
-- **Verbruik per apparaat:** wie de meeste data gebruikt, vandaag, de afgelopen 7 of 30 dagen, en per apparaat een grafiek per dag. Staat 'Traffic Identification' aan in UniFi, dan ook per categorie (video, games, updates…).
-- **DNS-lekken:** apparaten die om je eigen DNS-server (AdGuard, Pi-hole) heen gaan met gewone DNS, DNS-over-TLS of DNS-over-HTTPS, zodat je filters daar niet werken. Je DNS-server zelf (die naar buiten mag) telt niet mee.
-- **Firewall-audit:** regels die nooit aan de beurt komen omdat een eerdere regel alles afvangt, en toestaan-regels die een apart netwerk (IoT, gasten) of internet onbeperkt bij je hoofdnetwerk laten.
-- **Mislukte wifi-verbindingen:** hoeveel verbindingspogingen per band lukten en in welke stap het misging (inloggen, IP-adres, DNS), met advies per oorzaak. Ook wat UniFi zelf opviel per apparaat (trage DNS, hoge vertraging, pakketverlies, slapende clients).
-- **Wifi in de buurt en kanaaladvies:** per access point hoe druk elk kanaal is door buren en je eigen AP's, plus storing die Sonar daar eerder heeft gemeten (ook storing die niet van wifi komt). Is er een duidelijk rustiger kanaal, dan krijg je een tip.
-- **Vaste pauzetijden:** groepen apparaten (bijvoorbeeld 'Kinderen') op gekozen dagen tussen twee tijden zonder internet, ook over middernacht heen. Sonar blokkeert ze in UniFi en laat ze daarna vanzelf weer toe.
-- **Wifi-snelheid op deze plek:** meet vanaf je telefoon of laptop de snelheid naar Sonar, dus je wifi zelf, met de kamer, de AP, de band en het signaal erbij.
-- **Beveiligingsadviezen van Ubiquiti:** Sonar haalt elke 6 uur de openbare lijst op en vergelijkt die met de firmware van je access points, switches, gateway en de Network-app. Geldt een advies voor jou, dan krijg je een melding met de versie die het oplost. Er gaat niets van jouw netwerk mee, en je kunt het uitzetten.
-- **Publiek IP-adres gewijzigd:** op de tijdlijn en als melding, handig bij dynamische DNS of een VPN.
-- **Patronen:** per apparaat de favoriete AP, hoe lang het op elke AP zat en wanneer het verbonden is (per uur van de week); per access point hoe druk elk kanaal is per uur van de week.
-- **Wijzigingslog:** elke wijziging in je instellingen komt op de tijdlijn, zoals "Wifi 'Thuis': Fast Roaming uit → aan" of "AP Woonkamer · 2.4 GHz kanaal: 11 → 6". Sonar volgt wifi-netwerken, netwerken en VPN-servers, port forwards, firewallregels, algemene instellingen (UPnP, spanning tree, IPS) en per apparaat de kanalen, breedte, zendvermogen en band steering. Van een wifi-wachtwoord bewaart Sonar alleen een gezouten hash, zodat er "wachtwoord gewijzigd" kan staan.
-- **Netwerkscheiding:** je netwerken (VLAN's) met hun firewallzone en hoeveel apparaten erop zitten, plus een diagram van wat er tussen je netwerken, de gateway en internet mag: kies een netwerk en je ziet zijn pijlen (mag, deels of geblokkeerd), kies een pijl en je ziet precies wat wel en niet mag en welke regels dat bepalen (bijvoorbeeld "IoT → Default: wel Home Assistant en DNS, niet al het andere"). Port forwards tellen mee. Liever een tabel per firewallzone? Die staat er ook. Sonar herkent slimme apparaten aan hun fabrikant of hostnaam (Espressif, Tuya, Shelly, Tasmota, ESPHome en meer) en meldt het als er een op je hoofdnetwerk staat terwijl je er een apart netwerk voor hebt, met uitleg hoe je het verhuist. Zit je IoT-netwerk in dezelfde zone als je hoofdnetwerk, dan krijg je een waarschuwing dat het niet afgeschermd is. Heb je nog geen apart netwerk, dan krijg je één tip. Hoort een apparaat bewust op het hoofdnetwerk? Kies *Negeren → Altijd*.
-- **Netwerkkaart:** gateway, switches en access points als boom, met per verbinding de poort en snelheid (trager dan 1 Gbit/s valt op) en desgewenst alle clients als stippen, gekleurd naar signaal.
-- **Internet pauzeren** per apparaat: 30 minuten, 1 of 2 uur, tot morgen 07:00 of tot je hervat. Sonar blokkeert het apparaat dan in UniFi en laat het vanzelf weer toe als de tijd om is.
-- **Home Assistant via MQTT:** netwerkscore, meldingen, clients, latency, live internetverkeer, speedtest, datagebruik, nieuwe apparaten en IPS-blokkades als sensoren, plus een knop om een speedtest te starten. Home Assistant herkent alles vanzelf (MQTT-discovery).
-- **Pagina's** voor apparaten (radio's, poortenraster, PoE, historie), clients (signaal, retries, ervaring en roaming per apparaat), beveiliging (IPS, netwerkscheiding, wat er openstaat naar internet en VPN-servers die zichtbaar zijn voor scanners) en een tijdlijn met gebeurtenissen.
-- **Probleemoplossing:** één knop kopieert de versie, het controllertype en de laatste fouten, zonder adressen, namen of sleutels, zodat je die in een GitHub-issue kunt plakken.
-- **Demomodus** met een nagebootst netwerk, zodat je zonder controller kunt rondkijken.
-- **Nederlands of Engels:** wissel met **NL | EN** in de bovenbalk of onder *Instellingen → Taal*. De taal geldt voor het dashboard, alle meldingen en adviezen, berichten naar je telefoon en de sensornamen in Home Assistant. Meldingen en de tijdlijn worden in beide talen bewaard, dus ook de historie wisselt mee. Bij de eerste start volgt Sonar de taal van je browser.
+## Why Sonar?
+
+| | UniFi Network app | Grafana stack (e.g. UnPoller) | **UniFi Sonar** |
+|---|---|---|---|
+| Shows the raw numbers | ✓ | ✓ | ✓ |
+| Tells you *what* is wrong, grouped by cause | partly | – | ✓ |
+| Tells you *how to fix it*, step by step | – | – | ✓ |
+| Remembers history (outages, roaming, changes) | short | ✓ | ✓ |
+| Setup | built in | exporter + database + dashboards | one command, wizard in the browser |
+| Notifications with "resolved" messages | limited | via alert rules | ✓ built in |
+
+Sonar doesn't replace your controller; it sits next to it and does the thinking. It runs in a tiny Proxmox LXC or on a Raspberry Pi (about 50 MB of RAM) and works in **English and Dutch**.
+
+## What it finds
+
+**Wi-Fi and roaming**
+- Weak signal (separate thresholds for 2.4 and 5/6 GHz), high retries, low experience scores, devices that keep hopping between APs.
+- **"Stuck" devices:** a fixed device that has been on a distant AP with poor signal for a long time, while it did much better on another AP last week, typically after an AP restart. One click reconnects it.
+- Busy channels and interference, overlapping 2.4 GHz channels, an overloaded AP, and **failed connection attempts** per band with the step where it went wrong (authentication, DHCP or DNS).
+- **Neighbouring networks and channel advice:** per AP how busy each channel is, including non-Wi-Fi interference Sonar measured there before. If a clearly quieter channel exists, you get a tip.
+- **Wi-Fi settings that slow you down:** APs sharing a 5 GHz block, 40 MHz on 2.4 GHz, band steering or fast roaming off, high minimum data rates, a too-strict minimum RSSI.
+- **Grouping by cause:** five weak clients on one AP become one "weak coverage" issue, and if everything drops at once you get one "controller hears nothing" issue instead of ten.
+
+**Security**
+- **DNS leaks:** devices that bypass your own DNS server (Pi-hole, AdGuard) with plain DNS, DNS-over-TLS or DNS-over-HTTPS, so your filters don't apply to them.
+- **Firewall audit:** rules that never match because an earlier rule catches everything, and allow rules that open your main network to IoT, guests or the internet.
+- **Ubiquiti security advisories** matched against the firmware of your APs, switches, gateway and Network app, with the version that fixes it.
+- **Network segmentation:** your VLANs, their firewall zones and an interactive diagram of what may talk to what. Smart-home devices (Espressif, Tuya, Shelly, ESPHome…) on your main network are flagged.
+- **What's open to the internet:** UPnP, port forwards on commonly attacked ports, exposed SSH/RDP/databases, and **IPS blocks of your own devices** (attacks from outside are the IPS doing its job; your own device being blocked deserves a look).
+- **New devices** get a notification with vendor, network and AP. Devices with a rotating private Wi-Fi address are recognised by hostname.
+
+**Internet**
+- Live download and upload, latency, data usage per day and month (with a forecast), and a one-click **speed test that runs on the gateway** itself, so it measures your line and not your Wi-Fi.
+- **Outages and availability** over 24 hours, 7, 30 and 90 days and per month. UniFi keeps internet events for 24 hours; Sonar keeps them, which is handy when you call your provider.
+- **Usage per device** for today, 7 or 30 days, and per category if Traffic Identification is on.
+- **Public IP changed** on the timeline and as a notification.
+- **Wi-Fi speed at this spot:** measure from your phone or laptop to Sonar, with the room, AP, band and signal recorded.
+
+**The world map**
+A live map, flat or as a rotating 3D globe, of every connection through your gateway: arcs to each country your devices talk to, incoming traffic, and what the IPS or your region block stopped. Per country you see the top domains and devices. It uses the traffic log UniFi already keeps: no NetFlow, GeoIP database or extra software.
+
+**And also**
+- **Change log:** every settings change lands on the timeline, like "Wi-Fi 'Home': Fast Roaming off → on" or "AP Living room · 2.4 GHz channel: 11 → 6".
+- **Pause the internet** per device (30 minutes, 1 or 2 hours, until tomorrow) and **fixed pause times** for groups of devices ("Kids, school nights 21:00–07:00").
+- **Patterns:** each device's favourite AP and when it is home, per hour of the week.
+- **Notifications** to Home Assistant, ntfy, Discord, Slack or your own webhook, after a configurable delay, with an update when it gets worse and a message when it's resolved.
+- **Home Assistant via MQTT:** network score, issues, clients, latency, live traffic, speed test and more as sensors, auto-discovered, plus a button to start a speed test.
+- **Demo mode** with a simulated network, so you can look around without a controller.
 
 ## Screenshots
 
-Alle screenshots tonen de ingebouwde demodata.
+All screenshots show the built-in demo data.
 
 | | |
 |---|---|
-| ![Issues met uitleg en advies](docs/screenshots/issues.png) | ![Client die na een AP-herstart op een verre AP blijft hangen](docs/screenshots/client-detail.png) |
-| **Issues:** elke melding met uitleg en advies, gegroepeerd op oorzaak | **Clientdetail:** de Kindle bleef na een herstart van AP Boven hangen op de verre AP Schuur |
-| ![Access point met radio's en kanaalbezetting](docs/screenshots/ap-detail.png) | ![IPS-blokkades en wat er openstaat naar internet](docs/screenshots/beveiliging.png) |
-| **Access point:** dekkingsprobleem, radio's, kanaalbezetting en historie | **Beveiliging:** wat de IPS tegenhield en welke poorten openstaan, met het aantal aanvallen per poort |
-| ![Live internetverkeer en speedtest](docs/screenshots/internet.png) | ![Patroon van een telefoon: favoriete AP en wanneer verbonden](docs/screenshots/patronen.png) |
-| **Internet:** live verkeer en een speedtest vanaf de gateway | **Patronen:** favoriete AP en wanneer een apparaat thuis is |
-| ![Wereldkaart met verbindingen per land](docs/screenshots/wereld.png) | ![Meldingen versturen naar ntfy](docs/screenshots/meldingen.png) |
-| **Wereld:** met welke landen je netwerk praat, live | **Meldingen versturen** naar je telefoon, Home Assistant of Discord |
-| ![Setup-wizard bij eerste gebruik](docs/screenshots/wizard.png) | <img src="docs/screenshots/mobiel.png" alt="Overzicht op een telefoon" width="260"> |
-| **Setup-wizard** bij de eerste start | **Ook op je telefoon** |
+| ![Issues with explanation and advice](docs/screenshots/en/issues.png) | ![A Kindle stuck on a distant AP after a restart](docs/screenshots/en/client-detail.png) |
+| **Issues:** every issue with an explanation and advice, grouped by cause | **Client detail:** the Kindle stayed on the distant AP after AP Boven restarted |
+| ![Access point with coverage problem and channel advice](docs/screenshots/en/ap-detail.png) | ![IPS blocks and the most hit rules](docs/screenshots/en/security.png) |
+| **Access point:** coverage problem, shared channel block and band steering | **Security:** what the IPS stopped, the most hit rules and where it came from |
+| ![Live internet traffic and speed test](docs/screenshots/en/internet.png) | ![A phone's pattern: favourite AP and when it is connected](docs/screenshots/en/patterns.png) |
+| **Internet:** live traffic and a speed test from the gateway | **Patterns:** favourite AP, when a device is home, usage per day |
+| ![The 3D globe](docs/screenshots/en/world.png) | ![Sending notifications to ntfy and Home Assistant](docs/screenshots/en/notifications.png) |
+| **World:** which countries your network talks to, live | **Notifications** to your phone, Home Assistant or Discord |
 
-## Wat je nodig hebt
+<p align="center"><img src="docs/screenshots/en/mobile.png" alt="Overview on a phone" width="300"><br><b>Works on your phone too</b></p>
 
-- Een UniFi-console met de **Network**-app: Dream Machine, Dream Router, Cloud Gateway (UCG), Cloud Key Gen2+ of de zelf-gehoste **UniFi OS Server**.
-- Een **API-key**: in UniFi Network via *Instellingen → Control Plane → Integrations → Create API Key*.
-- Een kleine Linux-machine die altijd aan staat, bijvoorbeeld een **Proxmox-LXC**, een Raspberry Pi of een andere Debian/Ubuntu-machine. Het gebruikt ongeveer 50 MB geheugen.
+## Requirements
 
-Geeft je API-key alleen beperkte gegevens (geen signaal of retries per client)? Dan kun je in de wizard onder *Geavanceerd* ook een lokaal UniFi-account met **View Only**-rechten opgeven.
+- A UniFi console with the **Network** app: Dream Machine, Dream Router, Cloud Gateway (UCG), Cloud Key Gen2+ or the self-hosted **UniFi OS Server**.
+- An **API key**: in UniFi Network under *Settings → Control Plane → Integrations → Create API Key*.
+- A small always-on Linux machine: a **Proxmox LXC**, a Raspberry Pi or any Debian/Ubuntu machine. Sonar uses about 50 MB of RAM and makes a handful of API calls per minute (measured: about 400 an hour, a few seconds of controller time in total).
 
-## Installeren
+If your API key only returns limited data (no signal or retries per client), you can also enter a local UniFi account with **View Only** rights under *Advanced* in the wizard.
 
-### Proxmox (aanbevolen)
+## Install
 
-Draai dit op je **Proxmox-host**, in de shell van de node:
+### Proxmox (recommended)
+
+Run this in the shell of your **Proxmox host**:
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/lexi1986/unifi-sonar/main/scripts/proxmox-lxc.sh)"
 ```
 
-Het script vraagt een paar dingen, zoals de container-ID, het IP-adres (DHCP of vast) en de opslag. Op alles kun je Enter drukken voor de standaardwaarde. Daarna maakt het een kleine Debian-container aan (1 core, 512 MB, 4 GB), installeert UniFi Sonar erin en toont het adres.
+The script asks a few questions (container ID, IP address via DHCP or static, storage); press Enter for the defaults. It creates a small Debian container (1 core, 512 MB, 4 GB), installs UniFi Sonar and shows the address.
 
-De container heeft **geen root-wachtwoord**. Open je hem in Proxmox via *Console*, dan ben je meteen ingelogd, net als bij de Proxmox community-scripts. Vanaf de host kan het ook met `pct enter <container-id>`. Wil je toch een wachtwoord, bijvoorbeeld voor SSH, stel het dan in met `pct exec <container-id> -- passwd`.
+The container has **no root password**: open it in Proxmox via *Console* and you're logged in, just like the Proxmox community scripts. From the host you can also use `pct enter <container-id>`. Want a password, for example for SSH? Set it with `pct exec <container-id> -- passwd`.
 
-### Debian, Ubuntu of Raspberry Pi OS
+### Debian, Ubuntu or Raspberry Pi OS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lexi1986/unifi-sonar/main/scripts/install.sh | sudo bash
 ```
 
-Standaard draait het dashboard op poort 80. Wil je een andere poort, dan zet je `PORT=8080` vóór `bash`:
+The dashboard runs on port 80 by default. For another port, put `PORT=8080` before `bash`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lexi1986/unifi-sonar/main/scripts/install.sh | sudo PORT=8080 bash
 ```
 
-### Eerste keer openen
+### First start
 
-Ga naar `http://<ip-van-de-machine>`. De **setup-wizard** vraagt:
+Open `http://<ip-of-the-machine>`. The **setup wizard** asks for:
 
-1. het adres van je UniFi-console. Poort 443 en 11443 (UniFi OS Server) worden allebei geprobeerd.
-2. je **API-key**.
+1. the address of your UniFi console (ports 443 and 11443 for UniFi OS Server are both tried);
+2. your **API key**.
 
-De wizard test de verbinding, laat zien wat hij vindt (gateway, aantal apparaten en clients) en start daarna met meten. Na een paar minuten verschijnen de eerste meldingen; na een dag historie zijn ze het nauwkeurigst.
+The wizard tests the connection, shows what it found (gateway, number of devices and clients) and starts measuring. The first issues appear after a few minutes; after a day of history they are at their most accurate. Prefer to look around first? Choose *Look around with demo data first*.
 
-### Meldingen op je telefoon
+### Notifications on your phone
 
-Onder *Instellingen → Meldingen versturen* (het tandwiel rechtsboven) voeg je een kanaal toe:
+Under *Settings → Sending notifications* (the cog at the top right) add a channel:
 
-- **Home Assistant:** maak een automatisering met als trigger *Webhook* en plak de webhook-URL. In de automatisering gebruik je `trigger.json.title`, `trigger.json.message` en `trigger.json.severity`, bijvoorbeeld voor een melding via de Companion-app.
-- **ntfy:** installeer de ntfy-app, abonneer je op een topic met een lastig te raden naam en vul `https://ntfy.sh/<topic>` in (of je eigen ntfy-server, eventueel met toegangstoken).
-- **Discord** of **Slack:** maak een webhook aan in het kanaal en plak de URL.
-- **Eigen webhook:** krijgt JSON met `event`, `severity`, `title`, `message`, `url` en `key`, handig voor n8n of Node-RED.
+- **Home Assistant:** create an automation with a *Webhook* trigger and paste the webhook URL. Use `trigger.json.title`, `trigger.json.message` and `trigger.json.severity`, for example for a Companion app notification.
+- **ntfy:** install the ntfy app, subscribe to a hard-to-guess topic and enter `https://ntfy.sh/<topic>` (or your own ntfy server, optionally with an access token).
+- **Discord** or **Slack:** create a webhook in the channel and paste the URL.
+- **Your own webhook:** receives JSON with `event`, `severity`, `title`, `message`, `url` and `key`, handy for n8n or Node-RED.
 
-Met *Testbericht sturen* zie je direct of het aankomt. Wat al openstond toen je het kanaal toevoegde, wordt niet alsnog verstuurd.
+*Send test message* shows straight away whether it arrives.
 
-## Bijwerken
+## Updating
 
-Je instellingen en historie blijven bij bijwerken altijd staan.
+Your settings and history are always kept.
 
-**In een Proxmox-container:** open de console van de container en typ:
+**In a Proxmox container:** open the container console and type `update`. It checks GitHub for a new version, shows what changed and updates everything. From the Proxmox host: `pct exec <container-id> -- update`.
 
-```bash
-update
-```
+**On Debian, Ubuntu or a Raspberry Pi:** `sudo unifi-sonar-update`. Add `--check` to only check, or `--force` to reinstall.
 
-Het commando kijkt of er een nieuwe versie op GitHub staat, laat zien wat er veranderd is en werkt alles bij. Bij het inloggen in de container zie je ook welke versie draait en op welk adres. Vanaf de Proxmox-host kan het ook:
+Installed before version 1.2? Run the install command once more (or `pct exec <container-id> -- bash /root/install-unifi-sonar.sh`); after that `update` is available.
 
-```bash
-pct exec <container-id> -- update
-```
+## Privacy and security
 
-**Op Debian, Ubuntu of een Raspberry Pi:**
+- **Everything stays on your machine.** Nothing goes to the internet except downloading the software when installing or updating, the notifications to services you set up yourself, and every 6 hours fetching Ubiquiti's public list of security advisories (nothing about your network is sent; you can switch it off on the Security page).
+- **Sonar doesn't change your UniFi settings.** The only actions are *Reconnect* for one Wi-Fi device, starting a speed test on the gateway, and *Pause* and *Fixed pause times*, which block a device in UniFi until the chosen time is up. Everything else is read-only.
+- The API key, webhook URLs and MQTT password live only in `/var/lib/unifi-sonar/config.json`, readable only by the service. The browser never gets the key back.
+- The dashboard has **no login**: anyone on your network who knows the address can look, mute issues and reconnect a device. **Don't expose it to the internet.**
+- The dashboard only answers to an IP address, `localhost` and local names (`.local`, `.lan`, `.home`, `.internal`, `.home.arpa`), so a website you visit can't control it through your browser (DNS rebinding), and actions from other websites are refused. Using your own hostname or a reverse proxy? Add it under *Settings → Access*.
+- For the world map, Sonar keeps the connections from UniFi's traffic log (which device talked to which domain and country) for **48 hours** in its local database.
+- Using the IPS on your UniFi gateway and viewing through a VPN? Sonar deliberately avoids HTTP `DELETE`, because the IPS can see that as an attack (rule 2101603).
 
-```bash
-sudo unifi-sonar-update
-```
+## Tuning thresholds
 
-Met `--check` kijk je alleen of er een update is; met `--force` installeer je opnieuw, ook als je al de nieuwste versie hebt. De poort die je bij het installeren koos, blijft behouden.
-
-Heb je UniFi Sonar geïnstalleerd vóór versie 1.2? Draai dan één keer het installatiecommando opnieuw (of `pct exec <container-id> -- bash /root/install-unifi-sonar.sh`). Daarna is `update` beschikbaar.
-
-## Privacy en veiligheid
-
-- Alles blijft op je eigen machine. Er gaat niets naar internet, behalve het downloaden van de software bij installeren en bijwerken, de meldingen naar de diensten die je zelf instelt, en elke 6 uur het ophalen van de openbare lijst met beveiligingsadviezen van Ubiquiti (daarbij gaat niets van jouw netwerk mee; uit te zetten op de pagina Beveiliging).
-- UniFi Sonar **verandert geen instellingen** in UniFi. De enige acties zijn *Opnieuw verbinden* voor één wifi-apparaat, een speedtest op de gateway starten, en *Pauzeren* en *Vaste pauzetijden*: die blokkeren apparaten in UniFi tot de gekozen tijd om is.
-- De wifi-meting vanaf je telefoon of laptop gaat alleen tussen dat apparaat en Sonar, niet naar internet.
-- Gebruik je de koppeling met Home Assistant, dan staan het adres en de inloggegevens van de MQTT-broker alleen in `config.json`. De browser krijgt het wachtwoord nooit terug.
-- De API-key en de webhook-adressen staan alleen in `/var/lib/unifi-sonar/config.json`, en alleen de service kan dat bestand lezen. De browser krijgt de sleutel nooit terug en ziet van webhook-adressen alleen het begin.
-- Het dashboard heeft **geen login**. Iedereen in je netwerk die het adres kent, kan meekijken, meldingen negeren en een wifi-apparaat opnieuw laten verbinden. Zet het daarom niet open naar internet.
-- Het dashboard antwoordt alleen op een IP-adres, `localhost` en lokale namen (`.local`, `.lan`, `.home`, `.internal`, `.home.arpa`). Zo kan een website die je bezoekt het dashboard niet via je browser aansturen (DNS-rebinding). Acties vanaf een andere website worden ook geweigerd. Gebruik je een eigen hostnaam of een reverse proxy, voeg die dan toe onder *Instellingen → Toegang*, of zet `Environment=ALLOWED_HOSTS=sonar.mijndomein.nl` in de service.
-- De koppeling wijzigen kan alleen als je de huidige API-key invult.
-- Voor de wereldkaart bewaart UniFi Sonar de verbindingen uit het verkeerslogboek van UniFi (welk apparaat met welk domein en land praatte) **48 uur** in de lokale database. Daarna worden ze verwijderd.
-- Gebruik je de IPS van je UniFi-gateway en kijk je via een VPN? UniFi Sonar gebruikt bewust geen HTTP `DELETE`, omdat de IPS dat als aanval kan zien (regel 2101603).
-
-## Drempels aanpassen
-
-De standaardwaarden staan in [`app/config.py`](app/config.py) en zijn afgestemd op een gewoon thuisnetwerk. Overschrijven kan per drempel:
+The defaults live in [`app/config.py`](app/config.py) and suit a normal home network. Override any of them:
 
 ```bash
 sudo systemctl edit unifi-sonar
 ```
-
-Zet daarin bijvoorbeeld:
 
 ```ini
 [Service]
@@ -177,9 +166,9 @@ Environment=TH_CLIENT_RETRY_WARN=30
 Environment=TH_CLIENT_SIGNAL_WARN_24=-78
 ```
 
-Daarna `sudo systemctl restart unifi-sonar`.
+Then `sudo systemctl restart unifi-sonar`.
 
-## Verwijderen
+## Uninstall
 
 ```bash
 sudo systemctl disable --now unifi-sonar
@@ -187,35 +176,34 @@ sudo rm -rf /opt/unifi-sonar /var/lib/unifi-sonar /etc/systemd/system/unifi-sona
 sudo userdel unifi-sonar
 ```
 
-Of verwijder in Proxmox gewoon de container.
+Or simply delete the container in Proxmox.
 
-## Ontwikkelen
+## Development
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/uvicorn app.main:app --reload --port 8088   # wizard → "Eerst rondkijken met demodata"
+.venv/bin/uvicorn app.main:app --reload --port 8088   # wizard → "Look around with demo data first"
 .venv/bin/python -m pytest -q
 ```
 
-| Map/bestand | Rol |
+| Path | Role |
 |---|---|
-| `app/unifi_client.py` | Uitlezen van UniFi OS (uitgebreide API, officiële API, IPS-flows) en één datamodel |
-| `app/collector.py` | Elke minuut meten, delta's berekenen (retries, fouten, throughput), events |
-| `app/rules.py` | Alle meldingen, groepering op oorzaak en scores |
-| `app/notify.py` | Meldingen versturen (Home Assistant, ntfy, Discord, Slack, webhook) |
-| `app/changes.py` | Wijzigingslog: vingerafdruk van de instellingen en leesbare verschillen |
-| `app/ha_mqtt.py` | Home Assistant-koppeling via MQTT (kleine eigen MQTT 3.1.1-client, discovery) |
-| `app/setup.py` | Verbindingstest voor de wizard |
-| `app/mock.py` | Nagebootst netwerk met ingebouwde problemen (demomodus) |
-| `web/` | Dashboard (vanilla JS, geen build-stap) |
-| `web/world.js`, `web/world-geo.js` | Landsgrenzen voor de platte kaart en de globe, gemaakt met `tools/make_world.py` uit Natural Earth |
-| `web/globe.js` | De 3D-globe (canvas), met [d3-geo](https://d3js.org/d3-geo) uit `web/vendor/` (ISC-licentie) |
-| `scripts/` | Installeren (Linux, Proxmox), bijwerken (`update.sh`, wordt het commando `update`) en `dev-deploy.sh` om lokale code naar een test-LXC te zetten |
+| `app/unifi_client.py` | Reading UniFi OS (extended API, official API, traffic flows) into one data model |
+| `app/collector.py` | Measuring every minute, deltas (retries, errors, throughput), events |
+| `app/rules.py`, `app/rules_extra.py` | All issues, grouping by cause and scores |
+| `app/advisories.py` | Ubiquiti security advisories and matching them to your firmware |
+| `app/notify.py` | Sending notifications (Home Assistant, ntfy, Discord, Slack, webhook) |
+| `app/changes.py` | Change log: a fingerprint of the settings and readable diffs |
+| `app/ha_mqtt.py` | Home Assistant via MQTT (small built-in MQTT 3.1.1 client, discovery) |
+| `app/i18n.py` | Dutch and English |
+| `app/mock.py` | Simulated network with built-in problems (demo mode) |
+| `web/` | The dashboard (vanilla JS, no build step) |
+| `scripts/` | Install (Linux, Proxmox), update and `dev-deploy.sh` for a test LXC |
 
-Ideeën en verbeteringen zijn welkom via issues en pull requests. Plak bij een probleem de debug-info uit *Instellingen → Probleemoplossing*.
+Ideas and improvements are welcome as issues and pull requests. When reporting a problem, paste the debug info from *Settings → Troubleshooting*: it contains the version, controller type and recent errors, without addresses, names or keys.
 
-Een aantal ideeën is geïnspireerd door [Network Optimizer](https://github.com/Ozark-Connect/NetworkOptimizer), [UI Toolkit](https://github.com/Crosstalk-Solutions/unifi-toolkit) en [Lagezentrum (unifi-HQ)](https://github.com/ProfessorQuantumUniverse/unifi-HQ); er is geen code van overgenomen. De landsgrenzen komen van [Natural Earth](https://www.naturalearthdata.com) (publiek domein); de globe gebruikt [d3-geo en d3-array](https://d3js.org) (ISC-licentie, zie `web/vendor/LICENSE-d3.txt`).
+Some ideas were inspired by [Network Optimizer](https://github.com/Ozark-Connect/NetworkOptimizer), [UI Toolkit](https://github.com/Crosstalk-Solutions/unifi-toolkit) and [Lagezentrum (unifi-HQ)](https://github.com/ProfessorQuantumUniverse/unifi-HQ); no code was copied. Country borders come from [Natural Earth](https://www.naturalearthdata.com) (public domain); the globe uses [d3-geo and d3-array](https://d3js.org) (ISC licence, see `web/vendor/LICENSE-d3.txt`).
 
-## Licentie
+## Licence
 
 [MIT](LICENSE)
