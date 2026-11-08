@@ -2,6 +2,18 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.4.0 – 2026-11-08
+
+### Added
+- **Backups of your UniFi controller**: Sonar keeps a copy of the automatic backups and can have a fresh one made every day. A warning appears when there is no recent backup.
+- **Optional login** with a password, under Settings → Access.
+- **Delay under load (bufferbloat)**: a grade from A+ to F during the speed test.
+- **Presence in Home Assistant**: chosen devices as a `device_tracker` via MQTT.
+- **Wall display**: a calm full-screen view, optionally with the globe, and a black-and-white version for e-paper.
+
+### Fixed
+- After a single failed request Sonar could stay on the limited official API until it was restarted. It now tries the richer source again every 5 minutes.
+
 ## 1.3.0 – 2026-11-08
 
 The first release on GitHub.

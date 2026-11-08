@@ -19,7 +19,8 @@ from .i18n import L
 log = logging.getLogger(__name__)
 NODE = "unifi_sonar"
 BASE = f"sonar/{NODE}"
-DEFAULTS = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "prefix": "homeassistant"}
+DEFAULTS = {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "prefix": "homeassistant",
+            "presence": [], "presence_grace": 300}
 
 # (sleutel, naam (nl, en), eenheid, device_class, state_class, icoon). De sleutels (en dus de entity-id's in HA)
 # blijven gelijk; alleen de getoonde naam volgt de taal.
@@ -36,6 +37,7 @@ SENSORS = [
     ("speed_down", ("Speedtest download", "Speed test download"), "Mbit/s", "data_rate", "measurement", "mdi:speedometer"),
     ("speed_up", ("Speedtest upload", "Speed test upload"), "Mbit/s", "data_rate", "measurement", "mdi:speedometer"),
     ("speed_ping", ("Speedtest ping", "Speed test ping"), "ms", "duration", "measurement", "mdi:timer-outline"),
+    ("speed_grade", ("Speedtest onder belasting", "Speed test under load"), None, None, None, "mdi:speedometer-slow"),
     ("usage_today", ("Datagebruik vandaag", "Data usage today"), "GB", "data_size", "total_increasing", "mdi:chart-bar"),
     ("usage_month", ("Datagebruik deze maand", "Data usage this month"), "GB", "data_size", "total_increasing", "mdi:chart-bar"),
     ("new_devices", ("Nieuwe apparaten", "New devices"), None, None, "measurement", "mdi:new-box"),
@@ -47,6 +49,10 @@ BINARY = [("internet", ("Internet", "Internet"), "connectivity"),
 
 def config(settings) -> dict:
     return {**DEFAULTS, **(getattr(settings, "mqtt", None) or {})}
+
+
+def _tid(mac: str) -> str:
+    return mac.replace(":", "").lower()
 
 
 # ---------------------------------------------------------------------- MQTT 3.1.1-pakketjes
@@ -138,6 +144,7 @@ class HAMqtt:
         self.writer: asyncio.StreamWriter | None = None
         self.status = {"connected": False, "error": None, "since": None, "last_publish": None}
         self._task: asyncio.Task | None = None
+        self._seen: dict[str, int] = {}   # aanwezigheid: wanneer een apparaat voor het laatst verbonden was
 
     @property
     def cfg(self) -> dict:
@@ -191,8 +198,9 @@ class HAMqtt:
         self.status.update(connected=True, error=None, since=int(time.time()))
         log.info("MQTT verbonden met %s:%s", c["host"], c["port"])
         writer.write(subscribe_packet(f"{BASE}/speedtest/set"))
-        for topic, payload in self.discovery():
+        for topic, payload in self.discovery() + self.retired():
             writer.write(publish_packet(topic, payload))
+        self.col.db.set_kv("mqtt_presence", {"ids": [_tid(d["mac"]) for d in c["presence"]]})
         writer.write(publish_packet(f"{BASE}/status", "online"))
         await writer.drain()
         self.publish_state()
@@ -245,6 +253,43 @@ class HAMqtt:
         out.append((f"{p}/button/{NODE}/speedtest/config", json.dumps({
             "name": L("Speedtest starten", "Start speed test"), "unique_id": f"{NODE}_speedtest", "object_id": "sonar_speedtest",
             "command_topic": f"{BASE}/speedtest/set", "icon": "mdi:speedometer", "device": dev, **avail})))
+        for d in self.cfg["presence"]:
+            tid = _tid(d["mac"])
+            out.append((f"{p}/device_tracker/{NODE}/{tid}/config", json.dumps({
+                "name": d["name"], "unique_id": f"{NODE}_presence_{tid}", "object_id": f"sonar_{tid}",
+                "state_topic": f"{BASE}/presence/{tid}", "json_attributes_topic": f"{BASE}/presence/{tid}/attrs",
+                "payload_home": "home", "payload_not_home": "not_home", "source_type": "router", "device": dev, **avail})))
+        return out
+
+    def retired(self) -> list[tuple[str, str]]:
+        """Apparaten die niet meer gevolgd worden: een lege config haalt ze uit Home Assistant."""
+        p = self.cfg["prefix"].strip("/") or "homeassistant"
+        now = {_tid(d["mac"]) for d in self.cfg["presence"]}
+        out = []
+        for tid in (self.col.db.get_kv("mqtt_presence") or {}).get("ids", []):
+            if tid not in now:
+                out += [(f"{p}/device_tracker/{NODE}/{tid}/config", ""), (f"{BASE}/presence/{tid}", ""),
+                        (f"{BASE}/presence/{tid}/attrs", "")]
+        return out
+
+    def presence(self) -> dict[str, dict]:
+        """Per gevolgd apparaat: thuis of weg. Telefoons slapen en vallen even van de wifi, dus pas 'weg' na de wachttijd.
+        We rekenen vanaf de laatste geslaagde meting: is de controller even weg, dan is niemand daardoor afwezig."""
+        snap, cfg = self.col.latest or {}, self.cfg
+        ref = int(self.col.last_ok or time.time())
+        online = {c["mac"]: c for c in snap.get("clients", []) if c.get("connected", True)}
+        names = {d["mac"]: d["name"] for d in snap.get("devices", [])}
+        out = {}
+        for d in cfg["presence"]:
+            mac = d["mac"]
+            c = online.get(mac)
+            if c:
+                self._seen[mac] = ref
+            elif mac not in self._seen:   # net gestart: de historie weet wanneer hij er voor het laatst was
+                row = self.col.db.q("SELECT MAX(ts) t FROM client_samples WHERE mac=?", (mac,))
+                self._seen[mac] = row[0]["t"] or 0
+            out[mac] = {"home": ref - self._seen[mac] <= int(cfg["presence_grace"]),
+                        "attrs": {"ip": c.get("ip"), "ssid": c.get("ssid"), "ap": names.get(c.get("ap_mac")), "signal": c.get("signal")} if c else {}}
         return out
 
     def state(self) -> tuple[dict, dict]:
@@ -267,6 +312,7 @@ class HAMqtt:
             "devices_online": sum(d.get("state") == "online" for d in devs),
             "latency": wan.get("latency_ms"), "down_now": mb(wan.get("rx_bps")), "up_now": mb(wan.get("tx_bps")),
             "speed_down": st and round(st["down"]), "speed_up": st and round(st["up"]), "speed_ping": st and st.get("latency"),
+            "speed_grade": self.col.bloat_history[-1]["grade"] if self.col.bloat_history else None,
             "usage_today": round(u, 2) if (u := usage("day", day0)) is not None else None,
             "usage_month": round(u, 1) if (u := usage("month", month0)) is not None else None,
             "new_devices": len(db.pending_new(now - 7 * 86400)),
@@ -283,6 +329,9 @@ class HAMqtt:
             state, attrs = self.state()
             self.writer.write(publish_packet(f"{BASE}/state", json.dumps(state)))
             self.writer.write(publish_packet(f"{BASE}/issues", json.dumps(attrs)))
+            for mac, p in self.presence().items():
+                self.writer.write(publish_packet(f"{BASE}/presence/{_tid(mac)}", "home" if p["home"] else "not_home"))
+                self.writer.write(publish_packet(f"{BASE}/presence/{_tid(mac)}/attrs", json.dumps(p["attrs"])))
             self.status["last_publish"] = int(time.time())
         except Exception as e:  # noqa: BLE001 – bijzaak
             log.warning("MQTT publiceren: %s", e)

@@ -564,6 +564,23 @@ class MockNetwork:
     def start_speedtest(self, now: float) -> None:
         self.speedtest_started = now
 
+    def backups(self, now: int) -> list[dict]:
+        """Nep-backups voor de demomodus (geen echte configuratie)."""
+        month0 = int(time.mktime(time.localtime(now)[:2] + (1, 0, 30, 0, 0, 0, -1)))
+        return [{"filename": f"autobackup_10.6.109_{time.strftime('%Y%m%d', time.localtime(month0 - i * 31 * 86400))}.unf", "time": month0 - i * 31 * 86400} for i in range(3)]
+
+    def probe_ms(self, now: float) -> float:
+        """Vertraging tijdens de test: de demolijn loopt vooral bij uploaden vol (cijfer C)."""
+        phase, t0 = None, 0
+        if self.speedtest_started is not None:
+            el = now - self.speedtest_started
+            for name, length in self.TEST_PHASES:
+                if el < t0 + length:
+                    phase = name
+                    break
+                t0 += length
+        return 9 + random.uniform(0, 2) + {"download": 24, "upload": 110}.get(phase, 0) * random.uniform(0.8, 1.2)
+
     def speedtest_status(self, now: float) -> dict:
         """Zelfde velden als 'speedtest-status' op een echte gateway."""
         st = {"status_ping": 0, "status_download": 0, "status_upload": 0, "status_summary": 0}

@@ -739,3 +739,61 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .adv-row a.rank-name { color: var(--me-text); text-decoration: none; font-weight: 600; }
 .adv-row a.rank-name:hover { color: var(--me-primary); text-decoration: underline; }
 .adv-badges { display: flex; align-items: center; gap: 8px; }
+
+/* inlog */
+.wizard.login { max-width: 420px; margin-top: 12vh; }
+.sep { border: 0; border-top: 1px solid var(--me-border); margin: 20px 0; }
+.sched-devs .check[hidden] { display: none; }
+
+/* vertraging onder belasting */
+.bloat { display: flex; gap: 14px; align-items: flex-start; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--me-border); }
+.bloat-g { flex: none; width: 48px; height: 48px; display: grid; place-items: center; border-radius: var(--me-radius-md); font-size: 20px; font-weight: 700; background: var(--me-elevated); border: 1px solid var(--me-border); }
+.bloat-g.ok { color: var(--me-success); } .bloat-g.info { color: var(--me-primary); } .bloat-g.warning { color: var(--me-warning); } .bloat-g.critical { color: var(--me-danger); }
+.bloat-t { font-weight: 600; }
+
+/* muurscherm */
+body.kiosk .topbar { display: none; }
+body.kiosk main { max-width: none; padding: 0; }
+.ks { min-height: 100dvh; display: flex; flex-direction: column; gap: clamp(12px, 2vh, 24px); padding: clamp(16px, 3vh, 36px) clamp(16px, 3vw, 44px); }
+.ks-head, .ks-foot { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.ks-head .brand { font-size: clamp(16px, 1.6vw, 22px); }
+.ks-clock { text-align: right; display: flex; flex-direction: column; }
+.ks-clock time { font-size: clamp(36px, 5vw, 72px); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.ks-clock span { color: var(--me-text-secondary); font-size: clamp(13px, 1.3vw, 18px); margin-top: 6px; }
+.ks-main { flex: 1; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: clamp(12px, 2vw, 24px); min-height: 0; }
+.ks.with-globe .ks-main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr); }
+.ks-col { display: flex; flex-direction: column; gap: clamp(12px, 2vw, 24px); min-width: 0; }
+.ks-score .label, .ks-tile .label { color: var(--me-text-secondary); display: flex; gap: 8px; align-items: center; font-size: clamp(13px, 1.2vw, 16px); }
+.ks-num { font-size: clamp(72px, 11vw, 150px); font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.ks-num small { font-size: 0.26em; font-weight: 500; color: var(--me-text-secondary); margin-left: 6px; }
+.ks-score .scorebar { margin-top: 14px; }
+.ks-tiles { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: clamp(12px, 2vw, 24px); }
+.ks-val { font-size: clamp(30px, 3.6vw, 52px); font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.ks-val small { font-size: 0.4em; font-weight: 500; color: var(--me-text-secondary); margin-left: 4px; }
+.ks-tile .sub { color: var(--me-text-secondary); font-size: clamp(13px, 1.1vw, 16px); }
+.ks-issues h2 { margin: 0 0 12px; font-size: clamp(18px, 1.7vw, 24px); }
+.ks-issue { display: flex; gap: 12px; align-items: flex-start; padding: clamp(8px, 1.3vh, 14px) 0; border-top: 1px solid var(--me-border); font-size: clamp(15px, 1.5vw, 21px); }
+.ks-issue .badge { flex: none; }
+.ks-ok { display: flex; gap: 12px; align-items: center; color: var(--me-success); font-size: clamp(20px, 2.4vw, 32px); padding: 24px 0; }
+.ks-globe { padding: 0; overflow: hidden; position: relative; min-height: 320px; }
+#k-globe { position: absolute; inset: 0; }
+.ks-foot { color: var(--me-text-secondary); font-size: 13px; }
+.ks-foot .dot { margin-right: 8px; }
+.ks-acts { display: flex; gap: 16px; }
+@media (max-width: 820px) { .ks-main, .ks.with-globe .ks-main { grid-template-columns: 1fr; } .ks-globe { min-height: 360px; } }
+
+/* e-paper: geen kleur, geen beweging, maximaal contrast */
+body.kiosk-paper { --me-bg: #fff; --me-surface: #fff; --me-elevated: #fff; --me-border: #000; --me-border-strong: #000; --me-text: #000; --me-text-secondary: #000; --me-text-muted: #000;
+  --me-primary: #000; --me-success: #000; --me-warning: #000; --me-danger: #000; background: #fff; color: #000; }
+body.kiosk-paper .card { box-shadow: none; background: #fff; }
+body.kiosk-paper .badge { background: #fff; color: #000; border: 1px solid #000; }
+body.kiosk-paper .scorebar { background: #fff; border: 1px solid #000; }
+body.kiosk-paper .scorebar span { background: #000; }
+body.kiosk-paper .ks-foot .ks-acts { display: none; }
+
+/* UniFi-backups */
+.bk-list { margin-top: 14px; border-top: 1px solid var(--me-border); }
+.bk-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--me-border); }
+.bk-main { min-width: 0; }
+a.btn { color: var(--me-text); text-decoration: none; }
+body:has(.wizard.login) #lang-top { display: none; }

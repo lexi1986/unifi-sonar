@@ -6,6 +6,7 @@ import asyncio
 import httpx
 import random
 import logging
+import re
 import time
 
 from . import rules
@@ -18,7 +19,7 @@ from .i18n import L
 from .ha_mqtt import HAMqtt
 from .unifi_client import (UnifiClient, config_from_raw, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
                            normalize_speedtests, wan_rates, normalize_client_usage, normalize_dpi)
-from . import advisories, schedules
+from . import advisories, backups, bufferbloat, schedules
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +78,13 @@ class Collector:
         self.dpi: list[dict] = []
         self.advisories: dict = db.get_kv("advisories") or {}
         self._adv_checked = 0
+        self.bloat_history: list[dict] = (self.db.get_kv("bufferbloat") or {}).get("items", [])
+        self._bloat: dict | None = None
+        self._bk_checked = 0
+        self.backup_status: dict = {"checked": None, "error": None}
+        if self.mock and not self.bloat_history:
+            self.bloat_history = [{"ts": int(time.time()) - 86400, "host": "demo", "idle": 9.0, "down": 33.0, "up": 121.0,
+                                   "added_down": 24.0, "added_up": 112.0, "worst": 112.0, "grade": "C"}]
 
     async def _fetch(self, dt: float) -> dict:
         if self.mock:
@@ -428,12 +436,14 @@ class Collector:
         s = self.speedtest
         if s["running"] and not st["running"] and st["rundate"] and st["rundate"] >= (s["started"] or 0) - 5:
             s["running"] = False   # klaar: eerst het archief van UniFi, anders het resultaat van de gateway zelf
+            self._bloat_done()
             await self.sync_speedtests(force=True)
             if st["down"]:
                 self.db.store_speedtests([{"ts": st["rundate"], "down": st["down"], "up": st["up"],
                                            "latency": st["latency"], "server": ""}])
         elif s["running"] and s["started"] and time.time() - s["started"] > 180:
             s.update(running=False, error=L("De test duurde te lang en is afgebroken.", "The test took too long and was stopped."))
+            self._bloat = None
 
     async def start_speedtest(self) -> None:
         s = self.speedtest
@@ -441,15 +451,112 @@ class Collector:
             raise RuntimeError(L("Er loopt al een speedtest.", "A speed test is already running."))
         if s["started"] and time.time() - s["started"] < 60:
             raise RuntimeError(L("Wacht een minuut tussen twee tests.", "Wait a minute between two tests."))
-        if self.mock:
-            self.mock.start_speedtest(time.time())
-        else:
-            mac = self._gateway_mac()
-            if not mac:
-                raise RuntimeError(L("Geen gateway gevonden", "No gateway found"))
-            await self.client.speedtest_start(mac)
-        s.update(running=True, started=time.time(), error=None)
+        prev = s["started"]
+        s.update(running=True, started=time.time(), error=None)   # meteen, zodat een tweede klik geen tweede test start
+        try:
+            probed = await self._bloat_prepare()
+            if self.mock:
+                self.mock.start_speedtest(time.time())
+            else:
+                mac = self._gateway_mac()
+                if not mac:
+                    raise RuntimeError(L("Geen gateway gevonden", "No gateway found"))
+                await self.client.speedtest_start(mac)
+        except Exception:
+            s.update(running=False, started=prev)
+            raise
+        s["started"] = time.time()
         self._live = None
+        if probed:
+            asyncio.create_task(self._bloat_measure(*probed))
+
+    # ---------------------------------------------------------------- backups
+    async def collect_backups(self, force: bool = False, create: bool = False) -> None:
+        """Elke 6 uur de automatische backups kopiëren; desgewenst eens per dag een verse laten maken."""
+        now, d = int(time.time()), self.s.data_dir
+        if not force and now - self._bk_checked < 6 * 3600:
+            return
+        self._bk_checked = now
+        try:
+            if self.mock:
+                for b in self.mock.backups(now):
+                    if not backups.has(d, b["filename"]):
+                        backups.store(d, b["filename"], b"demo: geen echte backup / not a real backup\n", b["time"])
+            else:
+                rows = await self.client.backups_list()
+                if rows is None:
+                    self.backup_status.update(error=L("Alleen via de uitgebreide UniFi-API.", "Only via the extended UniFi API."))
+                    return
+                for row in rows:
+                    name = row.get("filename") or ""
+                    if not backups.NAME_RE.match(name) or backups.has(d, name):
+                        continue
+                    data = await self.client.backup_download(f"/dl/autobackup/{name}")
+                    if row.get("size") and len(data) != row["size"]:
+                        raise RuntimeError(L(f"Backup {name} kwam niet volledig binnen.", f"Backup {name} did not arrive completely."))
+                    backups.store(d, name, data, (row.get("time") or 0) / 1000 or None)
+            made = (self.db.get_kv("backup_made") or {}).get("ts", 0)
+            if create or (self.s.backup_daily and now - made >= 86400 - 600):
+                data = b"demo: geen echte backup / not a real backup\n" if self.mock else await self.client.backup_create()
+                ver = re.sub(r"[^0-9.]", "", str(self.sysinfo.get("network_version") or "")) or "x"
+                backups.store(d, f"sonar_{ver}_{time.strftime('%Y%m%d_%H%M', time.localtime(now))}.unf", data, now)
+                self.db.set_kv("backup_made", {"ts": now})
+            backups.prune(d)
+            self.backup_status.update(checked=now, error=None)
+        except Exception as e:  # noqa: BLE001 – bijzaak
+            log.warning("UniFi-backups: %s", e)
+            self.backup_status.update(checked=now, error=str(e) or type(e).__name__)
+
+    # ---------------------------------------------------------------- vertraging onder belasting
+    async def _bloat_prepare(self):
+        """Eerst meten hoe snel het antwoord is op een rustige lijn. Mislukt dit, dan gaat de speedtest gewoon door."""
+        try:
+            if self.mock:
+                host, probe = "demo", self._mock_probe
+            else:
+                found = await bufferbloat.make_probe()
+                if not found:
+                    return None
+                host, probe = found
+            idle = []
+            for _ in range(5):
+                idle.append(await probe())
+                await asyncio.sleep(0.15)
+            self._bloat = {"host": host, "idle": idle, "download": [], "upload": [], "load": []}
+            return (probe,)
+        except Exception as e:  # noqa: BLE001 – bijzaak
+            log.info("Vertraging onder belasting: %s", e)
+            return None
+
+    async def _mock_probe(self) -> float:
+        return self.mock.probe_ms(time.time())
+
+    async def _bloat_measure(self, probe) -> None:
+        """Meet tijdens de test. Vraagt zelf de voortgang op, zodat het ook werkt als de pagina Internet niet openstaat
+        (bijvoorbeeld bij de knop in Home Assistant)."""
+        phase, asked, started = None, 0.0, time.monotonic()
+        while self._bloat is not None and time.monotonic() - started < 190:
+            try:
+                if time.monotonic() - asked >= 2:
+                    asked = time.monotonic()
+                    phase = (await self.live_wan())["speedtest"].get("phase")
+                    if self._bloat is None:
+                        return
+                if self.speedtest["running"] and phase != "ping" and time.monotonic() - started > 3:
+                    ms = await probe()
+                    if self._bloat is not None:
+                        self._bloat["load" if phase is None else phase].append(ms)
+            except Exception as e:  # noqa: BLE001 – bijzaak, de speedtest loopt door
+                log.info("Vertraging onder belasting: %s", e)
+            await asyncio.sleep(bufferbloat.INTERVAL)
+        self._bloat = None
+
+    def _bloat_done(self) -> None:
+        b, self._bloat = self._bloat, None
+        r = bufferbloat.summarize(b, b["host"], int(time.time())) if b else None
+        if r:
+            self.bloat_history = (self.bloat_history + [r])[-20:]
+            self.db.set_kv("bufferbloat", {"items": self.bloat_history})
 
     async def sync_speedtests(self, force: bool = False) -> None:
         """Speedtest-historie van de controller overnemen (elk uur), zodat hij langer bewaard blijft."""
@@ -510,11 +617,14 @@ class Collector:
         self._track_wan_ip(snap, ts)
         snap["config"] = self.config
         snap["insights"] = self.insights_for_rules(snap)
+        snap["bufferbloat"] = next((b for b in self.bloat_history[-1:] if ts - b["ts"] < 14 * 86400), None)
         if not self.mock or ts >= time.time() - 120:   # demo: alleen bij echte metingen, niet tijdens het vullen
             await self.sync_speedtests()
             await self.sync_usage()
         await self.sync_client_usage()       # zelf elk uur (wandklok), dus ook tijdens het vullen van de demo maar één keer
         await self._collect_advisories(ts)
+        await self.collect_backups()
+        snap["backups"] = backups.summary(self.s.data_dir, self.s.backup_daily) if self.backup_status["checked"] else None
         # In beide talen, zodat wisselen van taal direct werkt en ook opgeloste meldingen meegaan.
         tr = i18n.both(lambda: rules.evaluate(snap, self.db, self.s.thresholds, ts))
         issues = i18n.merge_issues(tr["nl"], tr["en"])

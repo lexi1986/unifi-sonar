@@ -754,6 +754,32 @@ class UnifiClient:
         r.raise_for_status()
         return normalize_client_usage(r.json().get("data", []))
 
+    # ------------------------------------------------------------------ backups
+    def _legacy_get_headers(self) -> dict:
+        return self._headers() if self.source == "legacy-key" else {}
+
+    async def backups_list(self) -> list[dict] | None:
+        """De backups die op de controller staan. None = niet beschikbaar via deze bron."""
+        if self.source not in ("legacy-key", "legacy-login"):
+            return None
+        r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/cmd/backup", headers=self._write_headers(), json={"cmd": "list-backups"})
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+    async def backup_download(self, path: str) -> bytes:
+        r = await self.http.get(f"/proxy/network{path}", headers=self._legacy_get_headers())
+        r.raise_for_status()
+        return r.content
+
+    async def backup_create(self) -> bytes:
+        """Laat de controller nu een backup maken (alleen instellingen, geen statistieken) en haal die op."""
+        r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/cmd/backup", headers=self._write_headers(), json={"cmd": "backup", "days": 0}, timeout=120)
+        r.raise_for_status()
+        url = (r.json().get("data") or [{}])[0].get("url")
+        if not url:
+            raise RuntimeError(L("De controller gaf geen backup terug.", "The controller did not return a backup."))
+        return await self.backup_download(url)
+
     async def client_dpi(self) -> list[dict]:
         self._legacy_only()
         r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/stat/stadpi", headers=self._write_headers(),

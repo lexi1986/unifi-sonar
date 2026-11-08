@@ -115,6 +115,7 @@
 
   async function api(path) {
     const r = await fetch(path, { cache: "no-store" });
+    if (r.status === 401) throw needLogin();
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
     return r.json();
   }
@@ -122,6 +123,44 @@
     get(k, d) { try { const v = localStorage.getItem("ui." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
     set(k, v) { try { localStorage.setItem("ui." + k, JSON.stringify(v)); } catch { /* geen opslag */ } },
   };
+
+  // ------------------------------------------------------------------ inloggen
+  function needLogin() {
+    showLogin();
+    return Object.assign(new Error(L("Inloggen nodig", "Login required")), { auth: true });
+  }
+  function showLogin() {
+    const v = $("#view");
+    if (v.dataset.mounted === "login") return;
+    closeDrawer();
+    stopKiosk();
+    document.body.classList.remove("kiosk", "kiosk-paper");
+    document.body.classList.add("setup");
+    v.dataset.mounted = "login";
+    v.innerHTML = `<div class="wizard login"><div class="wiz-brand"><span class="logo">${icon("radar")}</span><div><div class="wiz-title">UniFi Sonar</div><div class="muted">${L("Log in om verder te gaan", "Log in to continue")}</div></div></div>
+      <form class="card" id="login-form" onsubmit="return false">
+        <div class="field"><label for="login-pw">${L("Wachtwoord", "Password")}</label><input class="input" id="login-pw" type="password" autocomplete="current-password" required></div>
+        <div id="login-msg" role="alert"></div>
+        <div class="wiz-actions"><button class="btn primary" id="login-go" type="submit">${L("Inloggen", "Log in")}</button></div>
+      </form></div>`;
+    $("#status").innerHTML = `<span class="dot off"></span>${L("Niet ingelogd", "Not logged in")}`;
+    $("#login-form").addEventListener("submit", async () => {
+      const b = $("#login-go");
+      b.disabled = true;
+      try {
+        await post("/api/auth/login", { password: $("#login-pw").value });
+        v.dataset.mounted = "";
+        document.body.classList.remove("setup");
+        route();
+        await refresh();
+      } catch (e) {
+        $("#login-msg").innerHTML = `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(e.message)}</span></div>`;
+        b.disabled = false;
+        $("#login-pw").select();
+      }
+    });
+    $("#login-pw").focus();
+  }
 
   // ------------------------------------------------------------------ state
   const state = {
@@ -138,6 +177,7 @@
 
   // ------------------------------------------------------------------ data
   async function refresh() {
+    if ($("#view").dataset.mounted === "login") return;
     try {
       const status = await api("/api/status");
       state.status = status;
@@ -159,6 +199,7 @@
       renderStatus();
       update();
     } catch (e) {
+      if (e.auth) return;
       $("#status").innerHTML = `<span class="dot err"></span>${L("Geen data", "No data")}: ${esc(e.message)}`;
       if (!state.snap) $("#view").innerHTML = `<div class="banner err">${icon("octagon")}${L("Kan geen gegevens ophalen", "Cannot fetch data")}: ${esc(e.message)}</div>`;
     }
@@ -177,12 +218,17 @@
   }
 
   // ------------------------------------------------------------------ router
-  const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, internet: mountInternet, wereld: mountWorld, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings };
+  const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, internet: mountInternet, wereld: mountWorld, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings, kiosk: mountKiosk };
   let current = null;
   function route() {
     const [name, id] = location.hash.replace(/^#\/?/, "").split("/");
     current = routes[name] ? name : "overzicht";
-    state.pendingOpen = id ? decodeURIComponent(id) : null;   // deep link naar een detailpaneel
+    state.pendingOpen = id && current !== "kiosk" ? decodeURIComponent(id) : null;   // deep link naar een detailpaneel
+    const kmode = current === "kiosk" && (id === "globe" || id === "paper") ? id : "";
+    if (current !== "kiosk") stopKiosk();
+    else if (kmode !== kio.mode) { stopKiosk(); kio.mode = kmode; $("#view").dataset.mounted = ""; }
+    document.body.classList.toggle("kiosk", current === "kiosk");
+    document.body.classList.toggle("kiosk-paper", current === "kiosk" && kio.mode === "paper");
     document.querySelectorAll(".nav a, .iconlink").forEach((a) => { if (a.dataset.route === current) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     update();
     $("#view").focus({ preventScroll: true });
@@ -1072,6 +1118,17 @@
         <div class="sub">${last ? `${dateTxt(last.ts, true)} · ping ${nf(last.latency)} ms` : L("nog niet gemeten", "not measured yet")}</div></div>`;
   }
   const PHASES = [["ping", "Ping"], ["download", "Download"], ["upload", "Upload"]];
+  function bloatHTML(b) {
+    if (!b) return "";
+    const lv = { "A+": "ok", A: "ok", B: "info", C: "warning", D: "critical", F: "critical" }[b.grade];
+    const text = { ok: L("Je verbinding blijft ook onder volle belasting snel reageren.", "Your connection keeps responding quickly even under full load."),
+      info: L("Prima: als de lijn vol zit merk je er weinig van.", "Fine: you will barely notice when the line is full."),
+      warning: L("Als de lijn vol zit, merk je dat bij videobellen en games.", "When the line is full, you will notice it in video calls and games."),
+      critical: L("Als de lijn vol zit, wordt alles traag. Smart Queues in UniFi kunnen helpen.", "When the line is full, everything gets slow. Smart Queues in UniFi can help.") }[lv];
+    const part = (l, v) => (v == null ? "" : ` · ${l} +${nf(v)} ms`);
+    return `<div class="bloat"><span class="bloat-g ${lv}" title="${L("Cijfer", "Grade")} ${esc(b.grade)}">${esc(b.grade)}</span><div><div class="bloat-t">${L("Vertraging onder belasting", "Delay under load")}</div>
+      <div class="num muted">${L("rustig", "idle")} ${nf(b.idle)} ms${part("download", b.added_down)}${part("upload", b.added_up)}</div><div class="help" style="margin-top:4px">${text}</div></div></div>`;
+  }
   function renderTest() {
     const root = $("#net-test");
     if (!root || !net.data) return;
@@ -1093,7 +1150,7 @@
         <div><div class="k">Upload</div><div class="v">${mbTxt(last.up)}<small>Mbit/s</small></div></div>
         <div><div class="k">Ping</div><div class="v">${last.latency == null ? "–" : nf(last.latency)}<small>ms</small></div></div></div>
         <p class="muted" style="margin:6px 0 0">${dateTxt(last.ts, true)}${nd && last.down < 0.8 * nd ? ` · <span class="t-warning">${L("lager dan normaal", "lower than normal")} (~${mbTxt(nd)} Mbit/s)</span>` : nd ? ` · ${L("normaal", "normal")} ~${mbTxt(nd)} Mbit/s` : ""}</p>` : "";
-    root.innerHTML = `<div class="card-head"><h2 style="margin:0">${L("Speedtest", "Speed test")}</h2></div>${res}
+    root.innerHTML = `<div class="card-head"><h2 style="margin:0">${L("Speedtest", "Speed test")}</h2></div>${res}${bloatHTML(net.data.bufferbloat)}
       ${t.error ? `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(t.error)}</span></div>` : ""}
       <div class="wiz-actions" style="margin-top:16px"><button class="btn primary" data-st="start" ${net.data.available ? "" : "disabled"}>${icon("gauge")}${L("Start speedtest", "Start speed test")}</button></div>
       <p class="help">${L("De test draait op je gateway zelf en meet dus je echte internetverbinding, los van wifi of dit apparaat. Duurt 15 tot 30 seconden en gebruikt even je volledige bandbreedte.", "The test runs on your gateway itself, so it measures your real internet connection, independent of wifi or this device. Takes 15 to 30 seconds and briefly uses your full bandwidth.")}</p>`;
@@ -1137,6 +1194,84 @@
       $("#net-live-sub").textContent = e.message;
     }
     net.timer = setTimeout(liveLoop, net.last?.test?.running ? 1500 : 3000);
+  }
+
+  // ------------------------------------------------------------------ muurscherm
+  const kio = { mode: "", clock: null, globe: null, worldAt: 0 };
+  function stopKiosk() {
+    clearInterval(kio.clock); kio.clock = null;
+    kio.globe?.destroy(); kio.globe = null; kio.worldAt = 0;
+  }
+  function kioskClock() {
+    const now = new Date();
+    const t = $("#k-time"), d = $("#k-date");
+    if (!t) return;
+    t.textContent = now.toLocaleTimeString(LOC, { hour: "2-digit", minute: "2-digit" });
+    d.textContent = now.toLocaleDateString(LOC, { weekday: "long", day: "numeric", month: "long" });
+  }
+  function mountKiosk() {
+    stopKiosk();
+    mount("kiosk", `<div class="ks ${kio.mode === "globe" ? "with-globe" : ""}">
+      <header class="ks-head"><div class="brand"><span class="logo">${icon("radar")}</span>UniFi Sonar</div><div class="ks-clock"><time id="k-time"></time><span id="k-date"></span></div></header>
+      <div class="ks-main">
+        <div class="ks-col"><section class="card ks-score" id="k-score"></section><section class="ks-tiles" id="k-tiles"></section></div>
+        <section class="card ks-issues"><h2>${L("Wat vraagt aandacht", "Needs attention")}</h2><div id="k-issues"></div></section>
+        ${kio.mode === "globe" ? `<section class="card ks-globe"><div id="k-globe"></div></section>` : ""}
+      </div>
+      <footer class="ks-foot"><span id="k-status"></span><span class="ks-acts"><button class="linkbtn" id="k-full">${L("Volledig scherm", "Full screen")}</button><a class="linkbtn" href="#/overzicht">${L("Sluiten", "Close")}</a></span></footer>
+    </div>`);
+    kioskClock();
+    kio.clock = setInterval(kioskClock, 15000);
+    $("#k-full").onclick = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.());
+    if (kio.mode === "globe") startKioskGlobe();
+  }
+  UPDATERS.kiosk = () => {
+    const s = state.snap, st = state.status;
+    if (!s || !$("#k-score")) return;
+    const h = s.health || {}, score = h.score ?? 0, [label, lv] = scoreLabel(score);
+    $("#k-score").innerHTML = `<div class="label">${L("Netwerkscore", "Network score")}</div><div class="ks-num">${nf(score)}<small>/100</small></div>${badge(lv, label)}<div class="scorebar"><span style="width:${score}%;background:var(--me-${lv === "ok" ? "success" : lv === "warning" ? "warning" : "danger"})"></span></div>`;
+    const online = s.devices.filter((d) => d.state === "online").length;
+    const clients = s.clients.filter((c) => c.connected !== false).length;
+    const tile = (ic, l, v, sub) => `<div class="card ks-tile"><div class="label">${icon(ic)}${l}</div><div class="ks-val">${v}</div><div class="sub">${sub}</div></div>`;
+    $("#k-tiles").innerHTML =
+      tile("globe", "Internet", s.wan.up === false ? L("Offline", "Offline") : `${s.wan.latency_ms == null ? "–" : nf(s.wan.latency_ms)}<small>ms</small>`, s.wan.up === false ? L("geen verbinding", "no connection") : L("online", "online")) +
+      tile("activity", L("Verkeer nu", "Traffic now"), `${mbTxt(mb(s.wan.rx_bps))}<small>Mbit/s</small>`, `${L("omhoog", "up")} ${mbTxt(mb(s.wan.tx_bps))} Mbit/s`) +
+      tile("laptop", "Clients", nf(clients), `${nf(s.clients.filter((c) => c.connected !== false && !c.wired).length)} wifi`) +
+      tile("router", L("Apparaten", "Devices"), `${nf(online)}<small>/ ${nf(s.devices.length)}</small>`, L("online", "online"));
+    const top = state.issues.filter((i) => !i.group && !i.resolved_at && !i.muted), shown = kio.mode === "globe" ? 4 : 7;
+    $("#k-issues").innerHTML = top.length ? top.slice(0, shown).map((i) => `<div class="ks-issue">${sevBadge(i.severity)}<span>${esc(i.title)}</span></div>`).join("") + (top.length > shown ? `<p class="muted">${L(`en nog ${top.length - shown}`, `and ${top.length - shown} more`)}</p>` : "")
+      : `<div class="ks-ok">${icon("check")}<span>${L("Alles in orde", "All good")}</span></div>`;
+    const stale = st.last_ok && Date.now() / 1000 - st.last_ok > st.poll_seconds * 3;
+    $("#k-status").innerHTML = `<span class="dot ${st.last_error || stale ? "err" : ""}"></span>${L(`Bijgewerkt ${ago(st.last_ok)} geleden`, `Updated ${ago(st.last_ok)} ago`)}`;
+    if (kio.globe) loadKioskWorld();
+  };
+  async function startKioskGlobe() {
+    try { await ensureGlobe(); } catch (e) { return; }
+    const host = $("#k-globe");
+    if (!host || kio.globe || kio.mode !== "globe") return;
+    kio.globe = window.SonarGlobe.mount(host, { onHover() {}, onLeave() {}, onClick() {}, onZoom() {} });
+    loadKioskWorld();
+  }
+  async function loadKioskWorld() {
+    if (Date.now() - kio.worldAt < 55000) return;
+    kio.worldAt = Date.now();
+    const d = await api("/api/world?hours=6").catch(() => null);
+    if (!d || !kio.globe) return;
+    const byCc = Object.fromEntries(d.countries.map((c) => [c.cc, c]));
+    const max = Math.max(1, ...d.countries.map((c) => c.bytes));
+    const lvl = (b) => (b > 0 ? Math.log10(1 + b) / Math.log10(1 + max) : 0);
+    const maxN = Math.max(1, ...d.countries.map((c) => Math.max(c.out_n, c.in_n, c.blocked_n || 0)));
+    const arcs = [];
+    for (const c of d.countries) {
+      if (c.cc === d.home) continue;
+      for (const k of ["out", "in", "blocked"]) {
+        const n = c[`${k}_n`] || 0;
+        if (n) arcs.push({ cc: c.cc, kind: k, w: 0.8 + 2.6 * (k === "out" ? lvl(c.bytes) : Math.log10(1 + n) / Math.log10(1 + maxN)) });
+      }
+    }
+    const G = window.WORLD_GEO, has = new Set(G.features.map((f) => f.id));
+    kio.globe.setData({ home: d.home, byCc, show: { out: true, in: true, blocked: true }, lvl, name: ccName, arcs,
+      dots: d.countries.filter((c) => c.cc !== d.home && G.labels[c.cc] && !has.has(c.cc)).map((c) => c.cc) });
   }
 
   // ------------------------------------------------------------------ beveiliging
@@ -1662,6 +1797,7 @@
                            site: wiz.site, verify_tls: wiz.verify_tls, current_api_key: wiz.current_api_key });
   async function post(path, body) {
     const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (r.status === 401) throw needLogin();
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.detail || r.statusText);
     return j;
@@ -1721,6 +1857,10 @@
         <section class="card" aria-labelledby="h-mqtt"><h2 id="h-mqtt">Home Assistant (MQTT)</h2>
           <p class="help" style="margin:-4px 0 4px">${L("Zet de netwerkscore, meldingen, internetsnelheid, datagebruik en een speedtest-knop in Home Assistant. HA herkent alles vanzelf via MQTT-discovery.", "Put the network score, issues, internet speed, data usage and a speed test button in Home Assistant. HA picks everything up automatically via MQTT discovery.")}</p><div id="set-mqtt"></div></section>
         <section class="card" aria-labelledby="h-access"><h2 id="h-access">${L("Toegang", "Access")}</h2><div id="set-access"></div></section>
+        <section class="card" aria-labelledby="h-backups"><h2 id="h-backups">${L("UniFi-backups", "UniFi backups")}</h2><div id="set-backups"></div></section>
+        <section class="card" aria-labelledby="h-kiosk"><h2 id="h-kiosk">${L("Muurscherm", "Wall display")}</h2>
+          <p class="help" style="margin:-4px 0 12px">${L("Een rustige weergave op volledig scherm voor een tablet aan de muur. Bewaar de link op het apparaat; staat de inlog aan, dan log je daar één keer in.", "A calm full-screen view for a tablet on the wall. Save the link on that device; if the login is on, you log in there once.")}</p>
+          <div class="wiz-actions" style="margin-top:0"><a class="btn" href="#/kiosk">${L("Rustig", "Calm")}</a><a class="btn" href="#/kiosk/globe">${L("Met globe", "With globe")}</a><a class="btn" href="#/kiosk/paper">${L("E-paper (zwart-wit)", "E-paper (black and white)")}</a></div></section>
         <section class="card" aria-labelledby="h-debug"><h2 id="h-debug">${L("Probleemoplossing", "Troubleshooting")}</h2><div id="set-debug"></div></section>
       </div>
       <p class="muted" style="font-size:12px;margin-top:16px">${L("UniFi Sonar is een onofficieel hobbyproject en niet verbonden aan Ubiquiti.", "UniFi Sonar is an unofficial hobby project and not affiliated with Ubiquiti.")}</p>`);
@@ -1730,7 +1870,7 @@
       if (b.dataset.act === "change") { wiz.step = 2; wiz.address = ""; showWizard(2); }
       if (b.dataset.act === "demo") { wiz.step = 1; showWizard(1); }
     });
-    loadNotify(); loadMqtt(); loadAccess(); loadDebug();
+    loadNotify(); loadMqtt(); loadAccess(); loadBackups(); loadDebug();
     $("#set-mqtt").addEventListener("click", (e) => { const b = e.target.closest("[data-mq]"); if (b) mqttAction(b.dataset.mq, b); });
   }
   UPDATERS.instellingen = async function () {   // alleen de koppeling ververst; formulieren blijven staan
@@ -1774,6 +1914,17 @@
     const stTxt = !m.enabled ? "" : st.connected ? `<span class="badge ok">${icon("check")}${L("Verbonden", "Connected")}${st.last_publish ? L(` · bijgewerkt ${ago(st.last_publish)} geleden`, ` · updated ${ago(st.last_publish)} ago`) : ""}</span>`
       : st.error ? `<span class="badge critical">${icon("octagon")}${esc(st.error)}</span>` : `<span class="badge info">${L("verbinden…", "connecting…")}</span>`;
     const keep = L("opgeslagen (leeg laten = behouden)", "stored (leave empty = keep)");
+    const chosen = new Map((m.presence || []).map((d) => [d.mac, d.name]));
+    const seen = (state.snap?.clients || []).map((c) => ({ mac: c.mac, name: c.name, sub: c.wired ? L("bedraad", "wired") : c.ssid || "" }));
+    const prList = [...seen, ...[...chosen].filter(([mac]) => !seen.some((c) => c.mac === mac)).map(([mac, name]) => ({ mac, name, sub: L("nu niet verbonden", "not connected now") }))]
+      .sort((a, b) => (chosen.has(b.mac) - chosen.has(a.mac)) || a.name.localeCompare(b.name));
+    const presence = !m.enabled ? "" : `<hr class="sep"><h3 style="margin:0 0 6px">${L("Aanwezigheid", "Presence")}</h3>
+      <p class="help" style="margin-top:0">${L("Kies telefoons of andere apparaten: ze verschijnen in Home Assistant als <code>device_tracker</code> (thuis of weg). Zet bij een telefoon het privé-wifiadres op <i>vast</i> voor dit netwerk, anders raakt Sonar hem kwijt.", "Choose phones or other devices: they appear in Home Assistant as a <code>device_tracker</code> (home or away). On a phone, set the private Wi-Fi address to <i>fixed</i> for this network, or Sonar will lose track of it.")}</p>
+      <input class="input" id="pr-q" placeholder="${L("Zoek apparaat", "Search device")}" aria-label="${L("Zoek apparaat", "Search device")}">
+      <div class="sched-devs" id="pr-list">${prList.map((c) => `<label class="check" data-q="${esc(c.name.toLowerCase())}"><input type="checkbox" data-mac="${esc(c.mac)}" data-name="${esc(c.name)}" ${chosen.has(c.mac) ? "checked" : ""}> ${esc(c.name)} <span class="muted">${esc(c.sub)}</span></label>`).join("")}</div>
+      <div class="field" style="margin-top:12px"><label for="pr-grace">${L("Afwezig na", "Away after")}</label><select class="input" id="pr-grace">${[1, 3, 5, 10, 15, 30].map((n) => `<option value="${n * 60}" ${(m.presence_grace || 300) === n * 60 ? "selected" : ""}>${n} ${L(n === 1 ? "minuut" : "minuten", n === 1 ? "minute" : "minutes")}</option>`).join("")}</select>
+        <div class="help">${L("Telefoons vallen in slaapstand soms even van de wifi; zo tellen ze dan niet meteen als weg.", "Phones sometimes drop off the Wi-Fi while asleep; this keeps them from counting as away straight away.")}</div></div>
+      <div class="wiz-actions" style="margin-top:12px;align-items:center"><button class="btn" data-mq="presence">${L("Aanwezigheid opslaan", "Save presence")}</button><span id="pr-msg"></span></div>`;
     el.innerHTML = `<form class="form-grid" id="mq-form" onsubmit="return false">
         <div class="field" style="grid-column:1/-1"><label class="check"><input type="checkbox" name="enabled" ${m.enabled ? "checked" : ""}> ${L("Koppeling aan", "Integration on")}</label></div>
         <div class="field"><label for="mq-host">Broker</label><input class="input" id="mq-host" name="host" value="${esc(m.host)}" placeholder="${L("bijv. 192.168.1.20 of homeassistant.local", "e.g. 192.168.1.20 or homeassistant.local")}"></div>
@@ -1782,10 +1933,20 @@
         <div class="field"><label for="mq-pw">${L("Wachtwoord", "Password")}</label><input class="input" id="mq-pw" name="password" type="password" autocomplete="new-password" placeholder="${m.has_password ? keep : ""}"></div>
       </form>
       <div class="wiz-actions" style="margin-top:14px;align-items:center"><button class="btn primary" data-mq="save">${L("Opslaan", "Save")}</button><button class="btn" data-mq="test">${L("Verbinding testen", "Test connection")}</button><span id="mq-msg">${stTxt}</span></div>
-      <p class="help">${L("Gebruik je de Mosquitto-add-on, maak dan in Home Assistant een gewone gebruiker aan voor Sonar en vul die hier in. Na het opslaan verschijnt <b>UniFi Sonar</b> als apparaat onder Instellingen → Apparaten → MQTT.", "If you use the Mosquitto add-on, create a regular user for Sonar in Home Assistant and enter it here. After saving, <b>UniFi Sonar</b> appears as a device under Settings → Devices → MQTT.")}</p>`;
+      <p class="help">${L("Gebruik je de Mosquitto-add-on, maak dan in Home Assistant een gewone gebruiker aan voor Sonar en vul die hier in. Na het opslaan verschijnt <b>UniFi Sonar</b> als apparaat onder Instellingen → Apparaten → MQTT.", "If you use the Mosquitto add-on, create a regular user for Sonar in Home Assistant and enter it here. After saving, <b>UniFi Sonar</b> appears as a device under Settings → Devices → MQTT.")}</p>${presence}`;
+    $("#pr-q")?.addEventListener("input", (e) => { const q = e.target.value.trim().toLowerCase(); document.querySelectorAll("#pr-list .check").forEach((l) => { l.hidden = q && !l.dataset.q.includes(q); }); });
     hydrateIcons(el);
   }
   async function mqttAction(act, b) {
+    if (act === "presence") {
+      const out = $("#pr-msg");
+      const devices = [...document.querySelectorAll("#pr-list input:checked")].map((i) => ({ mac: i.dataset.mac, name: i.dataset.name }));
+      b.disabled = true;
+      try { await post("/api/mqtt/presence", { devices, grace: +$("#pr-grace").value }); out.innerHTML = badge("ok", L("Opgeslagen", "Saved"), "check"); hydrateIcons(out); }
+      catch (err) { out.innerHTML = badge("critical", err.message, "octagon"); }
+      b.disabled = false;
+      return;
+    }
     const f = $("#mq-form"), msg = $("#mq-msg");
     const body = { enabled: f.enabled.checked, host: f.host.value, port: +f.port.value || 1883, username: f.username.value, password: f.password.value || null };
     b.disabled = true;
@@ -1900,17 +2061,67 @@
   async function loadAccess(msg) {
     const root = $("#set-access");
     if (!root) return;
-    const a = await api("/api/access").catch(() => null);
+    const [a, au] = await Promise.all([api("/api/access").catch(() => null), api("/api/auth/state").catch(() => null)]);
     if (!a) { root.innerHTML = `<p class="muted">${L("Niet beschikbaar.", "Not available.")}</p>`; return; }
-    root.innerHTML = `<p class="help" style="margin-top:-4px">${L("Het dashboard heeft geen login. Het werkt via een IP-adres, <code>localhost</code> en lokale namen zoals <code>sonar.local</code> of <code>sonar.lan</code>. Andere hostnamen worden geweigerd, zodat een website in je browser het dashboard niet stiekem kan aansturen (DNS-rebinding). Gebruik je een eigen naam of een reverse proxy, zet die hieronder.", "The dashboard has no login. It works via an IP address, <code>localhost</code> and local names such as <code>sonar.local</code> or <code>sonar.lan</code>. Other host names are refused, so a website in your browser cannot secretly control the dashboard (DNS rebinding). If you use your own name or a reverse proxy, add it below.")}</p>
+    const pw = (id, label, ac) => `<div class="field"><label for="${id}">${label}</label><input class="input" id="${id}" type="password" autocomplete="${ac}"></div>`;
+    root.innerHTML = `<h3 style="margin:0 0 6px">${L("Inlog", "Login")} ${au?.enabled ? badge("ok", L("aan", "on"), "check") : badge("warning", L("uit", "off"))}</h3>
+      <p class="help" style="margin-top:0">${au?.enabled ? L("Je hebt het wachtwoord nodig om het dashboard te zien en te bedienen.", "You need the password to see and operate the dashboard.") : L("Zonder inlog kan iedereen op je netwerk die het adres kent meekijken en apparaten pauzeren. Stel een wachtwoord in om dat te voorkomen.", "Without a login, anyone on your network who knows the address can look around and pause devices. Set a password to prevent that.")}</p>
+      <form class="form-grid" id="au-form" onsubmit="return false">
+        ${au?.enabled ? pw("au-cur", L("Huidig wachtwoord", "Current password"), "current-password") : ""}
+        ${pw("au-new", au?.enabled ? L("Nieuw wachtwoord", "New password") : L("Wachtwoord", "Password"), "new-password")}
+        ${pw("au-rep", L("Herhaal wachtwoord", "Repeat password"), "new-password")}
+      </form>
+      <div id="au-msg" role="status"></div>
+      <div class="wiz-actions"><button type="button" class="btn primary" id="au-save">${au?.enabled ? L("Wachtwoord wijzigen", "Change password") : L("Inlog aanzetten", "Turn on login")}</button>
+        ${au?.enabled ? `<button type="button" class="btn" id="au-off">${L("Inlog uitzetten", "Turn off login")}</button><button type="button" class="btn" id="au-out">${L("Uitloggen", "Log out")}</button>` : ""}</div>
+      <p class="help">${L("Wachtwoord kwijt? Zie <i>Privacy en veiligheid</i> in de README.", "Forgot the password? See <i>Privacy and security</i> in the README.")}</p>
+      <hr class="sep">
+      <p class="help">${L("Het dashboard werkt via een IP-adres, <code>localhost</code> en lokale namen zoals <code>sonar.local</code> of <code>sonar.lan</code>. Andere hostnamen worden geweigerd, zodat een website in je browser het dashboard niet stiekem kan aansturen (DNS-rebinding). Gebruik je een eigen naam of een reverse proxy, zet die hieronder.", "The dashboard works via an IP address, <code>localhost</code> and local names such as <code>sonar.local</code> or <code>sonar.lan</code>. Other host names are refused, so a website in your browser cannot secretly control the dashboard (DNS rebinding). If you use your own name or a reverse proxy, add it below.")}</p>
       <div class="field"><label for="a-hosts">${L("Extra hostnamen", "Extra host names")}</label><input class="input" id="a-hosts" spellcheck="false" placeholder="${L("sonar.mijndomein.nl", "sonar.mydomain.com")}, sonar.tailnet.ts.net" value="${esc((a.allowed_hosts || []).join(", "))}">
         <div class="help">${L("Gescheiden door komma's, precies zoals in de adresbalk.", "Separated by commas, exactly as in the address bar.")}${a.env_hosts.length ? ` ${L("Al toegestaan via de service", "Already allowed via the service")}: <code>${esc(a.env_hosts.join(", "))}</code>.` : ""} ${L("Je bent nu verbonden via", "You are now connected via")} <code>${esc(a.current_host)}</code>.</div></div>
       ${msg ? `<div class="banner ${msg.ok ? "" : "err"}" role="status" style="margin-top:16px">${icon(msg.ok ? "check" : "octagon")}<span>${esc(msg.text)}</span></div>` : ""}
       <div class="wiz-actions"><button type="button" class="btn" id="a-save">${L("Opslaan", "Save")}</button></div>`;
+    const auMsg = (ok, text) => { $("#au-msg").innerHTML = `<div class="banner ${ok ? "" : "err"}" style="margin-top:12px">${icon(ok ? "check" : "octagon")}<span>${esc(text)}</span></div>`; };
+    $("#au-save").onclick = async () => {
+      const nw = $("#au-new").value;
+      if (nw !== $("#au-rep").value) return auMsg(false, L("De twee wachtwoorden zijn niet gelijk.", "The two passwords do not match."));
+      try { await post("/api/auth/password", { current: $("#au-cur")?.value || "", new: nw }); loadAccess({ ok: true, text: L("Wachtwoord opgeslagen. Deze browser blijft ingelogd.", "Password saved. This browser stays logged in.") }); }
+      catch (err) { auMsg(false, err.message); }
+    };
+    if ($("#au-off")) $("#au-off").onclick = async () => {
+      try { await post("/api/auth/disable", { password: $("#au-cur").value }); loadAccess({ ok: true, text: L("Inlog uitgezet.", "Login turned off.") }); }
+      catch (err) { auMsg(false, err.message); }
+    };
+    if ($("#au-out")) $("#au-out").onclick = async () => { await post("/api/auth/logout", {}).catch(() => {}); showLogin(); };
     $("#a-save").onclick = async () => {
       const hosts = $("#a-hosts").value.split(/[,\s]+/).map((h) => h.trim()).filter(Boolean);
       try { await post("/api/access", { allowed_hosts: hosts }); loadAccess({ ok: true, text: L("Opgeslagen.", "Saved.") }); }
       catch (err) { loadAccess({ ok: false, text: err.message }); }
+    };
+  }
+
+  // ---- UniFi-backups
+  async function loadBackups(msg) {
+    const root = $("#set-backups");
+    if (!root) return;
+    const b = await api("/api/backups").catch(() => null);
+    if (!b) { root.innerHTML = `<p class="muted">${L("Niet beschikbaar.", "Not available.")}</p>`; return; }
+    const row = (f) => `<div class="bk-row"><div class="bk-main"><div>${dateTxt(f.ts, true)}</div><div class="cell-sub">${f.source === "sonar" ? L("gemaakt door Sonar", "made by Sonar") : L("automatische backup van UniFi", "automatic UniFi backup")} · ${bytes(f.size)}</div></div>
+      ${b.can_download ? `<a class="btn" href="/api/backups/download/${encodeURIComponent(f.name)}" download>${L("Download", "Download")}</a>` : ""}</div>`;
+    root.innerHTML = `<p class="help" style="margin-top:-4px">${L("Sonar bewaart een kopie van de backups van je controller, zodat je er nog bij kunt als de controller crasht. Terugzetten doe je bij het opzetten van een nieuwe controller, of in UniFi onder Instellingen → Systeem → Backups.", "Sonar keeps a copy of your controller's backups, so you can still reach them if the controller crashes. You restore one while setting up a new controller, or in UniFi under Settings → System → Backups.")}</p>
+      ${b.error ? `<div class="banner err" style="margin-bottom:12px">${icon("octagon")}<span>${esc(b.error)}</span></div>` : ""}
+      ${msg ? `<div class="banner" role="status" style="margin-bottom:12px">${icon("check")}<span>${esc(msg)}</span></div>` : ""}
+      <label class="check"><input type="checkbox" id="bk-daily" ${b.daily ? "checked" : ""}> ${L("Elke dag een verse backup laten maken", "Have a fresh backup made every day")}</label>
+      <div class="help">${L("UniFi maakt automatische backups soms maar eens per maand. Met deze optie vraagt Sonar de controller elke dag om een backup van de instellingen.", "UniFi sometimes makes automatic backups only once a month. With this option Sonar asks the controller every day for a backup of the settings.")}</div>
+      ${b.files.length ? `<div class="bk-list">${b.files.slice(0, 6).map(row).join("")}</div>${b.files.length > 6 ? `<p class="muted" style="font-size:13px">${L(`en nog ${b.files.length - 6}; Sonar bewaart de nieuwste ${b.keep}`, `and ${b.files.length - 6} more; Sonar keeps the newest ${b.keep}`)}</p>` : ""}` : `<p class="muted">${L("Nog geen backups opgehaald.", "No backups fetched yet.")}</p>`}
+      ${b.can_download ? "" : `<div class="banner" style="margin-top:12px">${icon("info")}<span>${L("Een backup bevat ook je wifi-wachtwoorden. Downloaden kan daarom pas als de inlog aanstaat (zie Toegang).", "A backup also contains your Wi-Fi passwords. You can therefore only download one once the login is on (see Access).")}</span></div>`}
+      <div class="wiz-actions"><button type="button" class="btn" id="bk-run">${L("Nu een backup maken", "Make a backup now")}</button></div>`;
+    hydrateIcons(root);
+    $("#bk-daily").onchange = async (e) => { await post("/api/backups/settings", { daily: e.target.checked }).catch(() => {}); };
+    $("#bk-run").onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = L("Bezig…", "Working…");
+      try { await post("/api/backups/run", {}); loadBackups(L("Backup gemaakt en opgeslagen.", "Backup made and stored.")); }
+      catch (err) { loadBackups(); }
     };
   }
 

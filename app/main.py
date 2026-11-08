@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +35,8 @@ if not os.environ.get("NO_DOTENV"):   # tests/verse installaties: .env overslaan
     load_dotenv(ROOT / ".env")
 
 from . import VERSION  # noqa: E402
+from . import auth as auth_mod  # noqa: E402
+from . import backups as backups_mod  # noqa: E402
 from . import i18n  # noqa: E402
 from . import notify as notify_mod  # noqa: E402
 from . import ha_mqtt  # noqa: E402
@@ -140,6 +142,16 @@ def host_allowed(host: str) -> bool:
     return h in {x.lower() for x in rt.settings.allowed_hosts or []} | env_hosts()
 
 
+AUTH_OPEN = {"/api/auth/state", "/api/auth/login"}
+login_limiter = auth_mod.Limiter()
+
+
+def _set_session(resp, request: Request) -> None:
+    secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    resp.set_cookie(auth_mod.COOKIE, auth_mod.make_token(rt.settings.auth), max_age=auth_mod.SESSION_SECONDS,
+                    httponly=True, samesite="strict", secure=secure, path="/")
+
+
 @app.middleware("http")
 async def guard(request: Request, call_next):
     host = request.headers.get("host", "")
@@ -156,7 +168,14 @@ async def guard(request: Request, call_next):
                 origin and origin != "null" and urlsplit(origin).netloc.lower() != host.lower()):
             return JSONResponse({"detail": L("Verzoek van een andere website geweigerd.",
                                              "Request from another website refused.")}, 403)
-    return await call_next(request)
+    path, token = request.url.path, request.cookies.get(auth_mod.COOKIE)
+    locked = auth_mod.enabled(rt.settings.auth)
+    if locked and path.startswith("/api/") and path not in AUTH_OPEN and not auth_mod.token_valid(rt.settings.auth, token):
+        return JSONResponse({"detail": "auth_required"}, 401)
+    resp = await call_next(request)
+    if locked and token and path.startswith("/api/") and path not in AUTH_OPEN and auth_mod.should_renew(token):
+        _set_session(resp, request)   # wie blijft komen, blijft ingelogd (bijvoorbeeld een tablet aan de muur)
+    return resp
 
 
 def _need() -> tuple[Collector, DB]:
@@ -263,6 +282,84 @@ async def setup_demo(req: SetupRequest):
     return {"ok": True}
 
 
+# ----------------------------------------------------------------------- inlog
+class LoginRequest(BaseModel):
+    password: str = Field(default="", max_length=200)
+
+
+class PasswordRequest(BaseModel):
+    current: str = Field(default="", max_length=200)
+    new: str = Field(default="", max_length=200)
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
+
+
+def _store_auth(cfg: dict) -> None:
+    s = Settings.load(DATA_DIR)
+    s.auth = rt.settings.auth = cfg
+    s.save()
+
+
+def _check_current(req_password: str, request: Request) -> None:
+    ip = _client_ip(request)
+    if (w := login_limiter.wait(ip)):
+        raise HTTPException(429, L(f"Te veel pogingen. Probeer het over {w} seconden opnieuw.", f"Too many attempts. Try again in {w} seconds."))
+    if not auth_mod.verify_password(req_password, rt.settings.auth["hash"]):
+        login_limiter.failed(ip)
+        raise HTTPException(403, L("Wachtwoord klopt niet.", "Wrong password."))
+    login_limiter.reset(ip)
+
+
+@app.get("/api/auth/state")
+def auth_state(request: Request):
+    on = auth_mod.enabled(rt.settings.auth)
+    return {"enabled": on, "authenticated": not on or auth_mod.token_valid(rt.settings.auth, request.cookies.get(auth_mod.COOKIE)),
+            "min_length": auth_mod.MIN_LENGTH}
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest, request: Request):
+    if not auth_mod.enabled(rt.settings.auth):
+        return {"ok": True}
+    _check_current(req.password, request)
+    resp = JSONResponse({"ok": True})
+    _set_session(resp, request)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth_mod.COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/auth/password")
+def auth_password(req: PasswordRequest, request: Request):
+    """Inlog aanzetten of het wachtwoord wijzigen. Staat de inlog al aan, dan is het huidige wachtwoord nodig."""
+    if auth_mod.enabled(rt.settings.auth):
+        _check_current(req.current, request)
+    if len(req.new) < auth_mod.MIN_LENGTH:
+        raise HTTPException(400, L(f"Kies een wachtwoord van minstens {auth_mod.MIN_LENGTH} tekens.",
+                                   f"Choose a password of at least {auth_mod.MIN_LENGTH} characters."))
+    _store_auth(auth_mod.new_config(req.new))
+    resp = JSONResponse({"ok": True})
+    _set_session(resp, request)   # deze browser blijft ingelogd; andere sessies vervallen
+    return resp
+
+
+@app.post("/api/auth/disable")
+def auth_disable(req: LoginRequest, request: Request):
+    if auth_mod.enabled(rt.settings.auth):
+        _check_current(req.password, request)
+        _store_auth({})
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth_mod.COOKIE, path="/")
+    return resp
+
+
 # ----------------------------------------------------------------------- toegang (instellingen)
 class AccessRequest(BaseModel):
     allowed_hosts: list[str] = Field(default_factory=list, max_length=20)
@@ -322,7 +419,8 @@ def _mqtt_cfg(req: MqttSave) -> dict:
                                    "Only the name or IP address of the broker, without http:// or a port."))
     return {"enabled": req.enabled, "host": host, "port": req.port, "username": req.username.strip(),
             "password": req.password if req.password else old.get("password", ""),
-            "prefix": req.prefix.strip().strip("/") or "homeassistant"}
+            "prefix": req.prefix.strip().strip("/") or "homeassistant",
+            "presence": old.get("presence", []), "presence_grace": old.get("presence_grace", ha_mqtt.DEFAULTS["presence_grace"])}
 
 
 @app.get("/api/mqtt")
@@ -337,6 +435,35 @@ async def mqtt_test(req: MqttSave):
     cfg = _mqtt_cfg(MqttSave(**{**req.model_dump(), "enabled": True}))
     err = await ha_mqtt.try_connect(cfg)
     return {"ok": err is None, "error": err}
+
+
+class PresenceDevice(BaseModel):
+    mac: str = Field(pattern=r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
+    name: str = Field(default="", max_length=80)
+
+
+class PresenceSave(BaseModel):
+    devices: list[PresenceDevice] = Field(default_factory=list, max_length=30)
+    grace: int = Field(default=300, ge=60, le=3600)
+
+
+@app.post("/api/mqtt/presence")
+async def mqtt_presence(req: PresenceSave):
+    """Welke apparaten als device_tracker in Home Assistant komen, en hoe lang iemand weg moet zijn voor 'afwezig'."""
+    seen, devices = set(), []
+    for d in req.devices:
+        mac = d.mac.lower()
+        if mac not in seen:
+            seen.add(mac)
+            devices.append({"mac": mac, "name": d.name.strip() or mac})
+    s = Settings.load(DATA_DIR)
+    s.mqtt = {**ha_mqtt.config(s), "presence": devices, "presence_grace": req.grace}
+    s.save()
+    rt.settings.mqtt = s.mqtt
+    if rt.collector:
+        await rt.collector.ha.stop()
+        rt.collector.ha.start()
+    return {"ok": True, "devices": devices}
 
 
 @app.post("/api/mqtt/save")
@@ -829,6 +956,7 @@ async def internet(hours: float = Query(24, gt=0, le=24 * 31)):
         f"FROM wan_samples WHERE ts>=? GROUP BY t ORDER BY t", (since,))]
     return {"bucket": b, "series": series, "wan": (collector.latest or {}).get("wan"),
             "speedtests": db.speedtests(now - 90 * 86400), "speedtest": collector.speedtest,
+            "bufferbloat": collector.bloat_history[-1] if collector.bloat_history else None,
             "available": collector.mock is not None or (collector.client and collector.client.source in ("legacy-key", "legacy-login"))}
 
 
@@ -853,6 +981,47 @@ async def speedtest_start():
 
 
 # ----------------------------------------------------------------------- patronen
+# ----------------------------------------------------------------------- UniFi-backups
+class BackupSettings(BaseModel):
+    daily: bool = False
+
+
+@app.get("/api/backups")
+def backups_info():
+    collector, _ = _need()
+    s = rt.settings
+    return {"files": backups_mod.listing(s.data_dir), "daily": s.backup_daily, "keep": backups_mod.KEEP,
+            "can_download": auth_mod.enabled(s.auth), **collector.backup_status}
+
+
+@app.post("/api/backups/settings")
+def backups_settings(req: BackupSettings):
+    s = Settings.load(DATA_DIR)
+    s.backup_daily = rt.settings.backup_daily = req.daily
+    s.save()
+    return {"ok": True, "daily": req.daily}
+
+
+@app.post("/api/backups/run")
+async def backups_run():
+    """Knop 'Nu een backup maken'."""
+    collector, _ = _need()
+    await collector.collect_backups(force=True, create=True)
+    if collector.backup_status["error"]:
+        raise HTTPException(502, collector.backup_status["error"])
+    return {"ok": True}
+
+
+@app.get("/api/backups/download/{name}")
+def backups_download(name: str):
+    if not auth_mod.enabled(rt.settings.auth):   # een backup bevat ook je wifi-wachtwoorden
+        raise HTTPException(403, L("Zet eerst de inlog aan onder Instellingen → Toegang.", "First turn on the login under Settings → Access."))
+    path = backups_mod.path_of(rt.settings.data_dir, name)
+    if not path:
+        raise HTTPException(404, L("Backup niet gevonden.", "Backup not found."))
+    return FileResponse(path, media_type="application/octet-stream", filename=name)
+
+
 @app.get("/api/patterns/client/{mac}")
 def patterns_client(mac: str, days: int = Query(7, ge=1, le=31)):
     collector, db = _need()

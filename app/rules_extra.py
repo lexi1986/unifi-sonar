@@ -410,6 +410,37 @@ def public_ip(out: list[dict], snap: dict, issue, gw) -> None:
     out.append(i)
 
 
+def bufferbloat(out: list[dict], snap: dict, issue, gw) -> None:
+    b = snap.get("bufferbloat")
+    if not b or b["grade"] not in ("D", "F"):
+        return
+    i = issue("bufferbloat", "info", "wan", "wan", "wan",
+              L(f"Internet wordt traag als de lijn vol zit (cijfer {b['grade']})", f"Internet gets slow when the line is full (grade {b['grade']})"),
+              L(f"Tijdens de laatste speedtest liep de vertraging op van {b['idle']:.0f} ms naar {b['idle'] + b['worst']:.0f} ms.",
+                f"During the last speed test the delay rose from {b['idle']:.0f} ms to {b['idle'] + b['worst']:.0f} ms."),
+              L("Zet Smart Queues aan bij je internetverbinding in UniFi en stel ze in op ongeveer 90% van je lijnsnelheid. Dat kost "
+                "iets topsnelheid, maar videobellen en games blijven soepel als iemand iets groots downloadt. Doe daarna opnieuw een speedtest.",
+                "Turn on Smart Queues for your internet connection in UniFi and set them to about 90% of your line speed. That costs a "
+                "little top speed, but video calls and games stay smooth while someone downloads something big. Then run another speed test."),
+              device_mac=gw, last_ts=b["ts"])
+    out.append(i)
+
+
+def backup_stale(out: list[dict], snap: dict, issue, gw) -> None:
+    b = snap.get("backups")
+    if not b or not b["stale"]:
+        return
+    when = time.strftime("%d-%m-%Y", time.localtime(b["newest"])) if b["newest"] else None
+    out.append(issue("backup_stale", "warning", "config", "wan", "wan",
+                     L("Geen recente UniFi-backup", "No recent UniFi backup"),
+                     L(f"De nieuwste backup die Sonar heeft, is van {when}." if when else "Sonar heeft nog geen enkele backup van je controller.",
+                       f"The newest backup Sonar has is from {when}." if when else "Sonar does not have any backup of your controller yet."),
+                     L("Kijk onder Instellingen → UniFi-backups wat er misgaat, of zet daar een dagelijkse backup aan. Staan de automatische "
+                       "backups in UniFi wel aan? Dat zie je in UniFi onder Instellingen → Systeem → Backups.",
+                       "Check Settings → UniFi backups to see what is going wrong, or turn on a daily backup there. Are automatic backups on in "
+                       "UniFi? You can see that in UniFi under Settings → System → Backups."), device_mac=gw))
+
+
 def run_all(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     gw = next((d["mac"] for d in snap["devices"] if d["type"] == "gateway"), None)
     ins = snap.get("insights") or {}
@@ -423,3 +454,5 @@ def run_all(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     quieter_channel(out, snap, ins, issue, db, ts)
     advisory_issues(out, ins, issue)
     public_ip(out, snap, issue, gw)
+    bufferbloat(out, snap, issue, gw)
+    backup_stale(out, snap, issue, gw)

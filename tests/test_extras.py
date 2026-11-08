@@ -203,3 +203,202 @@ def test_source_recovers_after_a_hiccup(monkeypatch, tmp_path):
     assert poll()["source"] == "integration" and calls == ["legacy", "integration"]
     calls.clear()
     assert poll()["source"] == "integration" and calls == ["integration"]
+
+
+# ------------------------------------------------------------------ inlog
+def test_auth_tokens_and_limiter():
+    from app import auth
+    cfg = auth.new_config("een-lang-wachtwoord")
+    assert auth.enabled(cfg) and auth.verify_password("een-lang-wachtwoord", cfg["hash"]) and not auth.verify_password("fout", cfg["hash"])
+    tok = auth.make_token(cfg, now=1000)
+    assert auth.token_valid(cfg, tok, now=2000) and not auth.token_valid(cfg, tok, now=1000 + auth.SESSION_SECONDS + 1)
+    assert not auth.token_valid(cfg, tok.replace(".", ".0"), now=2000) and not auth.token_valid(cfg, None) and not auth.token_valid({}, tok)
+    assert not auth.token_valid(auth.new_config("een-lang-wachtwoord"), tok, now=2000)   # nieuw geheim: oude sessies vervallen
+    assert not auth.should_renew(tok, now=1000) and auth.should_renew(tok, now=1000 + auth.RENEW_AFTER + 1)
+    lim = auth.Limiter()
+    for _ in range(auth.MAX_FAILS):
+        assert lim.wait("a", now=10) == 0
+        lim.failed("a", now=10)
+    assert lim.wait("a", now=10) > 0 and lim.wait("b", now=10) == 0 and lim.wait("a", now=10 + auth.FAIL_WINDOW + 1) == 0
+
+
+def test_login_locks_the_api(demo, monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    from app import main
+    monkeypatch.setattr(main.rt, "collector", demo)
+    monkeypatch.setattr(main.rt, "db", demo.db)
+    monkeypatch.setattr(main, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(main.rt.settings, "auth", {})
+    monkeypatch.setattr(main, "login_limiter", main.auth_mod.Limiter())
+    c = TestClient(main.app)
+    assert c.get("/api/snapshot").status_code == 200 and c.get("/api/auth/state").json()["enabled"] is False
+    assert c.post("/api/auth/password", json={"new": "kort"}).status_code == 400
+    assert c.post("/api/auth/password", json={"new": "een-lang-wachtwoord"}).status_code == 200
+    assert '"auth"' in (tmp_path / "config.json").read_text() and "een-lang-wachtwoord" not in (tmp_path / "config.json").read_text()
+    assert c.get("/api/snapshot").status_code == 200   # deze browser blijft ingelogd
+    anon = TestClient(main.app)
+    for path in ("/api/snapshot", "/api/status", "/api/setup", "/api/mqtt"):
+        assert anon.get(path).status_code == 401, path
+    assert anon.post("/api/speedtest", json={}).status_code == 401
+    assert anon.get("/").status_code == 200 and anon.get("/api/auth/state").json() == {"enabled": True, "authenticated": False, "min_length": 8}
+    assert anon.post("/api/auth/login", json={"password": "fout"}).status_code == 403
+    assert anon.post("/api/auth/login", json={"password": "een-lang-wachtwoord"}).status_code == 200
+    cookie = anon.cookies.get(main.auth_mod.COOKIE)
+    assert cookie and anon.get("/api/snapshot").status_code == 200
+    assert anon.post("/api/auth/password", json={"current": "fout", "new": "nog-een-wachtwoord"}).status_code == 403
+    assert anon.post("/api/auth/disable", json={"password": "een-lang-wachtwoord"}).status_code == 200
+    assert TestClient(main.app).get("/api/snapshot").status_code == 200
+    # te vaak raden
+    main.rt.settings.auth = main.auth_mod.new_config("een-lang-wachtwoord")
+    guess = TestClient(main.app)
+    codes = [guess.post("/api/auth/login", json={"password": "fout"}).status_code for _ in range(main.auth_mod.MAX_FAILS + 1)]
+    assert codes[-1] == 429 and codes[0] == 403
+    assert guess.post("/api/auth/login", json={"password": "een-lang-wachtwoord"}).status_code == 429
+
+
+def test_auth_reset_keeps_the_rest(tmp_path):
+    import json
+    from app import auth
+    f = tmp_path / "config.json"
+    f.write_text(json.dumps({"mode": "mock", "auth": {"hash": "x", "secret": "y"}}))
+    assert auth.reset_file(str(tmp_path)) and json.loads(f.read_text()) == {"mode": "mock"} and not auth.reset_file(str(tmp_path))
+
+
+# ------------------------------------------------------------------ vertraging onder belasting
+def test_bufferbloat_grades():
+    from app import bufferbloat as bb
+    assert [bb.grade(x) for x in (1, 5, 29, 59, 199, 399, 400)] == ["A+", "A", "A", "B", "C", "D", "F"]
+    r = bb.summarize({"idle": [9, 10, 11], "download": [30, 40, 50], "upload": [510, 520, 1500]}, "h", 5)
+    assert r["idle"] == 10 and r["added_down"] == 30 and r["added_up"] == 510 and r["grade"] == "F"
+    assert bb.summarize({"idle": [9, 10], "download": [30, 40, 50]}, "h", 5) is None           # te weinig rustmetingen
+    assert bb.summarize({"idle": [9, 10, 11], "download": [30]}, "h", 5) is None                # te weinig onder belasting
+    # de gateway zei niet in welke fase hij zat
+    assert bb.summarize({"idle": [9, 10, 11], "load": [40, 40, 40]}, "h", 5)["added_up"] == 30
+
+
+def test_bufferbloat_issue_and_result(demo):
+    demo._bloat = {"host": "h", "idle": [9, 10, 11], "download": [500, 510, 520], "upload": [30, 30, 30], "load": []}
+    before = list(demo.bloat_history)
+    demo._bloat_done()
+    assert demo.bloat_history[-1]["grade"] == "F" and demo.db.get_kv("bufferbloat")["items"][-1]["grade"] == "F" and demo._bloat is None
+    out = []
+    rules_extra.bufferbloat(out, {"bufferbloat": demo.bloat_history[-1]}, __import__("app.rules", fromlist=["_issue"])._issue, None)
+    assert out and "Smart Queues" in out[0]["advice"]
+    out.clear()
+    rules_extra.bufferbloat(out, {"bufferbloat": {**demo.bloat_history[-1], "grade": "B"}}, __import__("app.rules", fromlist=["_issue"])._issue, None)
+    assert not out
+    demo.bloat_history = before
+
+
+# ------------------------------------------------------------------ aanwezigheid in Home Assistant
+def test_presence_trackers(demo):
+    import json
+    from app.ha_mqtt import HAMqtt
+    c0 = next(c for c in demo.latest["clients"] if c.get("connected", True))
+    gone = "aa:bb:cc:00:00:01"
+    s = Settings(mode="mock", data_dir="x", mqtt={"presence": [{"mac": c0["mac"], "name": "Telefoon"}, {"mac": gone, "name": "Weg"}], "presence_grace": 300})
+    ha = HAMqtt(s, demo)
+    conf = {t: json.loads(p) for t, p in ha.discovery() if "/device_tracker/" in t}
+    tid = c0["mac"].replace(":", "")
+    cfg = conf[f"homeassistant/device_tracker/unifi_sonar/{tid}/config"]
+    assert len(conf) == 2 and cfg["name"] == "Telefoon" and cfg["source_type"] == "router" and cfg["payload_home"] == "home"
+    p = ha.presence()
+    assert p[c0["mac"]]["home"] and not p[gone]["home"]
+    # even van de wifi: binnen de wachttijd nog thuis, daarna weg
+    keep = demo.latest["clients"]
+    last_ok = demo.last_ok
+    demo.latest["clients"] = [c for c in keep if c["mac"] != c0["mac"]]
+    ref = int(last_ok or time.time())
+    demo.last_ok = ref + 299
+    assert ha.presence()[c0["mac"]]["home"]
+    demo.last_ok = ref + 301
+    assert not ha.presence()[c0["mac"]]["home"]
+    demo.latest["clients"], demo.last_ok = keep, last_ok
+    # niet meer gevolgd: de oude entiteit gaat uit Home Assistant
+    demo.db.set_kv("mqtt_presence", {"ids": [tid, "oud000000000"]})
+    retired = dict(ha.retired())
+    assert retired == {"homeassistant/device_tracker/unifi_sonar/oud000000000/config": "", "sonar/unifi_sonar/presence/oud000000000": "",
+                       "sonar/unifi_sonar/presence/oud000000000/attrs": ""}
+
+
+# ------------------------------------------------------------------ UniFi-backups
+def test_backup_store_and_prune(tmp_path):
+    import os
+    from app import backups as b
+    d = str(tmp_path)
+    for i in range(b.KEEP + 3):
+        b.store(d, f"autobackup_{i}.unf", b"x" * 10, 1000 + i)
+    b.prune(d)
+    rows = b.listing(d)
+    assert len(rows) == b.KEEP and rows[0]["name"] == f"autobackup_{b.KEEP + 2}.unf" and not b.has(d, "autobackup_0.unf")
+    assert os.stat(tmp_path / "backups" / rows[0]["name"]).st_mode & 0o077 == 0 and os.stat(tmp_path / "backups").st_mode & 0o077 == 0
+    assert b.path_of(d, "../config.json") is None and b.path_of(d, "..%2fx.unf") is None
+    with pytest.raises(ValueError):
+        b.store(d, "../x.unf", b"x")
+    with pytest.raises(ValueError):
+        b.store(d, "leeg.unf", b"")
+    assert b.summary(d, False, now=1000 + 41 * 86400)["stale"] and not b.summary(d, False, now=2000)["stale"]
+    assert b.summary(d, True, now=1100 + 4 * 86400)["stale"]
+
+
+def test_backups_copied_from_controller(tmp_path, monkeypatch):
+    """Alleen wat nieuw is wordt opgehaald, en een halve download wordt niet bewaard."""
+    from app import backups as b
+    monkeypatch.setenv("NO_DOTENV", "1")
+    st = Settings(mode="live", controller_url="https://unifi.invalid", api_key="k", db_path=str(tmp_path / "s.db"), data_dir=str(tmp_path))
+    col = Collector(st, DB(st.db_path))
+    rows = [{"filename": "autobackup_1.unf", "size": 4, "time": 1_800_000_000_000}]
+    asked, made = [], []
+
+    async def lst():
+        return rows
+
+    async def dl(path):
+        asked.append(path)
+        return b"data"
+
+    async def create():
+        made.append(1)
+        return b"vers"
+
+    monkeypatch.setattr(col.client, "backups_list", lst)
+    monkeypatch.setattr(col.client, "backup_download", dl)
+    monkeypatch.setattr(col.client, "backup_create", create)
+    asyncio.run(col.collect_backups())
+    assert asked == ["/dl/autobackup/autobackup_1.unf"] and not made and b.listing(st.data_dir)[0]["ts"] == 1_800_000_000
+    asyncio.run(col.collect_backups())                       # binnen 6 uur: niets
+    asyncio.run(col.collect_backups(force=True))             # bestaat al: niet opnieuw
+    assert len(asked) == 1
+    rows.append({"filename": "autobackup_2.unf", "size": 999, "time": 1_800_000_100_000})
+    asyncio.run(col.collect_backups(force=True))
+    assert not b.has(st.data_dir, "autobackup_2.unf") and "autobackup_2.unf" in col.backup_status["error"]
+    rows.pop()
+    st.backup_daily = True
+    asyncio.run(col.collect_backups(force=True))
+    asyncio.run(col.collect_backups(force=True))             # dagelijks: maar één keer per dag
+    assert len(made) == 1 and any(x["source"] == "sonar" for x in b.listing(st.data_dir)) and col.backup_status["error"] is None
+    asyncio.run(col.client.close())
+
+
+def test_backup_download_needs_login(demo, monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    from app import main
+    monkeypatch.setattr(main.rt, "collector", demo)
+    monkeypatch.setattr(main.rt, "db", demo.db)
+    monkeypatch.setattr(main, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(main.rt.settings, "data_dir", demo.s.data_dir)
+    monkeypatch.setattr(main.rt.settings, "auth", {})
+    asyncio.run(demo.collect_backups(force=True))
+    c = TestClient(main.app)
+    info = c.get("/api/backups").json()
+    name = info["files"][0]["name"]
+    assert info["files"] and not info["can_download"] and c.get(f"/api/backups/download/{name}").status_code == 403
+    monkeypatch.setattr(main.rt.settings, "auth", main.auth_mod.new_config("een-lang-wachtwoord"))
+    assert c.get(f"/api/backups/download/{name}").status_code == 401   # niet ingelogd
+    assert c.post("/api/auth/login", json={"password": "een-lang-wachtwoord"}).status_code == 200
+    r = c.get(f"/api/backups/download/{name}")
+    assert r.status_code == 200 and r.content.startswith(b"demo") and "attachment" in r.headers["content-disposition"]
+    assert c.get("/api/backups/download/geheim.unf").status_code == 404
+    out = []
+    rules_extra.backup_stale(out, {"backups": {"count": 0, "newest": None, "daily": False, "stale": True}}, __import__("app.rules", fromlist=["_issue"])._issue, None)
+    assert out and out[0]["key"] == "backup_stale"

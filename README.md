@@ -45,6 +45,7 @@ Sonar doesn't replace your controller; it sits next to it and does the thinking.
 
 **Internet**
 - Live download and upload, latency, data usage per day and month (with a forecast), and a one-click **speed test that runs on the gateway** itself, so it measures your line and not your Wi-Fi.
+- **Delay under load (bufferbloat):** during the speed test Sonar measures how much slower your line responds when it is full, and gives it a grade from A+ to F, so you know whether Smart Queues are worth turning on.
 - **Outages and availability** over 24 hours, 7, 30 and 90 days and per month. UniFi keeps internet events for 24 hours; Sonar keeps them, which is handy when you call your provider.
 - **Usage per device** for today, 7 or 30 days, and per category if Traffic Identification is on.
 - **Public IP changed** on the timeline and as a notification.
@@ -58,7 +59,10 @@ A live map, flat or as a rotating 3D globe, of every connection through your gat
 - **Pause the internet** per device (30 minutes, 1 or 2 hours, until tomorrow) and **fixed pause times** for groups of devices ("Kids, school nights 21:00–07:00").
 - **Patterns:** each device's favourite AP and when it is home, per hour of the week.
 - **Notifications** to Home Assistant, ntfy, Discord, Slack or your own webhook, after a configurable delay, with an update when it gets worse and a message when it's resolved.
-- **Home Assistant via MQTT:** network score, issues, clients, latency, live traffic, speed test and more as sensors, auto-discovered, plus a button to start a speed test.
+- **Home Assistant via MQTT:** network score, issues, clients, latency, live traffic, speed test and more as sensors, auto-discovered, plus a button to start a speed test. Choose phones or other devices to get them as a **`device_tracker`** (home or away), with a grace period for phones that briefly drop off the Wi-Fi.
+- **Backups of your UniFi controller:** Sonar keeps a copy of the controller's automatic backups and can have a fresh one made every day, so you still have one when the controller crashes.
+- **Optional login** with a password, under *Settings → Access*.
+- **Wall display:** a calm full-screen view for a tablet, optionally with the globe, plus a black-and-white version for e-paper screens.
 - **Demo mode** with a simulated network, so you can look around without a controller.
 
 ## Screenshots
@@ -144,10 +148,12 @@ Installed before version 1.2? Run the install command once more (or `pct exec <c
 
 ## Privacy and security
 
-- **Everything stays on your machine.** Nothing goes to the internet except downloading the software when installing or updating, the notifications to services you set up yourself, and every 6 hours fetching Ubiquiti's public list of security advisories (nothing about your network is sent; you can switch it off on the Security page).
-- **Sonar doesn't change your UniFi settings.** The only actions are *Reconnect* for one Wi-Fi device, starting a speed test on the gateway, and *Pause* and *Fixed pause times*, which block a device in UniFi until the chosen time is up. Everything else is read-only.
+- **Everything stays on your machine.** Nothing goes to the internet except downloading the software when installing or updating, the notifications to services you set up yourself, and every 6 hours fetching Ubiquiti's public list of security advisories (nothing about your network is sent; you can switch it off on the Security page). During a speed test Sonar also briefly opens connections to `www.cloudflare.com` to measure the delay; no data is sent.
+- **Sonar doesn't change your UniFi settings.** The only actions are *Reconnect* for one Wi-Fi device, starting a speed test on the gateway, and *Pause* and *Fixed pause times*, which block a device in UniFi until the chosen time is up. If you turn it on, Sonar also asks the controller to make a backup. Everything else is read-only.
 - The API key, webhook URLs and MQTT password live only in `/var/lib/unifi-sonar/config.json`, readable only by the service. The browser never gets the key back.
-- The dashboard has **no login**: anyone on your network who knows the address can look, mute issues and reconnect a device. **Don't expose it to the internet.**
+- **The login is optional and off by default.** Without it, anyone on your network who knows the address can look around, mute issues and pause devices; set a password under *Settings → Access* to prevent that. The password is only stored as a scrypt hash. Even with a login: **don't expose the dashboard to the internet.**
+- Forgot the password? On the machine itself, run `cd /opt/unifi-sonar && sudo .venv/bin/python -m app.auth --reset` and then `sudo systemctl restart unifi-sonar`.
+- **Backups** contain your whole UniFi configuration, including Wi-Fi passwords. They are stored in `/var/lib/unifi-sonar/backups`, readable only by the service, and can only be downloaded from the dashboard when the login is on. Sonar keeps the newest 30. They live on the machine that runs Sonar, so run Sonar on different hardware from your controller if you want to survive a failure of that machine too.
 - The dashboard only answers to an IP address, `localhost` and local names (`.local`, `.lan`, `.home`, `.internal`, `.home.arpa`), so a website you visit can't control it through your browser (DNS rebinding), and actions from other websites are refused. Using your own hostname or a reverse proxy? Add it under *Settings → Access*.
 - For the world map, Sonar keeps the connections from UniFi's traffic log (which device talked to which domain and country) for **48 hours** in its local database.
 - Using the IPS on your UniFi gateway and viewing through a VPN? Sonar deliberately avoids HTTP `DELETE`, because the IPS can see that as an attack (rule 2101603).
@@ -192,6 +198,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | `app/collector.py` | Measuring every minute, deltas (retries, errors, throughput), events |
 | `app/rules.py`, `app/rules_extra.py` | All issues, grouping by cause and scores |
 | `app/advisories.py` | Ubiquiti security advisories and matching them to your firmware |
+| `app/auth.py`, `app/backups.py`, `app/bufferbloat.py` | Optional login, copies of UniFi backups, delay under load |
 | `app/notify.py` | Sending notifications (Home Assistant, ntfy, Discord, Slack, webhook) |
 | `app/changes.py` | Change log: a fingerprint of the settings and readable diffs |
 | `app/ha_mqtt.py` | Home Assistant via MQTT (small built-in MQTT 3.1.1 client, discovery) |
