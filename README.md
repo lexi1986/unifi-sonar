@@ -61,7 +61,7 @@ A live map, flat or as a rotating 3D globe, of every connection through your gat
 - **Notifications** to Home Assistant, ntfy, Discord, Slack or your own webhook, after a configurable delay, with an update when it gets worse and a message when it's resolved.
 - **Home Assistant via MQTT:** network score, issues, clients, latency, live traffic, speed test and more as sensors, auto-discovered, plus a button to start a speed test. Choose phones or other devices to get them as a **`device_tracker`** (home or away), with a grace period for phones that briefly drop off the Wi-Fi.
 - **Backups of your UniFi controller:** Sonar keeps a copy of the controller's automatic backups and can have a fresh one made every day, so you still have one when the controller crashes.
-- **Optional login** with a password, under *Settings → Access*.
+- **Optional login** with a password under *Settings → Access*, and optionally a **passkey** (fingerprint, face or security key) next to it.
 - **Wall display:** a calm full-screen view for a tablet, optionally with the globe, plus a black-and-white version for e-paper screens.
 - **Demo mode** with a simulated network, so you can look around without a controller.
 
@@ -153,6 +153,7 @@ Installed before version 1.2? Run the install command once more (or `pct exec <c
 - The API key, webhook URLs and MQTT password live only in `/var/lib/unifi-sonar/config.json`, readable only by the service. The browser never gets the key back.
 - **The login is optional and off by default.** Without it, anyone on your network who knows the address can look around, mute issues and pause devices; set a password under *Settings → Access* to prevent that. The password is only stored as a scrypt hash. Even with a login: **don't expose the dashboard to the internet.**
 - Forgot the password? On the machine itself, run `cd /opt/unifi-sonar && sudo .venv/bin/python -m app.auth --reset` and then `sudo systemctl restart unifi-sonar`.
+- **Passkeys** are optional; your password always keeps working. Browsers only allow them over HTTPS with a host name, so not on a plain `http://` IP address. Put Sonar behind a reverse proxy that sets `X-Forwarded-Proto` and add the name under *Settings → Access*. Sonar only stores the public key.
 - **Backups** contain your whole UniFi configuration, including Wi-Fi passwords. They are stored in `/var/lib/unifi-sonar/backups`, readable only by the service, and can only be downloaded from the dashboard when the login is on. Sonar keeps the newest 30. They live on the machine that runs Sonar, so run Sonar on different hardware from your controller if you want to survive a failure of that machine too.
 - The dashboard only answers to an IP address, `localhost` and local names (`.local`, `.lan`, `.home`, `.internal`, `.home.arpa`), so a website you visit can't control it through your browser (DNS rebinding), and actions from other websites are refused. Using your own hostname or a reverse proxy? Add it under *Settings → Access*.
 - For the world map, Sonar keeps the connections from UniFi's traffic log (which device talked to which domain and country) for **48 hours** in its local database.
@@ -198,7 +199,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | `app/collector.py` | Measuring every minute, deltas (retries, errors, throughput), events |
 | `app/rules.py`, `app/rules_extra.py` | All issues, grouping by cause and scores |
 | `app/advisories.py` | Ubiquiti security advisories and matching them to your firmware |
-| `app/auth.py`, `app/backups.py`, `app/bufferbloat.py` | Optional login, copies of UniFi backups, delay under load |
+| `app/auth.py`, `app/passkeys.py` | Optional login with a password and passkeys |
+| `app/backups.py`, `app/bufferbloat.py` | Copies of UniFi backups, delay under load |
 | `app/notify.py` | Sending notifications (Home Assistant, ntfy, Discord, Slack, webhook) |
 | `app/changes.py` | Change log: a fingerprint of the settings and readable diffs |
 | `app/ha_mqtt.py` | Home Assistant via MQTT (small built-in MQTT 3.1.1 client, discovery) |

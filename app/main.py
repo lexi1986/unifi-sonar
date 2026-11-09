@@ -40,6 +40,7 @@ from . import backups as backups_mod  # noqa: E402
 from . import i18n  # noqa: E402
 from . import notify as notify_mod  # noqa: E402
 from . import ha_mqtt  # noqa: E402
+from . import passkeys as passkey_mod  # noqa: E402
 from . import setup as setup_mod  # noqa: E402
 from .collector import Collector  # noqa: E402
 from .config import Settings, Thresholds  # noqa: E402
@@ -142,7 +143,7 @@ def host_allowed(host: str) -> bool:
     return h in {x.lower() for x in rt.settings.allowed_hosts or []} | env_hosts()
 
 
-AUTH_OPEN = {"/api/auth/state", "/api/auth/login"}
+AUTH_OPEN = {"/api/auth/state", "/api/auth/login", "/api/auth/passkey/login/options", "/api/auth/passkey/login"}
 login_limiter = auth_mod.Limiter()
 
 
@@ -316,7 +317,7 @@ def _check_current(req_password: str, request: Request) -> None:
 def auth_state(request: Request):
     on = auth_mod.enabled(rt.settings.auth)
     return {"enabled": on, "authenticated": not on or auth_mod.token_valid(rt.settings.auth, request.cookies.get(auth_mod.COOKIE)),
-            "min_length": auth_mod.MIN_LENGTH}
+            "min_length": auth_mod.MIN_LENGTH, "passkeys": len((rt.settings.auth or {}).get("passkeys") or [])}
 
 
 @app.post("/api/auth/login")
@@ -344,7 +345,7 @@ def auth_password(req: PasswordRequest, request: Request):
     if len(req.new) < auth_mod.MIN_LENGTH:
         raise HTTPException(400, L(f"Kies een wachtwoord van minstens {auth_mod.MIN_LENGTH} tekens.",
                                    f"Choose a password of at least {auth_mod.MIN_LENGTH} characters."))
-    _store_auth(auth_mod.new_config(req.new))
+    _store_auth({**auth_mod.new_config(req.new), "passkeys": (rt.settings.auth or {}).get("passkeys") or []})
     resp = JSONResponse({"ok": True})
     _set_session(resp, request)   # deze browser blijft ingelogd; andere sessies vervallen
     return resp
@@ -357,6 +358,106 @@ def auth_disable(req: LoginRequest, request: Request):
         _store_auth({})
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(auth_mod.COOKIE, path="/")
+    return resp
+
+
+# ----------------------------------------------------------------------- passkeys
+class PasskeyBegin(BaseModel):
+    name: str = Field(default="", max_length=60)
+    password: str = Field(default="", max_length=200)
+
+
+class PasskeyFinish(BaseModel):
+    id: str = Field(max_length=64)
+    credential: dict
+
+
+class PasskeyDelete(BaseModel):
+    id: str = Field(max_length=2000)
+
+
+passkey_challenges = passkey_mod.Challenges()
+
+
+def _passkey_site(request: Request) -> tuple[str, str]:
+    """(rp_id, origin) van dit verzoek. Passkeys kunnen alleen op HTTPS met een hostnaam."""
+    host = request.headers.get("host", "")
+    scheme = "https" if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https" else "http"
+    rp_id = passkey_mod.rp_id_for(_hostname(host), scheme)
+    if not rp_id:
+        raise HTTPException(400, L("Passkeys werken alleen via HTTPS met een hostnaam.", "Passkeys only work over HTTPS with a host name."))
+    return rp_id, f"{scheme}://{host}"
+
+
+def _update_passkeys(rows: list[dict]) -> None:
+    _store_auth({**rt.settings.auth, "passkeys": rows})
+
+
+@app.get("/api/auth/passkeys")
+def passkeys_list(request: Request):
+    host = _hostname(request.headers.get("host", ""))
+    return {"rows": passkey_mod.public_list(rt.settings.auth, host), "max": passkey_mod.MAX_PASSKEYS}
+
+
+@app.post("/api/auth/passkey/register/options")
+def passkey_register_options(req: PasskeyBegin, request: Request):
+    """Wie al is ingelogd, moet voor een nieuwe passkey toch nog even het wachtwoord geven."""
+    if not auth_mod.enabled(rt.settings.auth):
+        raise HTTPException(400, L("Zet eerst de inlog aan met een wachtwoord.", "First turn on the login with a password."))
+    _check_current(req.password, request)
+    if len(rt.settings.auth.get("passkeys") or []) >= passkey_mod.MAX_PASSKEYS:
+        raise HTTPException(400, L("Je hebt het maximale aantal passkeys bereikt.", "You have reached the maximum number of passkeys."))
+    rp_id, origin = _passkey_site(request)
+    return passkey_mod.begin_register(rt.settings.auth, passkey_challenges, rp_id, origin, req.name.strip() or L("Passkey", "Passkey"))
+
+
+@app.post("/api/auth/passkey/register")
+def passkey_register(req: PasskeyFinish, request: Request):
+    rp_id, origin = _passkey_site(request)
+    try:
+        row = passkey_mod.finish_register(passkey_challenges, req.id, req.credential, rp_id, origin)
+    except Exception as e:  # noqa: BLE001 – elke fout in de controle betekent: niet opslaan
+        log.info("Passkey toevoegen geweigerd: %s", e)
+        row = None
+    if not row:
+        raise HTTPException(400, L("Passkey toevoegen is niet gelukt. Probeer het opnieuw.", "Adding the passkey failed. Please try again."))
+    _update_passkeys((rt.settings.auth.get("passkeys") or []) + [row])
+    return {"ok": True}
+
+
+@app.post("/api/auth/passkey/delete")
+def passkey_delete(req: PasskeyDelete):
+    if auth_mod.enabled(rt.settings.auth):
+        _update_passkeys([p for p in rt.settings.auth.get("passkeys") or [] if p["id"] != req.id])
+    return {"ok": True}
+
+
+@app.post("/api/auth/passkey/login/options")
+def passkey_login_options(request: Request):
+    if not (rt.settings.auth or {}).get("passkeys"):
+        raise HTTPException(400, L("Er zijn geen passkeys ingesteld.", "No passkeys have been set up."))
+    rp_id, origin = _passkey_site(request)
+    return passkey_mod.begin_login(passkey_challenges, rp_id, origin)
+
+
+@app.post("/api/auth/passkey/login")
+def passkey_login(req: PasskeyFinish, request: Request):
+    ip = _client_ip(request)
+    if (w := login_limiter.wait(ip)):
+        raise HTTPException(429, L(f"Te veel pogingen. Probeer het over {w} seconden opnieuw.", f"Too many attempts. Try again in {w} seconds."))
+    rp_id, origin = _passkey_site(request)
+    try:
+        row = passkey_mod.finish_login(rt.settings.auth, passkey_challenges, req.id, req.credential, rp_id, origin)
+    except Exception as e:  # noqa: BLE001 – elke fout in de controle betekent: niet binnen
+        log.info("Passkey-inlog geweigerd: %s", e)
+        row = None
+    if not row:
+        login_limiter.failed(ip)
+        raise HTTPException(403, L("Inloggen met deze passkey is niet gelukt.", "Logging in with this passkey failed."))
+    login_limiter.reset(ip)
+    _update_passkeys([row if p["id"] == row["id"] else p for p in rt.settings.auth["passkeys"]])
+    resp = JSONResponse({"ok": True})
+    _set_session(resp, request)
     return resp
 
 

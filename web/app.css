@@ -796,4 +796,3 @@ body.kiosk-paper .ks-foot .ks-acts { display: none; }
 .bk-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--me-border); }
 .bk-main { min-width: 0; }
 a.btn { color: var(--me-text); text-decoration: none; }
-body:has(.wizard.login) #lang-top { display: none; }

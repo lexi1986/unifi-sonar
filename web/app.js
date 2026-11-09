@@ -125,6 +125,28 @@
   };
 
   // ------------------------------------------------------------------ inloggen
+  // Passkeys: de browser werkt met binaire velden, de server met base64url.
+  const b64uDec = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const b64uEnc = (b) => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const passkeyPossible = () => !!window.PublicKeyCredential && window.isSecureContext && !/^[\d.]+$|:/.test(location.hostname);
+  const passkeyError = (e) => (e.name === "NotAllowedError" || e.name === "AbortError" ? L("Geannuleerd of niet gelukt.", "Cancelled or not successful.") : e.name === "InvalidStateError" ? L("Dit apparaat heeft al een passkey voor Sonar.", "This device already has a passkey for Sonar.") : e.message);
+  async function passkeyLogin() {
+    const { id, options: o } = await post("/api/auth/passkey/login/options", {});
+    o.challenge = b64uDec(o.challenge);
+    (o.allowCredentials || []).forEach((c) => { c.id = b64uDec(c.id); });
+    const c = await navigator.credentials.get({ publicKey: o });
+    await post("/api/auth/passkey/login", { id, credential: { id: c.id, rawId: b64uEnc(c.rawId), type: c.type, clientExtensionResults: c.getClientExtensionResults(),
+      response: { clientDataJSON: b64uEnc(c.response.clientDataJSON), authenticatorData: b64uEnc(c.response.authenticatorData), signature: b64uEnc(c.response.signature), userHandle: c.response.userHandle ? b64uEnc(c.response.userHandle) : null } } });
+  }
+  async function passkeyAdd(name, password) {
+    const { id, options: o } = await post("/api/auth/passkey/register/options", { name, password });
+    o.challenge = b64uDec(o.challenge);
+    o.user.id = b64uDec(o.user.id);
+    (o.excludeCredentials || []).forEach((c) => { c.id = b64uDec(c.id); });
+    const c = await navigator.credentials.create({ publicKey: o });
+    await post("/api/auth/passkey/register", { id, credential: { id: c.id, rawId: b64uEnc(c.rawId), type: c.type, clientExtensionResults: c.getClientExtensionResults(),
+      response: { clientDataJSON: b64uEnc(c.response.clientDataJSON), attestationObject: b64uEnc(c.response.attestationObject), transports: c.response.getTransports?.() || [] } } });
+  }
   function needLogin() {
     showLogin();
     return Object.assign(new Error(L("Inloggen nodig", "Login required")), { auth: true });
@@ -136,23 +158,33 @@
     stopKiosk();
     document.body.classList.remove("kiosk", "kiosk-paper");
     document.body.classList.add("setup");
+    $("#lang-top").style.display = "none";   // de taal wisselen kan pas na het inloggen
     v.dataset.mounted = "login";
     v.innerHTML = `<div class="wizard login"><div class="wiz-brand"><span class="logo">${icon("radar")}</span><div><div class="wiz-title">UniFi Sonar</div><div class="muted">${L("Log in om verder te gaan", "Log in to continue")}</div></div></div>
       <form class="card" id="login-form" onsubmit="return false">
         <div class="field"><label for="login-pw">${L("Wachtwoord", "Password")}</label><input class="input" id="login-pw" type="password" autocomplete="current-password" required></div>
         <div id="login-msg" role="alert"></div>
-        <div class="wiz-actions"><button class="btn primary" id="login-go" type="submit">${L("Inloggen", "Log in")}</button></div>
+        <div class="wiz-actions"><button class="btn primary" id="login-go" type="submit">${L("Inloggen", "Log in")}</button><button class="btn" id="login-pk" type="button" hidden>${L("Inloggen met passkey", "Log in with a passkey")}</button></div>
       </form></div>`;
     $("#status").innerHTML = `<span class="dot off"></span>${L("Niet ingelogd", "Not logged in")}`;
+    const loggedIn = async () => {
+      $("#lang-top").style.display = "";
+      v.dataset.mounted = "";
+      document.body.classList.remove("setup");
+      route();
+      await refresh();
+    };
+    if (passkeyPossible()) api("/api/auth/state").then((a) => { if (a.passkeys && $("#login-pk")) $("#login-pk").hidden = false; }).catch(() => {});
+    $("#login-pk").addEventListener("click", async () => {
+      try { await passkeyLogin(); await loggedIn(); }
+      catch (e) { $("#login-msg").innerHTML = `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(passkeyError(e))}</span></div>`; }
+    });
     $("#login-form").addEventListener("submit", async () => {
       const b = $("#login-go");
       b.disabled = true;
       try {
         await post("/api/auth/login", { password: $("#login-pw").value });
-        v.dataset.mounted = "";
-        document.body.classList.remove("setup");
-        route();
-        await refresh();
+        await loggedIn();
       } catch (e) {
         $("#login-msg").innerHTML = `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(e.message)}</span></div>`;
         b.disabled = false;
@@ -2064,6 +2096,14 @@
     const [a, au] = await Promise.all([api("/api/access").catch(() => null), api("/api/auth/state").catch(() => null)]);
     if (!a) { root.innerHTML = `<p class="muted">${L("Niet beschikbaar.", "Not available.")}</p>`; return; }
     const pw = (id, label, ac) => `<div class="field"><label for="${id}">${label}</label><input class="input" id="${id}" type="password" autocomplete="${ac}"></div>`;
+    const pks = au?.enabled ? await api("/api/auth/passkeys").catch(() => null) : null;
+    const pkOk = passkeyPossible();
+    const pkSection = !au?.enabled ? "" : `<hr class="sep"><h3 style="margin:0 0 6px">Passkeys</h3>
+      <p class="help" style="margin-top:0">${L("Inloggen met je vingerafdruk, gezicht of beveiligingssleutel in plaats van je wachtwoord. Dit is een keuze: je wachtwoord blijft altijd werken.", "Log in with your fingerprint, face or security key instead of your password. This is optional: your password always keeps working.")}</p>
+      ${(pks?.rows || []).length ? `<div class="bk-list" style="margin-bottom:12px">${pks.rows.map((p) => `<div class="bk-row"><div class="bk-main"><div>${esc(p.name)}</div><div class="cell-sub">${L("toegevoegd", "added")} ${dateTxt(p.created, true)}${p.last_used ? ` · ${L("laatst gebruikt", "last used")} ${dateTxt(p.last_used, true)}` : ""}${p.here ? "" : ` · ${L("hoort bij een andere hostnaam", "belongs to another host name")}`}</div></div><button type="button" class="btn" data-pk-del="${esc(p.id)}">${L("Verwijderen", "Remove")}</button></div>`).join("")}</div>` : ""}
+      ${pkOk ? `<form class="form-grid" onsubmit="return false"><div class="field"><label for="pk-name">${L("Naam van dit apparaat", "Name of this device")}</label><input class="input" id="pk-name" maxlength="60" placeholder="${L("bijv. iPhone", "e.g. iPhone")}"></div>${pw("pk-pw", L("Huidig wachtwoord", "Current password"), "current-password")}</form>
+        <div id="pk-msg" role="status"></div><div class="wiz-actions"><button type="button" class="btn" id="pk-add">${L("Passkey toevoegen", "Add a passkey")}</button></div>`
+      : `<div class="banner">${icon("info")}<span>${L("Passkeys werken alleen via HTTPS met een hostnaam. Open Sonar via zo'n adres om er een toe te voegen.", "Passkeys only work over HTTPS with a host name. Open Sonar via such an address to add one.")}</span></div>`}`;
     root.innerHTML = `<h3 style="margin:0 0 6px">${L("Inlog", "Login")} ${au?.enabled ? badge("ok", L("aan", "on"), "check") : badge("warning", L("uit", "off"))}</h3>
       <p class="help" style="margin-top:0">${au?.enabled ? L("Je hebt het wachtwoord nodig om het dashboard te zien en te bedienen.", "You need the password to see and operate the dashboard.") : L("Zonder inlog kan iedereen op je netwerk die het adres kent meekijken en apparaten pauzeren. Stel een wachtwoord in om dat te voorkomen.", "Without a login, anyone on your network who knows the address can look around and pause devices. Set a password to prevent that.")}</p>
       <form class="form-grid" id="au-form" onsubmit="return false">
@@ -2074,7 +2114,8 @@
       <div id="au-msg" role="status"></div>
       <div class="wiz-actions"><button type="button" class="btn primary" id="au-save">${au?.enabled ? L("Wachtwoord wijzigen", "Change password") : L("Inlog aanzetten", "Turn on login")}</button>
         ${au?.enabled ? `<button type="button" class="btn" id="au-off">${L("Inlog uitzetten", "Turn off login")}</button><button type="button" class="btn" id="au-out">${L("Uitloggen", "Log out")}</button>` : ""}</div>
-      <p class="help">${L("Wachtwoord kwijt? Zie <i>Privacy en veiligheid</i> in de README.", "Forgot the password? See <i>Privacy and security</i> in the README.")}</p>
+      <p class="help">${L("Wachtwoord kwijt? Zie <i>Privacy en veiligheid</i> in de README.", "Forgot the password? See <i>Privacy and security</i> in the README.")}${au?.enabled ? ` ${L("Zet je de inlog uit, dan vervallen ook je passkeys.", "If you turn off the login, your passkeys are removed too.")}` : ""}</p>
+      ${pkSection}
       <hr class="sep">
       <p class="help">${L("Het dashboard werkt via een IP-adres, <code>localhost</code> en lokale namen zoals <code>sonar.local</code> of <code>sonar.lan</code>. Andere hostnamen worden geweigerd, zodat een website in je browser het dashboard niet stiekem kan aansturen (DNS-rebinding). Gebruik je een eigen naam of een reverse proxy, zet die hieronder.", "The dashboard works via an IP address, <code>localhost</code> and local names such as <code>sonar.local</code> or <code>sonar.lan</code>. Other host names are refused, so a website in your browser cannot secretly control the dashboard (DNS rebinding). If you use your own name or a reverse proxy, add it below.")}</p>
       <div class="field"><label for="a-hosts">${L("Extra hostnamen", "Extra host names")}</label><input class="input" id="a-hosts" spellcheck="false" placeholder="${L("sonar.mijndomein.nl", "sonar.mydomain.com")}, sonar.tailnet.ts.net" value="${esc((a.allowed_hosts || []).join(", "))}">
@@ -2092,6 +2133,16 @@
       try { await post("/api/auth/disable", { password: $("#au-cur").value }); loadAccess({ ok: true, text: L("Inlog uitgezet.", "Login turned off.") }); }
       catch (err) { auMsg(false, err.message); }
     };
+    if ($("#pk-add")) $("#pk-add").onclick = async () => {
+      const b = $("#pk-add"), out = (ok, text) => { $("#pk-msg").innerHTML = `<div class="banner ${ok ? "" : "err"}" style="margin-top:12px">${icon(ok ? "check" : "octagon")}<span>${esc(text)}</span></div>`; };
+      b.disabled = true;
+      try { await passkeyAdd($("#pk-name").value, $("#pk-pw").value); loadAccess({ ok: true, text: L("Passkey toegevoegd.", "Passkey added.") }); }
+      catch (e) { out(false, passkeyError(e)); b.disabled = false; }
+    };
+    root.querySelectorAll("[data-pk-del]").forEach((b) => { b.onclick = async () => {
+      try { await post("/api/auth/passkey/delete", { id: b.dataset.pkDel }); loadAccess({ ok: true, text: L("Passkey verwijderd.", "Passkey removed.") }); }
+      catch (e) { auMsg(false, e.message); }
+    }; });
     if ($("#au-out")) $("#au-out").onclick = async () => { await post("/api/auth/logout", {}).catch(() => {}); showLogin(); };
     $("#a-save").onclick = async () => {
       const hosts = $("#a-hosts").value.split(/[,\s]+/).map((h) => h.trim()).filter(Boolean);

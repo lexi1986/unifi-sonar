@@ -2,6 +2,11 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.5.0 – 2026-11-09
+
+### Added
+- **Passkeys** as an optional way to log in, next to the password. They need HTTPS and a host name.
+
 ## 1.4.0 – 2026-11-08
 
 ### Added

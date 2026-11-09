@@ -240,7 +240,7 @@ def test_login_locks_the_api(demo, monkeypatch, tmp_path):
     for path in ("/api/snapshot", "/api/status", "/api/setup", "/api/mqtt"):
         assert anon.get(path).status_code == 401, path
     assert anon.post("/api/speedtest", json={}).status_code == 401
-    assert anon.get("/").status_code == 200 and anon.get("/api/auth/state").json() == {"enabled": True, "authenticated": False, "min_length": 8}
+    assert anon.get("/").status_code == 200 and anon.get("/api/auth/state").json() == {"enabled": True, "authenticated": False, "min_length": 8, "passkeys": 0}
     assert anon.post("/api/auth/login", json={"password": "fout"}).status_code == 403
     assert anon.post("/api/auth/login", json={"password": "een-lang-wachtwoord"}).status_code == 200
     cookie = anon.cookies.get(main.auth_mod.COOKIE)
@@ -402,3 +402,56 @@ def test_backup_download_needs_login(demo, monkeypatch, tmp_path):
     out = []
     rules_extra.backup_stale(out, {"backups": {"count": 0, "newest": None, "daily": False, "stale": True}}, __import__("app.rules", fromlist=["_issue"])._issue, None)
     assert out and out[0]["key"] == "backup_stale"
+
+
+# ------------------------------------------------------------------ passkeys
+def test_passkey_site_rules_and_challenges():
+    from app import passkeys as pk
+    assert pk.rp_id_for("192.168.1.5", "https") is None and pk.rp_id_for("sonar.example.com", "http") is None
+    assert pk.rp_id_for("Sonar.Example.com.", "https") == "sonar.example.com" and pk.rp_id_for("localhost", "http") == "localhost"
+    store = pk.Challenges()
+    cid = store.add("login", b"x", "a.example", "https://a.example")
+    assert store.take(cid, "register", "a.example", "https://a.example") is None   # verkeerd soort: meteen weg
+    cid = store.add("login", b"x", "a.example", "https://a.example")
+    assert store.take(cid, "login", "b.example", "https://b.example") is None
+    cid = store.add("login", b"x", "a.example", "https://a.example")
+    assert store.take(cid, "login", "a.example", "https://a.example")["challenge"] == b"x"
+    assert store.take(cid, "login", "a.example", "https://a.example") is None      # maar één keer te gebruiken
+
+
+def test_passkey_endpoints(demo, monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    from app import main
+    monkeypatch.setattr(main.rt, "collector", demo)
+    monkeypatch.setattr(main.rt, "db", demo.db)
+    monkeypatch.setattr(main, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(main.rt.settings, "auth", main.auth_mod.new_config("een-lang-wachtwoord"))
+    monkeypatch.setattr(main.rt.settings, "allowed_hosts", ["sonar.example.com"])
+    monkeypatch.setattr(main, "login_limiter", main.auth_mod.Limiter())
+    (tmp_path / "config.json").write_text("{}")
+    https = {"host": "sonar.example.com", "x-forwarded-proto": "https"}
+    c = TestClient(main.app)
+    assert c.post("/api/auth/passkey/register/options", json={"password": "een-lang-wachtwoord"}, headers=https).status_code == 401   # niet ingelogd
+    assert c.post("/api/auth/passkey/login/options", headers=https).status_code == 400                                                # nog geen passkeys
+    assert c.post("/api/auth/login", json={"password": "een-lang-wachtwoord"}).status_code == 200
+    assert c.post("/api/auth/passkey/register/options", json={"password": "fout"}, headers=https).status_code == 403                  # wachtwoord nodig
+    assert c.post("/api/auth/passkey/register/options", json={"password": "een-lang-wachtwoord"}).status_code == 400                  # geen https
+    r = c.post("/api/auth/passkey/register/options", json={"name": "Telefoon", "password": "een-lang-wachtwoord"}, headers=https).json()
+    o = r["options"]
+    assert o["rp"]["id"] == "sonar.example.com" and o["authenticatorSelection"]["residentKey"] == "required" and o["authenticatorSelection"]["userVerification"] == "required"
+    assert c.post("/api/auth/passkey/register", json={"id": r["id"], "credential": {"id": "x"}}, headers=https).status_code == 400
+    assert not main.rt.settings.auth.get("passkeys")
+    # een bestaande passkey blijft staan als je het wachtwoord wijzigt
+    key = {"id": "AAAA", "public_key": "AAAA", "sign_count": 0, "rp_id": "sonar.example.com", "name": "Telefoon", "created": 1, "last_used": None}
+    main.rt.settings.auth = {**main.rt.settings.auth, "passkeys": [key]}
+    assert c.post("/api/auth/password", json={"current": "een-lang-wachtwoord", "new": "nieuw-lang-wachtwoord"}).status_code == 200
+    assert main.rt.settings.auth["passkeys"] == [key]
+    assert c.get("/api/auth/passkeys").json()["rows"][0]["here"] is False and "public_key" not in c.get("/api/auth/passkeys").json()["rows"][0]
+    # een verzonnen handtekening komt er niet in
+    anon = TestClient(main.app)
+    assert anon.get("/api/auth/state").json()["passkeys"] == 1
+    r = anon.post("/api/auth/passkey/login/options", headers=https).json()
+    bad = {"id": "AAAA", "rawId": "AAAA", "type": "public-key", "response": {"clientDataJSON": "AAAA", "authenticatorData": "AAAA", "signature": "AAAA"}}
+    assert anon.post("/api/auth/passkey/login", json={"id": r["id"], "credential": bad}, headers=https).status_code == 403
+    assert anon.get("/api/snapshot").status_code == 401
+    assert c.post("/api/auth/passkey/delete", json={"id": "AAAA"}).status_code == 200 and main.rt.settings.auth["passkeys"] == []
