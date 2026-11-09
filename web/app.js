@@ -158,7 +158,7 @@
     stopKiosk();
     document.body.classList.remove("kiosk", "kiosk-paper");
     document.body.classList.add("setup");
-    $("#lang-top").style.display = "none";   // de taal wisselen kan pas na het inloggen
+    document.body.classList.add("logged-out");   // de taal wisselen kan pas na het inloggen
     v.dataset.mounted = "login";
     v.innerHTML = `<div class="wizard login"><div class="wiz-brand"><span class="logo">${icon("radar")}</span><div><div class="wiz-title">UniFi Sonar</div><div class="muted">${L("Log in om verder te gaan", "Log in to continue")}</div></div></div>
       <form class="card" id="login-form" onsubmit="return false">
@@ -168,7 +168,7 @@
       </form></div>`;
     $("#status").innerHTML = `<span class="dot off"></span>${L("Niet ingelogd", "Not logged in")}`;
     const loggedIn = async () => {
-      $("#lang-top").style.display = "";
+      document.body.classList.remove("logged-out");
       v.dataset.mounted = "";
       document.body.classList.remove("setup");
       route();
