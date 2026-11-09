@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UniFi Sonar bijwerken naar de nieuwste versie van GitHub. Je instellingen en historie blijven staan.
+# UniFi Sonar bijwerken naar de nieuwste release op GitHub. Je instellingen en historie blijven staan.
 # Wordt bij installeren neergezet als `unifi-sonar-update`, en in een container ook als `update`.
 #
 #   update            bijwerken als er een nieuwe versie is
@@ -24,16 +24,24 @@ main() {
   [ -d "$APP/.git" ] || die "geen installatie via git gevonden in $APP. Installeer opnieuw met:
   curl -fsSL https://raw.githubusercontent.com/lexi1986/unifi-sonar/main/scripts/install.sh | sudo bash"
 
-  local branch cur cur_v new
-  branch=$(git -C "$APP" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)
-  [ "$branch" = HEAD ] && branch=main
+  local ref="${BRANCH:-}" cur cur_v new new_v=""
   cur=$(git -C "$APP" rev-parse --short HEAD)
   cur_v=$(version)
+  if [ -z "$ref" ]; then
+    ref=$(git -C "$APP" ls-remote --refs --tags --sort=-v:refname origin 'v[0-9]*' | head -n 1 | sed 's#.*refs/tags/##')
+    [ -n "$ref" ] || die "GitHub is niet bereikbaar, of er is nog geen release. Heeft deze machine internet?"
+    new_v=${ref#v}
+  fi
 
-  say "Zoeken naar een nieuwe versie (branch $branch)"
-  git -C "$APP" fetch -q --depth 50 origin "$branch" || die "GitHub is niet bereikbaar. Heeft deze machine internet?"
+  say "Zoeken naar een nieuwe versie ($ref)"
+  git -C "$APP" fetch -q --depth 50 origin "$ref" || die "GitHub is niet bereikbaar. Heeft deze machine internet?"
   new=$(git -C "$APP" rev-parse --short FETCH_HEAD)
 
+  # Nooit terug naar een oudere release, en ook niet opnieuw als je deze versie al hebt.
+  if [ -n "$new_v" ] && [ "$mode" != --force ] && [ "$(printf '%s\n%s\n' "$cur_v" "$new_v" | sort -V | tail -n 1)" = "$cur_v" ]; then
+    say "UniFi Sonar is al up-to-date (versie $cur_v)."
+    exit 0
+  fi
   if [ "$cur" = "$new" ] && [ "$mode" != --force ]; then
     say "UniFi Sonar is al up-to-date (versie $cur_v, $cur)."
     exit 0

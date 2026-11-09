@@ -80,3 +80,57 @@ def test_demo_world_api(tmp_path, monkeypatch):
     assert all(r["cc"] == "US" for r in c.get("/api/world/connections?hours=24&cc=us").json()["rows"])
     live = c.get("/api/world/live?limit=20").json()["flows"]
     assert live and all("remote_ip" not in f for f in live)
+
+
+def blocked_flow(**kw):
+    return flow("outgoing", {"ip": "192.168.1.7", "mac": "AA:BB:CC:00:00:07", "client_name": "Lamp"},
+                {"ip": "203.0.113.53", "port": 853, "region": "US"}, action="blocked", service="DNS_OVER_TLS",
+                policies=[{"type": "FIREWALL", "internal_type": "FIREWALL_POLICY", "name": "Geen eigen DNS"}], **kw)
+
+
+def test_blocked_flow_keeps_rule_name():
+    f = normalize_flow(blocked_flow())
+    assert (f["dir"], f["reason"], f["rule"], f["inbound"]) == ("blocked", "Firewallregel", "Geen eigen DNS", 0)
+    region = normalize_flow(flow("incoming", {"ip": "198.51.100.9", "region": "RU"}, {"ip": "203.0.113.2", "port": 23}, action="blocked",
+                                 policies=[{"type": "PROTECTION", "internal_type": "REGION_BLOCKING", "name": "Region Blocking"}]))
+    assert (region["reason"], region["rule"], region["inbound"]) == ("Regioblokkade", None, 1)
+    assert normalize_flow(flow("outgoing", {"ip": "192.168.1.5"}, {"ip": "203.0.113.9", "port": 443, "region": "DE"}))["rule"] is None
+    ct = normalize_flow(flow("outgoing", {"ip": "192.168.1.5"}, {"ip": "203.0.113.9", "port": 123, "region": "DE"}, action="blocked",
+                             policies=[{"type": "FIREWALL", "internal_type": "CONNTRACK"}]))
+    assert (ct["reason"], ct["rule"]) == ("Ongeldige verbinding", None)
+
+
+def test_old_database_gets_new_flow_columns(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE flows (id TEXT PRIMARY KEY, ts INT, dir TEXT, action TEXT, cc TEXT, remote_ip TEXT, port INT, domain TEXT, "
+              "service TEXT, proto TEXT, client_mac TEXT, client_name TEXT, client_ip TEXT, net TEXT, up INT, down INT, risk TEXT, reason TEXT)")
+    c.commit()
+    c.close()
+    db = DB(path)
+    assert db.store_flows([normalize_flow(blocked_flow())]) == 1
+    assert db.connections(T - 60, ("blocked",))[0][0]["rule"] == "Geen eigen DNS"
+
+
+def test_connections_explain_why_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv("NO_DOTENV", "1")
+    monkeypatch.setattr("time.time", lambda: T + 10)
+    from fastapi.testclient import TestClient
+    from app import main
+    st = Settings(mode="mock", db_path=str(tmp_path / "t.db"), mock_seed_hours=1)
+    col = Collector(st, DB(st.db_path))
+    col.config = {"rule_notes": {"Geen eigen DNS": "Alleen via de eigen DNS-server"}}
+    col.db.store_flows([normalize_flow(blocked_flow(id="b1")), normalize_flow(blocked_flow(id="b2")),
+                        normalize_flow(flow("outgoing", {"ip": "192.168.1.5", "client_name": "Laptop"},
+                                            {"ip": "203.0.113.9", "port": 443, "region": "DE"}, id="ok"))])
+    monkeypatch.setattr(main.rt, "collector", col)
+    monkeypatch.setattr(main.rt, "db", col.db)
+    c = TestClient(main.app)
+    rows = c.get("/api/world/connections?hours=1&dir=blocked").json()["rows"]
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r["kind"], r["by"], r["rule"], r["note"], r["inbound"], r["n"]) == ("firewall", "Firewallregel", "Geen eigen DNS", "Alleen via de eigen DNS-server", 0, 2)
+    assert r["ips"] == ["203.0.113.53"] and r["proto"] == "TCP"
+    allowed = c.get("/api/world/connections?hours=1&dir=out").json()["rows"][0]
+    assert allowed["by"] is None and not {"rule", "ips", "inbound", "kind"} & set(allowed)

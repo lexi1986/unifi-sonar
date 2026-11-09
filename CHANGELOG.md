@@ -2,6 +2,21 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.7.0 – 2026-11-09
+
+### Security
+- **Login is now required** for a real network. The first password needs a one-time code that is shown on the machine itself. Only the demo can run without a login. After updating, an install without a login shows that code.
+- **Encrypted backups**: Sonar can write them but only open them with your password or a recovery code that you see once.
+- **Controller certificate pinning**: with certificate verification off, Sonar records the certificate on first connection and refuses to send its key if it changes.
+- **Sessions can be revoked**: see logged-in devices under Settings → Access and log them out. Everyone has to log in once after this update.
+- **Saved MQTT passwords and webhook tokens** no longer follow a changed address.
+- **Updates** only install published releases, and Python packages are checked against fixed hashes.
+
+## 1.6.0 – 2026-11-09
+
+### Added
+- **Why was this blocked?** Click a blocked connection on the World page to see the firewall rule, region block or IPS signature that stopped it, who tried what, and whether you need to do anything.
+
 ## 1.5.0 – 2026-11-09
 
 ### Added

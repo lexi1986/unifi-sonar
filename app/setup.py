@@ -83,6 +83,7 @@ async def test_connection(address: str, api_key: str, username: str, password: s
                  username=username, password=password, verify_tls=verify_tls)
     client = UnifiClient(s)
     try:
+        await client.prepare()       # eerst het certificaat vastleggen, dan pas de sleutel versturen
         sites = await client.sites()
         if sites and s.site not in {x["name"] for x in sites}:
             avail = ", ".join(f"'{x['name']}'" + (f" ({x['desc']})" if x.get("desc") else "") for x in sites)
@@ -108,7 +109,7 @@ async def test_connection(address: str, api_key: str, username: str, password: s
     if not data["devices"]:
         warnings.append(L(f"Ingelogd, maar de site '{s.site}' bevat geen apparaten. Klopt de sitenaam?",
                           f"Logged in, but the site '{s.site}' has no devices. Is the site name right?"))
-    return {"ok": True, "url": url, "source": data["source"],
+    return {"ok": True, "url": url, "source": data["source"], "tls_pin": s.tls_pin,
             "devices": len(data["devices"]), "clients": len(data["clients"]),
             "gateway": f"{gw['name']} ({gw['model']})" if gw else None, "warnings": warnings}
 

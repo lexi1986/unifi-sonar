@@ -125,6 +125,7 @@ DNS_LEAKS = [   # (apparaat, adres, poort, dienst, domein): DNS buiten je eigen 
     ("Fire TV", "8.8.8.8", 53, "DNS", None), ("Tesla", "1.1.1.1", 853, "DNS_OVER_TLS", "one.one.one.one"),
     ("Nest Thermostaat", "8.8.4.4", 443, "HTTPS", "dns.google"),
 ]
+BLOCK_DEMO_RULE = "Geen eigen DNS (IoT)"
 DEMO_AUDIT_RULES = [
     {"_id": "p-audit-1", "name": "Blokkeer IoT-camera", "action": "BLOCK", "enabled": True, "index": 10010, "predefined": False,
      "protocol": "all", "connection_state_type": "ALL", "source": {"zone_id": "z-int", "matching_target": "ANY"},
@@ -132,6 +133,10 @@ DEMO_AUDIT_RULES = [
     {"_id": "p-audit-2", "name": "Tablet IoT tijdelijk", "action": "ALLOW", "enabled": True, "index": 10050, "predefined": False,
      "protocol": "all", "connection_state_type": "ALL", "source": {"zone_id": "z-iot", "matching_target": "IP", "ips": ["192.168.20.50"]},
      "destination": {"zone_id": "z-int", "matching_target": "ANY", "port_matching_type": "ANY"}},
+    {"_id": "p-audit-3", "name": BLOCK_DEMO_RULE, "description": "Slimme apparaten gebruiken alleen de DNS-server van het eigen netwerk.",
+     "action": "BLOCK", "enabled": True, "index": 10060, "predefined": False, "protocol": "tcp", "connection_state_type": "ALL",
+     "source": {"zone_id": "z-iot", "matching_target": "ANY"},
+     "destination": {"zone_id": "z-ext", "matching_target": "ANY", "port_matching_type": "SPECIFIC", "port": "853"}},
 ]
 NEIGHBOR_SSIDS = ["Ziggo-5G", "KPN-WiFi-2E4A", "H369A1B2C", "FRITZ!Box 7590 XL", "Odido-Thuis", "Buren", "TV-Kast", "Ziggo1234567"]
 AWAY = {"iPhone", "MacBook Pro", "Galaxy S24", "Laptop Werk", "Pixel 8", "Apple Watch", "Tesla"}   # overdag weg
@@ -404,6 +409,15 @@ class MockNetwork:
                             "service": svc, "risk": "low", "source": {"ip": ip, "mac": mac, "client_name": who, "port": 41000},
                             "destination": {"ip": ip_, "port": port, "domains": [dom] if dom else [], "region": "US"},
                             "traffic_data": {"bytes_tx": 120, "bytes_rx": 260}})
+            if rnd.random() < dt / 300 and who in names:   # dezelfde poging, maar nu tegengehouden door een firewallregel
+                mac, ip = names[who]
+                out.append({"id": f"mockdnsb-{ts}-{mac}", "action": "blocked", "direction": "outgoing", "protocol": "TCP",
+                            "flow_end_time": ts * 1000, "in": {"network_name": "IoT"}, "out": {"network_name": "WAN"},
+                            "service": "DNS_OVER_TLS", "risk": "low",
+                            "policies": [{"id": "p-audit-3", "type": "FIREWALL", "internal_type": "FIREWALL_POLICY", "name": BLOCK_DEMO_RULE}],
+                            "source": {"ip": ip, "mac": mac, "client_name": who, "port": 41001},
+                            "destination": {"ip": "203.0.113.53", "port": 853, "region": "US"},
+                            "traffic_data": {"bytes_tx": 60, "bytes_rx": 0}})
         for k in range(int(dt / 60 * 2)):   # van buiten naar binnen: VPN, Home Assistant en de open SSH-poort
             host, port, svc, cc, size = rnd.choice(FLOW_IN)
             mac, ip = names[host]
@@ -419,7 +433,7 @@ class MockNetwork:
             cc, port, svc = rnd.choice((("RU", 23, "TELNET"), ("RU", 445, "MICROSOFT_DS"), ("CN", 3389, "RDP"), ("KP", 22, "SSH")))
             out.append({"id": f"mockfb-{ts}-{port}", "action": "blocked", "direction": "incoming", "protocol": "TCP",
                         "flow_end_time": ts * 1000, "service": svc, "risk": "high",
-                        "policies": [{"type": "PROTECTION", "internal_type": "REGION_BLOCKING"}],
+                        "policies": [{"type": "PROTECTION", "internal_type": "REGION_BLOCKING", "name": "Region Blocking"}],
                         "in": {"network_name": "WAN"}, "source": {"ip": f"198.51.100.{rnd.randint(1, 250)}", "region": cc},
                         "destination": {"ip": "203.0.113.24", "port": port},
                         "traffic_data": {"bytes_tx": 60, "bytes_rx": 0}})

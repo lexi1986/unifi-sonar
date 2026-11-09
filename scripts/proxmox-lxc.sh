@@ -108,6 +108,8 @@ if [ -z "$DRY" ]; then
   IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
   echo
   say "Klaar! Open http://$IP$([ "$PORT" = 80 ] || echo ":$PORT") en volg de setup-wizard."
+  CODE=$(pct exec "$CTID" -- cat /var/lib/unifi-sonar/setup-code 2>/dev/null || true)
+  [ -z "$CODE" ] || echo "    Eenmalige code om je wachtwoord in te stellen: $CODE"
   echo "    Console: open de container in Proxmox en je bent meteen ingelogd (geen wachtwoord nodig)."
   echo "    Bijwerken later: typ 'update' in de console van de container,"
   echo "    of vanaf de host: pct exec $CTID -- update"

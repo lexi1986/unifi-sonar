@@ -51,7 +51,7 @@ class Collector:
         self.s = settings
         self.db = db
         self.mock = MockNetwork() if settings.mode == "mock" else None
-        self.client = None if self.mock else UnifiClient(settings)
+        self.client = None if self.mock else UnifiClient(settings, persist_pin=True)
         self.prev: dict | None = None
         self.latest: dict | None = db.get_kv("latest")
         self.last_error: str | None = None
@@ -474,6 +474,7 @@ class Collector:
     async def collect_backups(self, force: bool = False, create: bool = False) -> None:
         """Elke 6 uur de automatische backups kopiëren; desgewenst eens per dag een verse laten maken."""
         now, d = int(time.time()), self.s.data_dir
+        public = (self.s.backup_keys or {}).get("public")
         if not force and now - self._bk_checked < 6 * 3600:
             return
         self._bk_checked = now
@@ -481,7 +482,7 @@ class Collector:
             if self.mock:
                 for b in self.mock.backups(now):
                     if not backups.has(d, b["filename"]):
-                        backups.store(d, b["filename"], b"demo: geen echte backup / not a real backup\n", b["time"])
+                        backups.store(d, b["filename"], b"demo: geen echte backup / not a real backup\n", b["time"], public)
             else:
                 rows = await self.client.backups_list()
                 if rows is None:
@@ -494,12 +495,12 @@ class Collector:
                     data = await self.client.backup_download(f"/dl/autobackup/{name}")
                     if row.get("size") and len(data) != row["size"]:
                         raise RuntimeError(L(f"Backup {name} kwam niet volledig binnen.", f"Backup {name} did not arrive completely."))
-                    backups.store(d, name, data, (row.get("time") or 0) / 1000 or None)
+                    backups.store(d, name, data, (row.get("time") or 0) / 1000 or None, public)
             made = (self.db.get_kv("backup_made") or {}).get("ts", 0)
             if create or (self.s.backup_daily and now - made >= 86400 - 600):
                 data = b"demo: geen echte backup / not a real backup\n" if self.mock else await self.client.backup_create()
                 ver = re.sub(r"[^0-9.]", "", str(self.sysinfo.get("network_version") or "")) or "x"
-                backups.store(d, f"sonar_{ver}_{time.strftime('%Y%m%d_%H%M', time.localtime(now))}.unf", data, now)
+                backups.store(d, f"sonar_{ver}_{time.strftime('%Y%m%d_%H%M', time.localtime(now))}.unf", data, now, public)
                 self.db.set_kv("backup_made", {"ts": now})
             backups.prune(d)
             self.backup_status.update(checked=now, error=None)

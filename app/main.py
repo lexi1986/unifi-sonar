@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +54,11 @@ log = logging.getLogger("unifi_sonar")
 DATA_DIR = os.environ.get("DATA_DIR") or str(ROOT / "data")
 
 
+def _login_required(s: Settings) -> bool:
+    """Alleen de demo mag zonder inlog: daar valt niets te zien of te bedienen."""
+    return not (s.configured and s.mode == "mock")
+
+
 class Runtime:
     """Houdt instellingen, database en collector bij; kan na de wizard opnieuw starten."""
 
@@ -66,6 +71,9 @@ class Runtime:
 
     async def start(self) -> None:
         s = self.settings
+        if _login_required(s) and not auth_mod.enabled(s.auth):
+            log.warning("Eenmalige code om het eerste wachtwoord in te stellen / One-time code to set the first password: %s",
+                        auth_mod.ensure_setup_code(s.data_dir))
         if not s.configured:
             log.info("Nog niet ingesteld: open het dashboard om de setup-wizard te doorlopen")
             return
@@ -143,13 +151,16 @@ def host_allowed(host: str) -> bool:
     return h in {x.lower() for x in rt.settings.allowed_hosts or []} | env_hosts()
 
 
-AUTH_OPEN = {"/api/auth/state", "/api/auth/login", "/api/auth/passkey/login/options", "/api/auth/passkey/login"}
+AUTH_OPEN = {"/api/auth/state", "/api/auth/login", "/api/auth/setup", "/api/auth/passkey/login/options", "/api/auth/passkey/login"}
 login_limiter = auth_mod.Limiter()
 
 
-def _set_session(resp, request: Request) -> None:
+def _set_session(resp, request: Request, renew_of: str | None = None) -> None:
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
-    resp.set_cookie(auth_mod.COOKIE, auth_mod.make_token(rt.settings.auth), max_age=auth_mod.SESSION_SECONDS,
+    cfg = rt.settings.auth
+    token = auth_mod.renew(cfg, renew_of) if renew_of else auth_mod.new_session(cfg, auth_mod.agent_label(request.headers.get("user-agent", "")))
+    _store_auth(cfg)
+    resp.set_cookie(auth_mod.COOKIE, token, max_age=auth_mod.SESSION_SECONDS,
                     httponly=True, samesite="strict", secure=secure, path="/")
 
 
@@ -171,11 +182,12 @@ async def guard(request: Request, call_next):
                                              "Request from another website refused.")}, 403)
     path, token = request.url.path, request.cookies.get(auth_mod.COOKIE)
     locked = auth_mod.enabled(rt.settings.auth)
-    if locked and path.startswith("/api/") and path not in AUTH_OPEN and not auth_mod.token_valid(rt.settings.auth, token):
+    must_setup = not locked and _login_required(rt.settings)
+    if path.startswith("/api/") and path not in AUTH_OPEN and (must_setup or (locked and not auth_mod.token_valid(rt.settings.auth, token))):
         return JSONResponse({"detail": "auth_required"}, 401)
     resp = await call_next(request)
     if locked and token and path.startswith("/api/") and path not in AUTH_OPEN and auth_mod.should_renew(token):
-        _set_session(resp, request)   # wie blijft komen, blijft ingelogd (bijvoorbeeld een tablet aan de muur)
+        _set_session(resp, request, renew_of=token)   # wie blijft komen, blijft ingelogd (bijvoorbeeld een tablet aan de muur)
     return resp
 
 
@@ -267,6 +279,7 @@ async def setup_save(req: SetupRequest):
         raise HTTPException(400, result.get("error") or L("Verbindingstest mislukt", "Connection test failed"))
     s = Settings.load(DATA_DIR)
     s.mode, s.controller_url, s.site, s.verify_tls = "live", result["url"], req.site or "default", req.verify_tls
+    s.tls_pin = result.get("tls_pin") or ""
     s.api_key, s.username, s.password = req.api_key, req.username, req.password
     s.save()
     await rt.apply(s)
@@ -293,6 +306,15 @@ class PasswordRequest(BaseModel):
     new: str = Field(default="", max_length=200)
 
 
+class FirstPassword(BaseModel):
+    code: str = Field(default="", max_length=40)
+    password: str = Field(default="", max_length=200)
+
+
+class SessionRevoke(BaseModel):
+    id: str | None = Field(default=None, max_length=20)   # None = alle andere sessies
+
+
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "?"
 
@@ -313,11 +335,50 @@ def _check_current(req_password: str, request: Request) -> None:
     login_limiter.reset(ip)
 
 
+def _too_many(request: Request) -> None:
+    if (w := login_limiter.wait(_client_ip(request))):
+        raise HTTPException(429, L(f"Te veel pogingen. Probeer het over {w} seconden opnieuw.", f"Too many attempts. Try again in {w} seconds."))
+
+
+def _password_ok(new: str) -> None:
+    if len(new) < auth_mod.MIN_LENGTH:
+        raise HTTPException(400, L(f"Kies een wachtwoord van minstens {auth_mod.MIN_LENGTH} tekens.",
+                                   f"Choose a password of at least {auth_mod.MIN_LENGTH} characters."))
+
+
+def _store_backup_keys(keys: dict) -> None:
+    s = Settings.load(DATA_DIR)
+    s.backup_keys = rt.settings.backup_keys = keys
+    s.save()
+
+
 @app.get("/api/auth/state")
 def auth_state(request: Request):
-    on = auth_mod.enabled(rt.settings.auth)
-    return {"enabled": on, "authenticated": not on or auth_mod.token_valid(rt.settings.auth, request.cookies.get(auth_mod.COOKIE)),
+    on, required = auth_mod.enabled(rt.settings.auth), _login_required(rt.settings)
+    if not on and required:
+        auth_mod.ensure_setup_code(rt.settings.data_dir)
+    return {"enabled": on, "setup_needed": not on and required, "optional": not required,
+            "authenticated": auth_mod.token_valid(rt.settings.auth, request.cookies.get(auth_mod.COOKIE)) if on else not required,
             "min_length": auth_mod.MIN_LENGTH, "passkeys": len((rt.settings.auth or {}).get("passkeys") or [])}
+
+
+@app.post("/api/auth/setup")
+def auth_setup(req: FirstPassword, request: Request):
+    """Het eerste wachtwoord, met de eenmalige code die op de machine zelf staat."""
+    if auth_mod.enabled(rt.settings.auth):
+        raise HTTPException(409, L("Er is al een wachtwoord ingesteld.", "A password has already been set."))
+    _too_many(request)
+    if not auth_mod.check_setup_code(rt.settings.data_dir, req.code):
+        login_limiter.failed(_client_ip(request))
+        raise HTTPException(403, L("Deze code klopt niet.", "This code is not correct."))
+    _password_ok(req.password)
+    _store_auth({**auth_mod.new_config(req.password), "passkeys": []})
+    auth_mod.clear_setup_code(rt.settings.data_dir)
+    keys, recovery = backups_mod.new_keys(req.password)
+    _store_backup_keys(keys)
+    resp = JSONResponse({"ok": True, "recovery_code": recovery})
+    _set_session(resp, request)
+    return resp
 
 
 @app.post("/api/auth/login")
@@ -331,7 +392,9 @@ def auth_login(req: LoginRequest, request: Request):
 
 
 @app.post("/api/auth/logout")
-def auth_logout():
+def auth_logout(request: Request):
+    if auth_mod.end_session(rt.settings.auth, request.cookies.get(auth_mod.COOKIE)):
+        _store_auth(rt.settings.auth)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(auth_mod.COOKIE, path="/")
     return resp
@@ -342,17 +405,32 @@ def auth_password(req: PasswordRequest, request: Request):
     """Inlog aanzetten of het wachtwoord wijzigen. Staat de inlog al aan, dan is het huidige wachtwoord nodig."""
     if auth_mod.enabled(rt.settings.auth):
         _check_current(req.current, request)
-    if len(req.new) < auth_mod.MIN_LENGTH:
-        raise HTTPException(400, L(f"Kies een wachtwoord van minstens {auth_mod.MIN_LENGTH} tekens.",
-                                   f"Choose a password of at least {auth_mod.MIN_LENGTH} characters."))
+    _password_ok(req.new)
     _store_auth({**auth_mod.new_config(req.new), "passkeys": (rt.settings.auth or {}).get("passkeys") or []})
+    if rt.settings.backup_keys and (keys := backups_mod.rewrap(rt.settings.backup_keys, req.current, req.new)):
+        _store_backup_keys(keys)     # zo opent het nieuwe wachtwoord ook de bestaande backups
     resp = JSONResponse({"ok": True})
     _set_session(resp, request)   # deze browser blijft ingelogd; andere sessies vervallen
     return resp
 
 
+@app.get("/api/auth/sessions")
+def auth_sessions(request: Request):
+    return {"rows": auth_mod.session_rows(rt.settings.auth, request.cookies.get(auth_mod.COOKIE))}
+
+
+@app.post("/api/auth/sessions/revoke")
+def auth_sessions_revoke(req: SessionRevoke, request: Request):
+    """Geen DELETE: die wordt door de UXG-IPS geblokkeerd."""
+    n = auth_mod.revoke(rt.settings.auth, req.id, request.cookies.get(auth_mod.COOKIE))
+    _store_auth(rt.settings.auth)
+    return {"ok": True, "revoked": n}
+
+
 @app.post("/api/auth/disable")
 def auth_disable(req: LoginRequest, request: Request):
+    if _login_required(rt.settings):
+        raise HTTPException(403, L("De inlog kan alleen in de demo uit.", "The login can only be turned off in the demo."))
     if auth_mod.enabled(rt.settings.auth):
         _check_current(req.password, request)
         _store_auth({})
@@ -519,7 +597,8 @@ def _mqtt_cfg(req: MqttSave) -> dict:
         raise HTTPException(400, L("Alleen de naam of het IP-adres van de broker, zonder http:// of poort.",
                                    "Only the name or IP address of the broker, without http:// or a port."))
     return {"enabled": req.enabled, "host": host, "port": req.port, "username": req.username.strip(),
-            "password": req.password if req.password else old.get("password", ""),
+            # een opgeslagen wachtwoord gaat nooit mee naar een ander adres
+            "password": req.password if req.password else (old.get("password", "") if (host, req.port) == (old.get("host"), old.get("port")) else ""),
             "prefix": req.prefix.strip().strip("/") or "homeassistant",
             "presence": old.get("presence", []), "presence_grace": old.get("presence_grace", ha_mqtt.DEFAULTS["presence_grace"])}
 
@@ -593,7 +672,8 @@ def _channel(c: ChannelIn, stored: dict[str, dict]) -> dict:
     if url and not re.match(r"^https?://[^\s/]+", url):
         raise HTTPException(400, L("Een webhook-adres begint met http:// of https://",
                                    "A webhook address starts with http:// or https://"))
-    token = old.get("token", "") if c.token is None else c.token.strip()
+    # een opgeslagen token gaat nooit mee naar een ander adres
+    token = (old.get("token", "") if url == old.get("url") else "") if c.token is None else c.token.strip()
     return {"id": c.id if c.id in stored else notify_mod.new_id(), "kind": c.kind, "name": c.name.strip(), "url": url,
             "token": token, "min_severity": c.min_severity, "resolved": c.resolved, "enabled": c.enabled}
 
@@ -1092,7 +1172,7 @@ def backups_info():
     collector, _ = _need()
     s = rt.settings
     return {"files": backups_mod.listing(s.data_dir), "daily": s.backup_daily, "keep": backups_mod.KEEP,
-            "can_download": auth_mod.enabled(s.auth), **collector.backup_status}
+            "can_download": auth_mod.enabled(s.auth), "encrypted": bool(s.backup_keys), **collector.backup_status}
 
 
 @app.post("/api/backups/settings")
@@ -1113,14 +1193,88 @@ async def backups_run():
     return {"ok": True}
 
 
-@app.get("/api/backups/download/{name}")
-def backups_download(name: str):
-    if not auth_mod.enabled(rt.settings.auth):   # een backup bevat ook je wifi-wachtwoorden
+class BackupEncrypt(BaseModel):
+    password: str = Field(default="", max_length=200)
+
+
+class BackupDownload(BaseModel):
+    name: str = Field(max_length=140)
+    secret: str = Field(default="", max_length=200)
+
+
+@app.post("/api/backups/encrypt")
+def backups_encrypt(req: BackupEncrypt, request: Request):
+    """Versleuteling aanzetten. De herstelcode is één keer te zien."""
+    if not auth_mod.enabled(rt.settings.auth):
         raise HTTPException(403, L("Zet eerst de inlog aan onder Instellingen → Toegang.", "First turn on the login under Settings → Access."))
-    path = backups_mod.path_of(rt.settings.data_dir, name)
+    if rt.settings.backup_keys:
+        raise HTTPException(409, L("De backups worden al versleuteld.", "Backups are already encrypted."))
+    _check_current(req.password, request)
+    keys, recovery = backups_mod.new_keys(req.password)
+    _store_backup_keys(keys)
+    return {"ok": True, "recovery_code": recovery, "encrypted": backups_mod.encrypt_existing(rt.settings.data_dir, keys["public"])}
+
+
+@app.post("/api/backups/download")
+def backups_download(req: BackupDownload, request: Request):
+    """POST, zodat wachtwoord of herstelcode niet in een adres of logboek terechtkomt."""
+    s = rt.settings
+    if not auth_mod.enabled(s.auth):   # een backup bevat ook je wifi-wachtwoorden
+        raise HTTPException(403, L("Zet eerst de inlog aan onder Instellingen → Toegang.", "First turn on the login under Settings → Access."))
+    path = backups_mod.path_of(s.data_dir, req.name)
     if not path:
         raise HTTPException(404, L("Backup niet gevonden.", "Backup not found."))
-    return FileResponse(path, media_type="application/octet-stream", filename=name)
+    private = None
+    if path.name.endswith(backups_mod.ENC):
+        _too_many(request)
+        private = backups_mod.unlock(s.backup_keys, req.secret)
+        if private is None:
+            login_limiter.failed(_client_ip(request))
+            raise HTTPException(403, L("Wachtwoord of herstelcode klopt niet.", "Wrong password or recovery code."))
+    return Response(backups_mod.read(s.data_dir, req.name, private), media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{req.name}"'})
+
+
+# ----------------------------------------------------------------------- certificaat van de controller
+class TlsTrust(BaseModel):
+    password: str = Field(default="", max_length=200)
+
+
+@app.get("/api/tls")
+async def tls_info():
+    """Hoe Sonar weet dat het met de echte controller praat."""
+    from . import unifi_client as uc
+    s = rt.settings
+    if s.mode != "live" or not s.controller_url.startswith("https://"):
+        return {"mode": "none"}
+    if s.verify_tls:
+        return {"mode": "ca"}
+    if not s.tls_pin:
+        return {"mode": "unpinned"}
+    fingerprint, expired = uc.cert_fingerprint(s.tls_pin), uc.cert_expired(s.tls_pin)
+    try:
+        presented = uc.cert_fingerprint(await asyncio.to_thread(uc.fetch_cert, s.controller_url))
+    except OSError:
+        presented = None             # controller even niet bereikbaar: dat zegt niets over het certificaat
+    return {"mode": "expired" if expired else "pinned", "fingerprint": fingerprint, "presented": presented,
+            "changed": bool(presented and presented != fingerprint)}
+
+
+@app.post("/api/tls/trust")
+async def tls_trust(req: TlsTrust, request: Request):
+    """Na een bewuste wisseling: het huidige certificaat van de controller voortaan vertrouwen."""
+    from . import unifi_client as uc
+    _check_current(req.password, request)
+    s = Settings.load(DATA_DIR)
+    if s.mode != "live" or s.verify_tls:
+        raise HTTPException(400, L("Sonar legt hier geen certificaat vast.", "Sonar does not pin a certificate here."))
+    try:
+        s.tls_pin = await asyncio.to_thread(uc.fetch_cert, s.controller_url)
+    except OSError as e:
+        raise HTTPException(502, L(f"Controller niet bereikbaar: {e}", f"Controller not reachable: {e}")) from e
+    s.save()
+    await rt.apply(s)
+    return {"ok": True, "fingerprint": uc.cert_fingerprint(s.tls_pin)}
 
 
 @app.get("/api/patterns/client/{mac}")
@@ -1330,7 +1484,9 @@ def _exposure(collector, rows: list[dict]) -> dict | None:
 
 
 # ---------------------------------------------------------------- wereldkaart
-STORED_EN = {"Geblokkeerd": "Blocked", "Regioblokkade": "Region block", "Firewallregel": "Firewall rule",
+BLOCK_KIND = {"Firewallregel": "firewall", "Regioblokkade": "region", "IPS": "ips", "Ongeldige verbinding": "conntrack"}
+BLOCK_ADDRESSES = 30         # zoveel adressen per blokkade meesturen; een portscan kan er veel meer hebben
+STORED_EN = {"Geblokkeerd": "Blocked", "Regioblokkade": "Region block", "Firewallregel": "Firewall rule", "Ongeldige verbinding": "Invalid connection",
              "Onbekende regel": "Unknown rule", "Onbekend": "Unknown", "IPS-regel": "IPS rule"}
 
 
@@ -1461,8 +1617,16 @@ def world_connections(hours: float = Query(1, gt=0, le=48), dir: str = Query("al
     q = (q or "").strip() or None
     rows, total = db.connections(since, dirs, cc, q, sort, limit)
     target, names = _namer(collector), _flow_names(collector)
+    notes = (collector.config or {}).get("rule_notes") or {}
     for r in rows:
-        r["by"] = _st(r.pop("reason"), "Geblokkeerd") if r["dir"] == "blocked" else None
+        reason, ips = r.pop("reason"), r.pop("ips")
+        if r["dir"] == "blocked":
+            r.update(by=_st(reason, "Geblokkeerd"), kind=BLOCK_KIND.get(reason, "other"), note=notes.get(r["rule"]),
+                     ips=(ips or "").split(",")[:BLOCK_ADDRESSES] if ips else [])
+        else:
+            r["by"] = None
+            for k in ("rule", "inbound", "proto", "net"):
+                r.pop(k)
         r["client"] = names.get(r["client_mac"], r["client"]) if r["client_mac"] else r["client"]
         if r["dir"] in ("in", "blocked"):
             r["client"] = target(r["client"], r["client_ip"])
@@ -1475,13 +1639,16 @@ def world_connections(hours: float = Query(1, gt=0, le=48), dir: str = Query("al
             g = groups.setdefault((e.get("src_country"), e.get("signature"), e.get("dst_port"), e.get("dst_ip")), {
                 "dir": "blocked", "cc": e.get("src_country"), "client_mac": None,
                 "client": target(e.get("dst_name"), e.get("dst_ip")), "dest": None, "port": e.get("dst_port"),
-                "service": _st(e.get("signature")), "by": "IPS", "n": 0, "up": 0, "down": 0, "bytes": 0,
+                "service": _st(e.get("signature")), "by": "IPS", "kind": "ips", "rule": None, "note": e.get("info") or None,
+                "category": e.get("category") or None, "risk": e.get("risk"), "sid": e.get("sid"), "inbound": 1,
+                "proto": e.get("proto"), "net": e.get("dst_net"), "n": 0, "up": 0, "down": 0, "bytes": 0,
                 "first": e["ts"], "last": e["ts"], "remotes": set()})
             g["n"] += 1
             g["first"], g["last"] = min(g["first"], e["ts"]), max(g["last"], e["ts"])
             g["remotes"].add(e.get("src_ip"))
         ips = []
         for g in groups.values():
+            g["ips"] = sorted(x for x in g["remotes"] if x)[:BLOCK_ADDRESSES]
             g["remotes"] = len(g["remotes"])
             hay = " ".join(str(x) for x in (g["client"], g["service"], g["cc"], g["port"])).lower()
             if not q or q.lower() in hay:

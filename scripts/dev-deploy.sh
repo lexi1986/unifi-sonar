@@ -14,7 +14,7 @@ SSHOPTS=(-o ControlMaster=auto -o "ControlPath=$HOME/.ssh/cm-%r@%h:%p" -o Contro
 TAR="$(mktemp -t unifi-sonar).tgz"
 
 cd "$ROOT"
-COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TAR" --exclude='__pycache__' app web scripts requirements.txt
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TAR" --exclude='__pycache__' app web scripts requirements.txt requirements.lock
 scp -q "${SSHOPTS[@]}" "$TAR" "$PVE:/tmp/unifi-sonar.tgz"
 rm -f "$TAR"
 ssh "${SSHOPTS[@]}" "$PVE" "pct push $CTID /tmp/unifi-sonar.tgz /tmp/unifi-sonar.tgz && rm /tmp/unifi-sonar.tgz && \

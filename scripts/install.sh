@@ -5,12 +5,13 @@
 #
 # Opnieuw draaien = bijwerken naar de nieuwste versie; je instellingen en historie blijven staan.
 # Daarna kan bijwerken ook met `unifi-sonar-update`, en in een container gewoon met `update`.
-# Variabelen: PORT (standaard 80, of de poort van een bestaande installatie), BRANCH (main), REPO,
-# SOURCE_DIR (lokale code i.p.v. git).
+# Installeert de nieuwste release (git-tag), en controleert de Python-pakketten op hun vaste hashes.
+# Variabelen: PORT (standaard 80, of de poort van een bestaande installatie), BRANCH (een branch of tag i.p.v. de
+# nieuwste release), REPO, SOURCE_DIR (lokale code i.p.v. git).
 set -euo pipefail
 
 REPO="${REPO:-https://github.com/lexi1986/unifi-sonar.git}"
-BRANCH="${BRANCH:-main}"
+BRANCH="${BRANCH:-}"
 # Bij bijwerken de poort van de bestaande service houden, tenzij je PORT zelf opgeeft.
 CUR_PORT=$(sed -n 's/.*--port \([0-9][0-9]*\).*/\1/p' /etc/systemd/system/unifi-sonar.service 2>/dev/null | head -n 1 || true)
 PORT="${PORT:-${CUR_PORT:-80}}"
@@ -38,6 +39,10 @@ if ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q . && ! systemctl is-active -q
 fi
 
 say "Code ophalen"
+if [ -z "$SOURCE_DIR" ] && [ -z "$BRANCH" ]; then
+  BRANCH=$(git ls-remote --refs --tags --sort=-v:refname "$REPO" 'v[0-9]*' | head -n 1 | sed 's#.*refs/tags/##')
+  [ -n "$BRANCH" ] || die "kon geen release vinden op $REPO. Heeft deze machine internet?"
+fi
 if [ -n "$SOURCE_DIR" ]; then
   if [ "$(cd "$SOURCE_DIR" && pwd)" != "$APP" ]; then
     mkdir -p "$APP" && cp -a "$SOURCE_DIR"/. "$APP"/
@@ -56,7 +61,7 @@ install -d -m 700 -o "$SVC_USER" -g "$SVC_USER" "$DATA"
 
 say "Python-omgeving"
 [ -x "$APP/.venv/bin/python" ] || python3 -m venv "$APP/.venv"
-"$APP/.venv/bin/pip" install -q --disable-pip-version-check --upgrade -r "$APP/requirements.txt"
+"$APP/.venv/bin/pip" install -q --disable-pip-version-check --require-hashes -r "$APP/requirements.lock"
 
 say "Service $SVC (poort $PORT)"
 cat > "/etc/systemd/system/$SVC.service" <<EOF
@@ -104,7 +109,9 @@ _v=\$(sed -n 's/^VERSION = "\(.*\)"/\1/p' $APP/app/__init__.py 2>/dev/null)
 _ip=\$(hostname -I 2>/dev/null | awk '{print \$1}')
 printf '\n  \033[1;36mUniFi Sonar\033[0m %s\n' "\$_v"
 printf '  Dashboard:  http://%s$SUFFIX\n' "\$_ip"
-printf '  Bijwerken:  typ \033[1mupdate\033[0m\n\n'
+printf '  Bijwerken:  typ \033[1mupdate\033[0m\n'
+[ -r $DATA/setup-code ] && printf '  Eenmalige code voor het eerste wachtwoord: \033[1m%s\033[0m\n' "\$(cat $DATA/setup-code)"
+printf '\n'
 unset _v _ip
 BANNER
 fi
@@ -113,7 +120,10 @@ for _ in $(seq 1 20); do
   if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$PORT/api/auth/state', timeout=2)" 2>/dev/null; then
     IP=$(hostname -I 2>/dev/null | awk '{print $1}')
     URL="http://${IP:-<ip-van-deze-machine>}$([ "$PORT" = 80 ] || echo ":$PORT")"
-    say "Klaar! Open $URL in je browser; bij de eerste keer start de setup-wizard."
+    say "Klaar! Open $URL in je browser."
+    if [ -r "$DATA/setup-code" ]; then
+      say "Eenmalige code om je wachtwoord in te stellen: $(cat "$DATA/setup-code")"
+    fi
     exit 0
   fi
   sleep 1

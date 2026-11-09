@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS notified (channel TEXT, key TEXT, severity TEXT, sent
     PRIMARY KEY (channel, key));
 CREATE TABLE IF NOT EXISTS flows (id TEXT PRIMARY KEY, ts INT, dir TEXT, action TEXT, cc TEXT, remote_ip TEXT,
     port INT, domain TEXT, service TEXT, proto TEXT, client_mac TEXT, client_name TEXT, client_ip TEXT, net TEXT,
-    up INT, down INT, risk TEXT, reason TEXT);
+    up INT, down INT, risk TEXT, reason TEXT, rule TEXT, inbound INT);
 CREATE INDEX IF NOT EXISTS ix_flows ON flows(ts);
 CREATE TABLE IF NOT EXISTS usage (period TEXT, ts INT, rx REAL, tx REAL, PRIMARY KEY (period, ts));
 CREATE TABLE IF NOT EXISTS pauses (mac TEXT PRIMARY KEY, until INT, created INT, name TEXT);
@@ -69,8 +69,9 @@ class DB:
     def _migrate(self) -> None:
         """Kolommen die later zijn toegevoegd aan bestaande databases."""
         fcols = {r[1] for r in self.conn.execute("PRAGMA table_info(flows)")}
-        if "reason" not in fcols:
-            self.conn.execute("ALTER TABLE flows ADD COLUMN reason TEXT")
+        for col, kind in (("reason", "TEXT"), ("rule", "TEXT"), ("inbound", "INT")):
+            if col not in fcols:
+                self.conn.execute(f"ALTER TABLE flows ADD COLUMN {col} {kind}")
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(wan_samples)")}
         for col in ("rx_bps", "tx_bps"):
             if col not in cols:
@@ -172,7 +173,7 @@ class DB:
 
     # ------------------------------------------------------------- verbindingen (wereldkaart)
     FLOW_COLS = ("id", "ts", "dir", "action", "cc", "remote_ip", "port", "domain", "service", "proto",
-                 "client_mac", "client_name", "client_ip", "net", "up", "down", "risk", "reason")
+                 "client_mac", "client_name", "client_ip", "net", "up", "down", "risk", "reason", "rule", "inbound")
 
     def store_flows(self, flows: list[dict]) -> int:
         """Nieuwe of bijgewerkte verbindingen (UniFi meldt lange verbindingen opnieuw met meer bytes)."""
@@ -374,10 +375,11 @@ class DB:
             args += [like, like, like, q.lower(), q, like]
         order = "bytes DESC" if sort == "bytes" else "n DESC" if sort == "count" else "last DESC"
         base = (f"SELECT dir, cc, client_mac, COALESCE(client_name, client_ip) client, client_ip, "
-                f"COALESCE(domain, CASE WHEN dir='out' THEN remote_ip END) dest, port, service, MAX(reason) reason, "
+                f"COALESCE(domain, CASE WHEN dir='out' THEN remote_ip END) dest, port, service, reason, MAX(rule) rule, MAX(inbound) inbound, "
+                f"MAX(proto) proto, MAX(net) net, GROUP_CONCAT(DISTINCT CASE WHEN dir='blocked' THEN remote_ip END) ips, "
                 f"COUNT(*) n, SUM(up) up, SUM(down) down, SUM(up+down) bytes, MIN(ts) first, MAX(ts) last, "
                 f"COUNT(DISTINCT remote_ip) remotes FROM flows WHERE {' AND '.join(where)} "
-                f"GROUP BY dir, cc, client, dest, port")
+                f"GROUP BY dir, cc, client, dest, port, reason")
         total = self.q(f"SELECT COUNT(*) n FROM ({base})", tuple(args))[0]["n"]
         rows = [dict(r) for r in self.q(f"{base} ORDER BY {order} LIMIT ?", (*args, limit))]
         return rows, total

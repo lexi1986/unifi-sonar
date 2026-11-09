@@ -151,10 +151,14 @@
     showLogin();
     return Object.assign(new Error(L("Inloggen nodig", "Login required")), { auth: true });
   }
+  const recoveryHTML = (code) => `<div class="recovery" role="status"><h3>${L("Bewaar deze herstelcode", "Save this recovery code")}</h3>
+    <p>${L("Je UniFi-backups worden versleuteld. Openen kan met je wachtwoord of met deze code. Je ziet hem maar één keer, en zonder wachtwoord én code zijn de backups niet meer te openen. Zet hem in je wachtwoordmanager.", "Your UniFi backups are encrypted. You can open them with your password or with this code. It is shown only once, and without both the password and the code the backups can no longer be opened. Put it in your password manager.")}</p>
+    <code>${esc(code)}</code></div>`;
+
   function showLogin() {
     const v = $("#view");
     if (v.dataset.mounted === "login") return;
-    closeDrawer();
+    if (state.drawer) closeDrawer();    // alleen als hij open is: dit schrijft het adres over, en de pagina moet na het inloggen blijven
     stopKiosk();
     document.body.classList.remove("kiosk", "kiosk-paper");
     document.body.classList.add("setup");
@@ -174,7 +178,34 @@
       route();
       await refresh();
     };
-    if (passkeyPossible()) api("/api/auth/state").then((a) => { if (a.passkeys && $("#login-pk")) $("#login-pk").hidden = false; }).catch(() => {});
+    const firstPassword = (min) => {
+      v.innerHTML = `<div class="wizard login"><div class="wiz-brand"><span class="logo">${icon("radar")}</span><div><div class="wiz-title">UniFi Sonar</div><div class="muted">${L("Kies een wachtwoord voor dit dashboard", "Choose a password for this dashboard")}</div></div></div>
+        <form class="card" id="first-form" onsubmit="return false">
+          <div class="field"><label for="first-code">${L("Eenmalige code", "One-time code")}</label><input class="input" id="first-code" autocomplete="off" spellcheck="false" required>
+            <div class="help">${L("Zo weet Sonar dat jij de eigenaar bent. De code stond in beeld na het installeren. Kwijt? Op de machine zelf: <code>cat /var/lib/unifi-sonar/setup-code</code>", "This shows Sonar that you are the owner. The code was displayed after installing. Lost it? On the machine itself: <code>cat /var/lib/unifi-sonar/setup-code</code>")}</div></div>
+          <div class="field"><label for="first-pw">${L("Wachtwoord", "Password")}</label><input class="input" id="first-pw" type="password" autocomplete="new-password" minlength="${min}" required></div>
+          <div class="field"><label for="first-rep">${L("Herhaal wachtwoord", "Repeat password")}</label><input class="input" id="first-rep" type="password" autocomplete="new-password" required></div>
+          <div id="first-msg" role="alert"></div>
+          <div class="wiz-actions"><button class="btn primary" id="first-go" type="submit">${L("Wachtwoord instellen", "Set password")}</button></div>
+        </form></div>`;
+      const fail = (text) => { $("#first-msg").innerHTML = `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(text)}</span></div>`; };
+      $("#first-form").addEventListener("submit", async () => {
+        if ($("#first-pw").value !== $("#first-rep").value) return fail(L("De twee wachtwoorden zijn niet gelijk.", "The two passwords do not match."));
+        const b = $("#first-go");
+        b.disabled = true;
+        try {
+          const r = await post("/api/auth/setup", { code: $("#first-code").value, password: $("#first-pw").value });
+          v.innerHTML = `<div class="wizard login"><div class="wiz-brand"><span class="logo">${icon("radar")}</span><div><div class="wiz-title">UniFi Sonar</div></div></div><div class="card">${recoveryHTML(r.recovery_code)}<div class="wiz-actions"><button class="btn primary" id="first-done">${L("Ik heb de code bewaard", "I have saved the code")}</button></div></div></div>`;
+          $("#first-done").addEventListener("click", loggedIn);
+          $("#first-done").focus();
+        } catch (e) { fail(e.message); b.disabled = false; }
+      });
+      $("#first-code").focus();
+    };
+    api("/api/auth/state").then((a) => {
+      if (a.setup_needed) return firstPassword(a.min_length);
+      if (passkeyPossible() && a.passkeys && $("#login-pk")) $("#login-pk").hidden = false;
+    }).catch(() => {});
     $("#login-pk").addEventListener("click", async () => {
       try { await passkeyLogin(); await loggedIn(); }
       catch (e) { $("#login-msg").innerHTML = `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(passkeyError(e))}</span></div>`; }
@@ -216,13 +247,17 @@
       if (status.setup_required) { if ($("#view").dataset.mounted !== "wizard") showWizard(); return; }
       if ($("#view").dataset.mounted === "wizard") return;   // wizard open voor een wijziging: niet overschrijven
       document.body.classList.remove("setup");
-      if (current === "instellingen") { renderStatus(); UPDATERS.instellingen(); }
+      if (current === "instellingen") {   // ook zonder meting bereikbaar, bijvoorbeeld om een veranderd certificaat te bevestigen
+        renderStatus();
+        if ($("#view").dataset.mounted !== "instellingen") mountSettings();
+        UPDATERS.instellingen();
+      }
       let snap;
       try { snap = await api("/api/snapshot"); }
       catch (e) {   // net gekoppeld: eerste meting loopt nog
         $("#status").innerHTML = `<span class="dot warn"></span>${L("Eerste meting wordt opgehaald…", "Fetching first reading…")}`;
         if (current !== "instellingen") $("#view").innerHTML = `<div class="card empty" style="margin-top:40px">${icon("radar")}<div>${L("Eerste meting wordt opgehaald…", "Fetching first reading…")}</div><div class="muted" style="font-size:13px;margin-top:4px">${esc(status.last_error || L("Dit duurt meestal een paar seconden.", "This usually takes a few seconds."))}</div></div>`;
-        $("#view").dataset.mounted = "";
+        if (current !== "instellingen") $("#view").dataset.mounted = "";   // instellingen blijft staan: daar los je dit juist op
         setTimeout(refresh, 4000);
         return;
       }
@@ -1787,7 +1822,7 @@
         ${reconf && wiz.info.needs_confirmation ? field("w-cur", L("Huidige API-key (ter bevestiging)", "Current API key (to confirm)"), `<input class="input" id="w-cur" name="current_api_key" type="password" autocomplete="off" value="${esc(wiz.current_api_key)}">`, L("Alleen nodig als je een andere API-key invult. Zo kan niet iedereen in je netwerk de koppeling omzetten.", "Only needed when you enter a different API key. This way not everyone on your network can change the connection.")) : ""}
         <details class="adv"><summary>${L("Geavanceerd", "Advanced")}</summary>
           ${field("w-site", "Site", `<input class="input" id="w-site" name="site" value="${esc(wiz.site)}" spellcheck="false">`, L("Meestal <code>default</code>.", "Usually <code>default</code>."))}
-          <label class="check"><input type="checkbox" id="w-tls" name="verify_tls" ${wiz.verify_tls ? "checked" : ""}> ${L("Certificaat controleren", "Verify certificate")} <span class="muted">${L("(alleen met een geldig certificaat; UniFi gebruikt standaard een eigen certificaat)", "(only with a valid certificate; UniFi uses its own certificate by default)")}</span></label>
+          <label class="check"><input type="checkbox" id="w-tls" name="verify_tls" ${wiz.verify_tls ? "checked" : ""}> ${L("Certificaat controleren", "Verify certificate")} <span class="muted">${L("(alleen met een officieel certificaat; staat dit uit, dan legt Sonar het certificaat van je controller vast bij de eerste verbinding)", "(only with an official certificate; if off, Sonar pins your controller's certificate on first connection)")}</span></label>
           <p class="help" style="margin-top:14px">${L("Geeft je API-key alleen beperkte gegevens (geen signaal en retries)? Vul dan een lokaal account met <b>View Only</b>-rechten in. Dat wordt alleen gebruikt als het nodig is.", "Does your API key only give limited data (no signal and retries)? Then enter a local account with <b>View Only</b> rights. It is only used when needed.")}</p>
           ${field("w-user", L("Gebruikersnaam (optioneel)", "Username (optional)"), `<input class="input" id="w-user" name="username" autocomplete="off" value="${esc(wiz.username)}">`)}
           ${field("w-pass", L("Wachtwoord (optioneel)", "Password (optional)"), `<input class="input" id="w-pass" name="password" type="password" autocomplete="off" value="${esc(wiz.password)}">`)}
@@ -1945,7 +1980,7 @@
     const st = m.status || {};
     const stTxt = !m.enabled ? "" : st.connected ? `<span class="badge ok">${icon("check")}${L("Verbonden", "Connected")}${st.last_publish ? L(` · bijgewerkt ${ago(st.last_publish)} geleden`, ` · updated ${ago(st.last_publish)} ago`) : ""}</span>`
       : st.error ? `<span class="badge critical">${icon("octagon")}${esc(st.error)}</span>` : `<span class="badge info">${L("verbinden…", "connecting…")}</span>`;
-    const keep = L("opgeslagen (leeg laten = behouden)", "stored (leave empty = keep)");
+    const keep = L("opgeslagen (leeg laten = behouden, zolang het adres gelijk blijft)", "stored (leave empty = keep, as long as the address stays the same)");
     const chosen = new Map((m.presence || []).map((d) => [d.mac, d.name]));
     const seen = (state.snap?.clients || []).map((c) => ({ mac: c.mac, name: c.name, sub: c.wired ? L("bedraad", "wired") : c.ssid || "" }));
     const prList = [...seen, ...[...chosen].filter(([mac]) => !seen.some((c) => c.mac === mac)).map(([mac, name]) => ({ mac, name, sub: L("nu niet verbonden", "not connected now") }))]
@@ -2024,7 +2059,7 @@
     const stat = msg ? `<span class="${msg.ok ? "t-ok" : "t-critical"}">${esc(msg.text)}</span>`
       : st.error ? `<span class="t-critical">${L("Laatste poging mislukt", "Last attempt failed")}: ${esc(st.error)}</span>`
       : st.ok ? `<span class="muted">${L(`Laatst verstuurd ${ago(st.ok)} geleden`, `Last sent ${ago(st.ok)} ago`)}</span>` : "";
-    const keep = L("leeg laten = behouden", "leave empty = keep");
+    const keep = L("leeg laten = behouden, zolang het adres gelijk blijft", "leave empty = keep, as long as the address stays the same");
     return `<div class="channel" data-ch="${i}">
       <div class="channel-head"><b>${esc(label)}</b>
         <label class="check" style="margin:0"><input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}> ${L("Aan", "On")}</label>
@@ -2096,7 +2131,21 @@
     const [a, au] = await Promise.all([api("/api/access").catch(() => null), api("/api/auth/state").catch(() => null)]);
     if (!a) { root.innerHTML = `<p class="muted">${L("Niet beschikbaar.", "Not available.")}</p>`; return; }
     const pw = (id, label, ac) => `<div class="field"><label for="${id}">${label}</label><input class="input" id="${id}" type="password" autocomplete="${ac}"></div>`;
-    const pks = au?.enabled ? await api("/api/auth/passkeys").catch(() => null) : null;
+    const [pks, ss, tls] = await Promise.all([au?.enabled ? api("/api/auth/passkeys").catch(() => null) : null,
+      au?.enabled ? api("/api/auth/sessions").catch(() => null) : null, api("/api/tls").catch(() => null)]);
+    const others = (ss?.rows || []).filter((r) => !r.current).length;
+    const ssSection = !ss ? "" : `<hr class="sep"><h3 style="margin:0 0 6px">${L("Ingelogde apparaten", "Logged-in devices")}</h3>
+      <p class="help" style="margin-top:0">${L("Herken je er een niet, of ben je een apparaat kwijt? Log het dan hier uit.", "Don't recognise one, or lost a device? Log it out here.")}</p>
+      <div class="bk-list">${ss.rows.map((r) => `<div class="bk-row"><div class="bk-main"><div>${esc(r.agent || L("Onbekend apparaat", "Unknown device"))}</div><div class="cell-sub">${L("ingelogd", "logged in")} ${dateTxt(r.created, true)} · ${L("laatst vernieuwd", "last renewed")} ${dateTxt(r.last_seen, true)}</div></div>${r.current ? badge("ok", L("deze browser", "this browser")) : `<button type="button" class="btn" data-ss-rev="${esc(r.id)}">${L("Uitloggen", "Log out")}</button>`}</div>`).join("")}</div>
+      ${others > 1 ? `<div class="wiz-actions"><button type="button" class="btn" id="ss-all">${L("Alle andere apparaten uitloggen", "Log out all other devices")}</button></div>` : ""}`;
+    const tlsTrust = `<form class="form-grid" onsubmit="return false" style="margin-top:12px">${pw("tls-pw", L("Huidig wachtwoord", "Current password"), "current-password")}</form><div id="tls-msg" role="status"></div><div class="wiz-actions"><button type="button" class="btn" id="tls-trust">${L("Dit certificaat vertrouwen", "Trust this certificate")}</button></div>`;
+    const fpRow = (label, fp) => `<div class="tls-fp"><div class="cell-sub">${label}</div><code>${esc(fp)}</code></div>`;
+    const tlsSection = !tls || !["ca", "pinned", "expired", "unpinned"].includes(tls.mode) ? "" : `<hr class="sep"><h3 style="margin:0 0 6px">${L("Certificaat van de controller", "Controller certificate")}</h3>
+      ${tls.mode === "ca" ? `<p class="help" style="margin-top:0">${L("Sonar controleert het certificaat van je controller via een officiële certificaatuitgever.", "Sonar verifies your controller's certificate through an official certificate authority.")}</p>`
+      : tls.mode === "unpinned" ? `<p class="help" style="margin-top:0">${L("Sonar legt het certificaat vast bij de volgende verbinding met je controller.", "Sonar will pin the certificate on the next connection to your controller.")}</p>`
+      : `${tls.changed ? `<div class="banner err">${icon("octagon")}<span>${L("Je controller laat een ander certificaat zien. Sonar stuurt zijn sleutel daar niet heen. Heb je zelf de controller vervangen of het certificaat vernieuwd? Dan kun je het nieuwe hieronder vertrouwen. Zo niet, kijk dan eerst wat er aan de hand is.", "Your controller presents a different certificate. Sonar will not send its key there. Did you replace the controller or renew the certificate yourself? Then you can trust the new one below. If not, find out what is going on first.")}</span></div>` : tls.mode === "expired" ? `<div class="banner err">${icon("octagon")}<span>${L("Het vastgelegde certificaat is verlopen, dus Sonar kan de controller nu niet controleren. Vernieuw het certificaat in UniFi en vertrouw daarna het nieuwe.", "The pinned certificate has expired, so Sonar cannot verify the controller right now. Renew the certificate in UniFi and then trust the new one.")}</span></div>` : `<p class="help" style="margin-top:0">${L("Sonar stuurt zijn sleutel alleen naar de controller als die precies dit certificaat laat zien.", "Sonar only sends its key to the controller if it presents exactly this certificate.")}</p>`}
+        ${fpRow(L("Vastgelegd", "Pinned"), tls.fingerprint)}${tls.changed ? fpRow(L("Nu getoond door de controller", "Now presented by the controller"), tls.presented) : ""}
+        ${tls.changed || tls.mode === "expired" ? tlsTrust : ""}`}`;
     const pkOk = passkeyPossible();
     const pkSection = !au?.enabled ? "" : `<hr class="sep"><h3 style="margin:0 0 6px">Passkeys</h3>
       <p class="help" style="margin-top:0">${L("Inloggen met je vingerafdruk, gezicht of beveiligingssleutel in plaats van je wachtwoord. Dit is een keuze: je wachtwoord blijft altijd werken.", "Log in with your fingerprint, face or security key instead of your password. This is optional: your password always keeps working.")}</p>
@@ -2113,9 +2162,9 @@
       </form>
       <div id="au-msg" role="status"></div>
       <div class="wiz-actions"><button type="button" class="btn primary" id="au-save">${au?.enabled ? L("Wachtwoord wijzigen", "Change password") : L("Inlog aanzetten", "Turn on login")}</button>
-        ${au?.enabled ? `<button type="button" class="btn" id="au-off">${L("Inlog uitzetten", "Turn off login")}</button><button type="button" class="btn" id="au-out">${L("Uitloggen", "Log out")}</button>` : ""}</div>
-      <p class="help">${L("Wachtwoord kwijt? Zie <i>Privacy en veiligheid</i> in de README.", "Forgot the password? See <i>Privacy and security</i> in the README.")}${au?.enabled ? ` ${L("Zet je de inlog uit, dan vervallen ook je passkeys.", "If you turn off the login, your passkeys are removed too.")}` : ""}</p>
-      ${pkSection}
+        ${au?.enabled && au.optional ? `<button type="button" class="btn" id="au-off">${L("Inlog uitzetten", "Turn off login")}</button>` : ""}${au?.enabled ? `<button type="button" class="btn" id="au-out">${L("Uitloggen", "Log out")}</button>` : ""}</div>
+      <p class="help">${L("Wachtwoord kwijt? Zie <i>Privacy en veiligheid</i> in de README.", "Forgot the password? See <i>Privacy and security</i> in the README.")}${au?.enabled && au.optional ? ` ${L("Zet je de inlog uit, dan vervallen ook je passkeys.", "If you turn off the login, your passkeys are removed too.")}` : ""}</p>
+      ${pkSection}${ssSection}${tlsSection}
       <hr class="sep">
       <p class="help">${L("Het dashboard werkt via een IP-adres, <code>localhost</code> en lokale namen zoals <code>sonar.local</code> of <code>sonar.lan</code>. Andere hostnamen worden geweigerd, zodat een website in je browser het dashboard niet stiekem kan aansturen (DNS-rebinding). Gebruik je een eigen naam of een reverse proxy, zet die hieronder.", "The dashboard works via an IP address, <code>localhost</code> and local names such as <code>sonar.local</code> or <code>sonar.lan</code>. Other host names are refused, so a website in your browser cannot secretly control the dashboard (DNS rebinding). If you use your own name or a reverse proxy, add it below.")}</p>
       <div class="field"><label for="a-hosts">${L("Extra hostnamen", "Extra host names")}</label><input class="input" id="a-hosts" spellcheck="false" placeholder="${L("sonar.mijndomein.nl", "sonar.mydomain.com")}, sonar.tailnet.ts.net" value="${esc((a.allowed_hosts || []).join(", "))}">
@@ -2144,6 +2193,16 @@
       catch (e) { auMsg(false, e.message); }
     }; });
     if ($("#au-out")) $("#au-out").onclick = async () => { await post("/api/auth/logout", {}).catch(() => {}); showLogin(); };
+    const revoke = async (id, text) => {
+      try { await post("/api/auth/sessions/revoke", { id }); loadAccess({ ok: true, text }); }
+      catch (e) { auMsg(false, e.message); }
+    };
+    root.querySelectorAll("[data-ss-rev]").forEach((b) => { b.onclick = () => revoke(b.dataset.ssRev, L("Dat apparaat is uitgelogd.", "That device has been logged out.")); });
+    if ($("#ss-all")) $("#ss-all").onclick = () => revoke(null, L("Alle andere apparaten zijn uitgelogd.", "All other devices have been logged out."));
+    if ($("#tls-trust")) $("#tls-trust").onclick = async () => {
+      try { await post("/api/tls/trust", { password: $("#tls-pw").value }); loadAccess({ ok: true, text: L("Nieuw certificaat vastgelegd.", "New certificate pinned.") }); }
+      catch (e) { $("#tls-msg").innerHTML = `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(e.message)}</span></div>`; }
+    };
     $("#a-save").onclick = async () => {
       const hosts = $("#a-hosts").value.split(/[,\s]+/).map((h) => h.trim()).filter(Boolean);
       try { await post("/api/access", { allowed_hosts: hosts }); loadAccess({ ok: true, text: L("Opgeslagen.", "Saved.") }); }
@@ -2152,22 +2211,49 @@
   }
 
   // ---- UniFi-backups
-  async function loadBackups(msg) {
+  async function loadBackups(msg, recovery) {
     const root = $("#set-backups");
     if (!root) return;
     const b = await api("/api/backups").catch(() => null);
     if (!b) { root.innerHTML = `<p class="muted">${L("Niet beschikbaar.", "Not available.")}</p>`; return; }
     const row = (f) => `<div class="bk-row"><div class="bk-main"><div>${dateTxt(f.ts, true)}</div><div class="cell-sub">${f.source === "sonar" ? L("gemaakt door Sonar", "made by Sonar") : L("automatische backup van UniFi", "automatic UniFi backup")} · ${bytes(f.size)}</div></div>
-      ${b.can_download ? `<a class="btn" href="/api/backups/download/${encodeURIComponent(f.name)}" download>${L("Download", "Download")}</a>` : ""}</div>`;
+      ${b.can_download ? `<button type="button" class="btn" data-bk-dl="${esc(f.name)}">${L("Download", "Download")}</button>` : ""}</div>`;
     root.innerHTML = `<p class="help" style="margin-top:-4px">${L("Sonar bewaart een kopie van de backups van je controller, zodat je er nog bij kunt als de controller crasht. Terugzetten doe je bij het opzetten van een nieuwe controller, of in UniFi onder Instellingen → Systeem → Backups.", "Sonar keeps a copy of your controller's backups, so you can still reach them if the controller crashes. You restore one while setting up a new controller, or in UniFi under Settings → System → Backups.")}</p>
       ${b.error ? `<div class="banner err" style="margin-bottom:12px">${icon("octagon")}<span>${esc(b.error)}</span></div>` : ""}
       ${msg ? `<div class="banner" role="status" style="margin-bottom:12px">${icon("check")}<span>${esc(msg)}</span></div>` : ""}
+      ${recovery ? recoveryHTML(recovery) : ""}
+      ${!b.encrypted && b.can_download ? `<div class="banner" style="margin-bottom:12px">${icon("alert")}<span>${L("Je backups staan nog onversleuteld op deze machine, met daarin je wifi-wachtwoorden. Vul je wachtwoord in om ze te versleutelen. Je krijgt dan één keer een herstelcode te zien.", "Your backups are still unencrypted on this machine, including your Wi-Fi passwords. Enter your password to encrypt them. You will be shown a recovery code once.")}</span></div>
+        <form class="form-grid" onsubmit="return false"><div class="field"><label for="bk-enc-pw">${L("Huidig wachtwoord", "Current password")}</label><input class="input" id="bk-enc-pw" type="password" autocomplete="current-password"></div></form>
+        <div id="bk-enc-msg" role="status"></div><div class="wiz-actions" style="margin-bottom:16px"><button type="button" class="btn primary" id="bk-enc">${L("Backups versleutelen", "Encrypt backups")}</button></div>` : ""}
       <label class="check"><input type="checkbox" id="bk-daily" ${b.daily ? "checked" : ""}> ${L("Elke dag een verse backup laten maken", "Have a fresh backup made every day")}</label>
       <div class="help">${L("UniFi maakt automatische backups soms maar eens per maand. Met deze optie vraagt Sonar de controller elke dag om een backup van de instellingen.", "UniFi sometimes makes automatic backups only once a month. With this option Sonar asks the controller every day for a backup of the settings.")}</div>
       ${b.files.length ? `<div class="bk-list">${b.files.slice(0, 6).map(row).join("")}</div>${b.files.length > 6 ? `<p class="muted" style="font-size:13px">${L(`en nog ${b.files.length - 6}; Sonar bewaart de nieuwste ${b.keep}`, `and ${b.files.length - 6} more; Sonar keeps the newest ${b.keep}`)}</p>` : ""}` : `<p class="muted">${L("Nog geen backups opgehaald.", "No backups fetched yet.")}</p>`}
+      ${b.can_download && b.encrypted && b.files.length ? `<form class="form-grid" onsubmit="return false" style="margin-top:12px"><div class="field"><label for="bk-secret">${L("Wachtwoord of herstelcode", "Password or recovery code")}</label><input class="input" id="bk-secret" type="password" autocomplete="off"><div class="help">${L("Nodig om een backup te downloaden: Sonar kan ze zonder jou niet openen.", "Needed to download a backup: Sonar cannot open them without you.")}</div></div></form>` : ""}
+      <div id="bk-dl-msg" role="alert"></div>
       ${b.can_download ? "" : `<div class="banner" style="margin-top:12px">${icon("info")}<span>${L("Een backup bevat ook je wifi-wachtwoorden. Downloaden kan daarom pas als de inlog aanstaat (zie Toegang).", "A backup also contains your Wi-Fi passwords. You can therefore only download one once the login is on (see Access).")}</span></div>`}
       <div class="wiz-actions"><button type="button" class="btn" id="bk-run">${L("Nu een backup maken", "Make a backup now")}</button></div>`;
     hydrateIcons(root);
+    root.querySelectorAll("[data-bk-dl]").forEach((btn) => { btn.onclick = async () => {
+      const out = $("#bk-dl-msg"), name = btn.dataset.bkDl;
+      out.innerHTML = "";
+      btn.disabled = true;
+      try {
+        const r = await fetch("/api/backups/download", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, secret: $("#bk-secret")?.value || "" }) });
+        if (r.status === 401) throw needLogin();
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+        const url = URL.createObjectURL(await r.blob()), a = document.createElement("a");
+        a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      } catch (e) { out.innerHTML = `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(e.message)}</span></div>`; }
+      btn.disabled = false;
+    }; });
+    if ($("#bk-enc")) $("#bk-enc").onclick = async (e) => {
+      e.target.disabled = true;
+      try {
+        const r = await post("/api/backups/encrypt", { password: $("#bk-enc-pw").value });
+        loadBackups(L(`${r.encrypted} bestaande ${r.encrypted === 1 ? "backup" : "backups"} versleuteld.`, `${r.encrypted} existing ${r.encrypted === 1 ? "backup" : "backups"} encrypted.`), r.recovery_code);
+      } catch (err) { $("#bk-enc-msg").innerHTML = `<div class="banner err" style="margin-top:12px">${icon("octagon")}<span>${esc(err.message)}</span></div>`; e.target.disabled = false; }
+    };
     $("#bk-daily").onchange = async (e) => { await post("/api/backups/settings", { daily: e.target.checked }).catch(() => {}); };
     $("#bk-run").onclick = async (e) => {
       e.target.disabled = true; e.target.textContent = L("Bezig…", "Working…");
@@ -2243,7 +2329,7 @@
     lastFocus = from || document.activeElement;
     state.drawer = { type, id };
     hm.mac = null;   // patroon opnieuw ophalen
-    history.replaceState(null, "", `#/${current}/${encodeURIComponent(id)}`);   // deelbare link
+    if (type !== "blocked") history.replaceState(null, "", `#/${current}/${encodeURIComponent(id)}`);   // deelbare link
     $("#drawer").classList.add("open"); $("#scrim").classList.add("open");
     $("#drawer").setAttribute("aria-hidden", "false");
     renderDrawer();
@@ -2260,6 +2346,7 @@
   }
   function renderDrawer() {
     const { type, id } = state.drawer;
+    if (type === "blocked") return renderBlockedDrawer();
     if (type === "device") renderDeviceDrawer(devByMac()[id]); else renderClientDrawer(cliByMac()[id]);
   }
   const kv = (pairs) => `<div class="kv">${pairs.map(([k, v]) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}</div>`;
@@ -2612,7 +2699,14 @@
     $("#w-conn-q").addEventListener("input", (e) => { clearTimeout(qt); qt = setTimeout(() => setConn({ q: e.target.value.trim() }), 250); });
     $("#w-cty").addEventListener("keydown", (e) => { const r = e.target.closest("[data-cc]"); if (r && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); zoomTo(r.dataset.cc); } });
     initZoom();
-    $("#w-conn-table").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("client", n.dataset.id, n); });
+    const openBlocked = (tr) => { world.sel = world.blockedRows[tr.dataset.id]; if (world.sel) openDrawer("blocked", tr.dataset.id, tr); };
+    $("#w-conn-table").addEventListener("click", (e) => {
+      const n = e.target.closest("[data-open]");
+      if (n) return openDrawer("client", n.dataset.id, n);
+      const tr = e.target.closest("tr[data-blocked]");
+      if (tr) openBlocked(tr);
+    });
+    $("#w-conn-table").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.matches("tr[data-blocked]")) openBlocked(e.target); });
     $("#w-cli").addEventListener("click", (e) => { const n = e.target.closest("[data-open]"); if (n) openDrawer("client", n.dataset.id, n); });
     world.after = 0; world.seen = new Set();
     loadWorld(); worldLoop();
@@ -2919,6 +3013,10 @@
     if (scroll) $("#w-conn").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
     loadConn();
   }
+  function connSvc(r) {
+    const s = r.service && !/^(OTHER)$/i.test(r.service) ? r.service.replace(/_/g, " ") : null;
+    return s && r.port ? `${s} · ${r.port}` : s || (r.port ? `${L("poort", "port")} ${r.port}` : "–");
+  }
   async function loadConn() {
     const c = world.conn;
     if (!$("#w-conn-table")) return;
@@ -2932,22 +3030,71 @@
     hydrateIcons($("#w-conn-cc"));
     const per = world.hours === 1 ? L("afgelopen uur", "past hour") : L(`afgelopen ${world.hours} uur`, `past ${world.hours} hours`);
     $("#w-conn-sub").textContent = `${nf(d.total)} ${d.total === 1 ? L("groep", "group") : L("groepen", "groups")} · ${per} · ${L("gelijke verbindingen samengevoegd", "identical connections merged")}`;
-    const svc = (r) => {
-      const s = r.service && !/^(OTHER)$/i.test(r.service) ? r.service.replace(/_/g, " ") : null;
-      return s && r.port ? `${s} · ${r.port}` : s || (r.port ? `${L("poort", "port")} ${r.port}` : "–");
-    };
     const other = (r) => r.dir === "out"
       ? `<div class="rank-name">${esc(r.dest || "–")}</div><div class="cell-sub">${r.cc ? `<span class="cc">${esc(r.cc)}</span>${esc(ccName(r.cc))}` : L("land onbekend", "country unknown")}</div>`
       : `<div class="rank-name">${r.cc ? `<span class="cc">${esc(r.cc)}</span>${esc(ccName(r.cc))}` : L("onbekend", "unknown")}</div><div class="cell-sub">${plural(r.remotes || 0, L("adres", "address"), L("adressen", "addresses"))}</div>`;
-    const dirTxt = (r) => r.dir === "blocked" ? `<span class="t-critical">${esc(r.by || DIR.blocked[0])}</span>` : DIR[r.dir][0];
+    const dirTxt = (r) => r.dir === "blocked" ? `<span class="t-critical">${esc(r.by || DIR.blocked[0])}</span><span class="why-cue">${L("waarom?", "why?")}</span>` : DIR[r.dir][0];
+    world.blockedRows = {};
+    const rowAttrs = (r) => {
+      if (r.dir !== "blocked") return 'style="cursor:default"';
+      const id = ["blocked", r.by, r.cc, r.client, r.dest, r.port, r.service].join("|");
+      world.blockedRows[id] = r;
+      return `data-id="${esc(id)}" data-blocked tabindex="0" title="${L("Bekijk waarom dit geblokkeerd is", "See why this was blocked")}"`;
+    };
     $("#w-conn-table").innerHTML = d.rows.length ? `<table class="conn-table"><thead><tr><th>${L("Laatst", "Last")}</th><th>${L("Richting", "Direction")}</th><th>${L("Eigen apparaat", "Own device")}</th><th>${L("Andere kant", "Other side")}</th><th>${L("Dienst", "Service")}</th><th class="r">${L("Aantal", "Count")}</th><th class="r">Data</th></tr></thead><tbody>
-      ${d.rows.map((r) => `<tr style="cursor:default"><td class="num" title="${esc(fullStamp(r.last))}">${stamp(r.last)}</td>
+      ${d.rows.map((r) => `<tr ${rowAttrs(r)}><td class="num" title="${esc(fullStamp(r.last))}">${stamp(r.last)}</td>
         <td><span class="dir"><i class="sw" style="background:${DIR[r.dir][1]}"></i>${dirTxt(r)}</span></td>
         <td>${r.client_mac && cliByMac()[r.client_mac] ? `<button class="linkbtn plain" data-open="client" data-id="${esc(r.client_mac)}">${esc(r.client || "–")}</button>` : esc(r.client || "–")}</td>
-        <td>${other(r)}</td><td class="muted">${esc(svc(r))}</td>
+        <td>${other(r)}</td><td class="muted">${esc(connSvc(r))}</td>
         <td class="r num">${nf(r.n)}</td><td class="r num">${r.bytes ? bytes(r.bytes) : "–"}</td></tr>`).join("")}</tbody></table>`
       : `<div class="empty">${L("Geen verbindingen gevonden", "No connections found")}${c.q || c.cc ? L(" met dit filter", " with this filter") : L(" in deze periode", " in this period")}.</div>`;
+    markSelected();
     $("#w-conn-more").innerHTML = d.rows.length < d.total ? `<button class="btn">${L(`Toon meer (${nf(d.total - d.rows.length)} over)`, `Show more (${nf(d.total - d.rows.length)} left)`)}</button>` : "";
+  }
+  function blockedReason(r, land) {
+    if (r.kind === "ips") return [r.service || L("IPS-regel", "IPS rule"), L("De inbraakpreventie (IPS) van je gateway herkende dit verkeer als een bekend aanvalspatroon en hield het tegen.", "The intrusion prevention (IPS) on your gateway recognised this traffic as a known attack pattern and stopped it.")];
+    if (r.kind === "region") return [L("Regioblokkade", "Region block"), L(`${land || "Dit land"} staat in UniFi bij de geblokkeerde landen (Region Blocking). Verkeer met zo'n land wordt tegengehouden, welke dienst het ook is.`, `${land || "This country"} is on the blocked countries list in UniFi (Region Blocking). Traffic with such a country is stopped, whatever the service.`)];
+    if (r.kind === "firewall" && r.rule) return [r.rule, L("Deze regel uit je UniFi-firewall hield de verbinding tegen.", "This rule in your UniFi firewall stopped the connection.")];
+    if (r.kind === "conntrack") return [L("Ongeldige verbinding", "Invalid connection"), L("Dit verkeer hoorde volgens de firewall van je gateway niet bij een geldige verbinding. Dat is geen regel van jezelf en gebeurt af en toe vanzelf, bijvoorbeeld als een verbinding net verlopen is.", "According to your gateway's firewall this traffic did not belong to a valid connection. That is not one of your own rules and happens now and then, for example when a connection has just expired.")];
+    if (r.kind === "firewall" && r.inbound == null) return [L("Firewallregel", "Firewall rule"), L("Een regel uit je UniFi-firewall hield dit tegen. Welke regel is hier niet bekend, omdat Sonar de naam pas sinds versie 1.6 bewaart. Bij nieuwe blokkades staat hij er wel bij.", "A rule in your UniFi firewall stopped this. Which rule is unknown here, because Sonar only keeps the name since version 1.6. New blocks do show it.")];
+    if (r.kind === "firewall") return [L("Firewallregel", "Firewall rule"), L("Een regel uit je UniFi-firewall hield dit tegen. UniFi gaf de naam van de regel niet door.", "A rule in your UniFi firewall stopped this. UniFi did not report the name of the rule.")];
+    return [r.rule || r.by, L(`UniFi hield deze verbinding tegen (${r.by}).`, `UniFi stopped this connection (${r.by}).`)];
+  }
+  function blockedAdvice(r) {
+    if (r.inbound === 1) return L("Je hoeft niets te doen: dit is precies waar de blokkade voor is. Zulke pogingen komen op elke internetaansluiting voor.", "You don't need to do anything: this is exactly what the block is for. Attempts like this happen on every internet connection.");
+    if (r.inbound !== 0) return "";
+    if (r.kind === "region") return L("Moet dit apparaat wel bij dit land kunnen? Haal het land dan uit de regioblokkade in UniFi.", "Should this device be able to reach this country? Then remove the country from the region block in UniFi.");
+    if (r.kind === "firewall") return L("Werkt er iets niet op dit apparaat? Maak dan in UniFi een uitzondering boven deze regel. Geen klachten, dan hoef je niets te doen.", "Is something not working on this device? Then add an exception above this rule in UniFi. No complaints means nothing to do.");
+    return "";
+  }
+  function renderBlockedDrawer() {
+    const r = world.sel;
+    if (!r) return closeDrawer();
+    const land = r.cc ? ccName(r.cc) : "", service = r.kind === "ips" ? (r.port ? `${L("poort", "port")} ${r.port}` : "–") : connSvc(r), [title, why] = blockedReason(r, land);
+    const who = esc(r.client || L("Dit apparaat", "This device"));
+    const attempt = r.inbound === 1 ? L(`Iemand op internet${land ? ` (${esc(land)})` : ""} probeerde <b>${who}</b> te bereiken via ${esc(service)}.`, `Someone on the internet${land ? ` (${esc(land)})` : ""} tried to reach <b>${who}</b> via ${esc(service)}.`)
+      : r.inbound === 0 ? L(`<b>${who}</b> probeerde verbinding te maken met ${esc(r.dest || (land ? `een adres op internet (${land})` : "een adres op internet"))} via ${esc(service)}.`, `<b>${who}</b> tried to connect to ${esc(r.dest || (land ? `an address on the internet (${land})` : "an address on the internet"))} via ${esc(service)}.`) : "";
+    const advice = blockedAdvice(r);
+    const device = r.client_mac && cliByMac()[r.client_mac] ? `<button class="linkbtn plain" data-open="client" data-id="${esc(r.client_mac)}">${esc(r.client || "–")}</button>` : esc(r.client || "–");
+    const pairs = [[L("Eigen apparaat", "Own device"), device], [L("Netwerk", "Network"), r.net && esc(r.net)],
+      [L("Andere kant", "Other side"), esc([land, r.dest].filter(Boolean).join(" · ") || "–")], [L("Dienst", "Service"), esc(service)], [L("Protocol", "Protocol"), r.proto && esc(r.proto)],
+      [L("Pogingen", "Attempts"), nf(r.n)], [L("Eerste keer", "First"), `<span title="${esc(fullStamp(r.first))}">${stamp(r.first)}</span>`], [L("Laatste keer", "Last"), `<span title="${esc(fullStamp(r.last))}">${stamp(r.last)}</span>`],
+      [L("Categorie", "Category"), r.category && esc(r.category)], [L("Risico", "Risk"), r.kind === "ips" && r.risk && esc(r.risk)], [L("Regelnummer", "Rule number"), r.sid && esc(r.sid)]].filter(([, v]) => v);
+    const ips = r.ips || [], more = (r.remotes || 0) - ips.length;
+    $("#drawer-icon").innerHTML = icon("octagon");
+    $("#drawer-title").textContent = L("Geblokkeerde verbinding", "Blocked connection");
+    $("#drawer-sub").textContent = [r.client, land, service].filter(Boolean).join(" · ");
+    $("#drawer-body").innerHTML = `<section class="card why-card">
+        <div class="why-kind">${L("Waarom geblokkeerd", "Why blocked")}</div>
+        <h3>${esc(title)}</h3>
+        <p>${why}</p>
+        ${r.note ? `<p class="why-note">${esc(r.note)}</p>` : ""}
+        ${attempt ? `<p>${attempt}</p>` : ""}
+        ${advice ? `<p class="muted">${advice}</p>` : ""}
+      </section>
+      <section class="card">${kv(pairs)}</section>
+      ${ips.length ? `<section class="card"><h3 style="margin-bottom:10px">${L("Adressen aan de andere kant", "Addresses on the other side")}</h3>
+        <div class="why-ips">${ips.map((ip) => `<code>${esc(ip)}</code>`).join("")}${more > 0 ? `<span class="muted">${L(`en nog ${nf(more)}`, `and ${nf(more)} more`)}</span>` : ""}</div></section>` : ""}`;
   }
   function renderTicker() {
     const el = $("#w-ticker");

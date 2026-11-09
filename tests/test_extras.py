@@ -170,7 +170,7 @@ def test_source_recovers_after_a_hiccup(monkeypatch, tmp_path):
     monkeypatch.setenv("NO_DOTENV", "1")
     clock = [1000.0]
     monkeypatch.setattr(uc.time, "monotonic", lambda: clock[0])
-    c = uc.UnifiClient(Settings(mode="live", controller_url="https://unifi.invalid", api_key="k", data_dir=str(tmp_path)))
+    c = uc.UnifiClient(Settings(mode="live", controller_url="https://unifi.invalid", verify_tls=True, api_key="k", data_dir=str(tmp_path)))
     legacy_ok, calls = [True], []
 
     async def legacy(use_key):
@@ -210,11 +210,13 @@ def test_auth_tokens_and_limiter():
     from app import auth
     cfg = auth.new_config("een-lang-wachtwoord")
     assert auth.enabled(cfg) and auth.verify_password("een-lang-wachtwoord", cfg["hash"]) and not auth.verify_password("fout", cfg["hash"])
-    tok = auth.make_token(cfg, now=1000)
+    tok = auth.new_session(cfg, "Mac · Safari", now=1000)
     assert auth.token_valid(cfg, tok, now=2000) and not auth.token_valid(cfg, tok, now=1000 + auth.SESSION_SECONDS + 1)
-    assert not auth.token_valid(cfg, tok.replace(".", ".0"), now=2000) and not auth.token_valid(cfg, None) and not auth.token_valid({}, tok)
+    assert not auth.token_valid(cfg, tok.replace(".", ".0", 1), now=2000) and not auth.token_valid(cfg, None) and not auth.token_valid({}, tok)
     assert not auth.token_valid(auth.new_config("een-lang-wachtwoord"), tok, now=2000)   # nieuw geheim: oude sessies vervallen
     assert not auth.should_renew(tok, now=1000) and auth.should_renew(tok, now=1000 + auth.RENEW_AFTER + 1)
+    assert auth.token_valid(cfg, auth.renew(cfg, tok, now=1000 + auth.SESSION_SECONDS - 10), now=1000 + auth.SESSION_SECONDS + 100)
+    assert auth.end_session(cfg, tok) and not auth.token_valid(cfg, tok, now=2000)
     lim = auth.Limiter()
     for _ in range(auth.MAX_FAILS):
         assert lim.wait("a", now=10) == 0
@@ -240,7 +242,7 @@ def test_login_locks_the_api(demo, monkeypatch, tmp_path):
     for path in ("/api/snapshot", "/api/status", "/api/setup", "/api/mqtt"):
         assert anon.get(path).status_code == 401, path
     assert anon.post("/api/speedtest", json={}).status_code == 401
-    assert anon.get("/").status_code == 200 and anon.get("/api/auth/state").json() == {"enabled": True, "authenticated": False, "min_length": 8, "passkeys": 0}
+    assert anon.get("/").status_code == 200 and anon.get("/api/auth/state").json() == {"enabled": True, "setup_needed": False, "optional": True, "authenticated": False, "min_length": 8, "passkeys": 0}
     assert anon.post("/api/auth/login", json={"password": "fout"}).status_code == 403
     assert anon.post("/api/auth/login", json={"password": "een-lang-wachtwoord"}).status_code == 200
     cookie = anon.cookies.get(main.auth_mod.COOKIE)
@@ -345,7 +347,7 @@ def test_backups_copied_from_controller(tmp_path, monkeypatch):
     """Alleen wat nieuw is wordt opgehaald, en een halve download wordt niet bewaard."""
     from app import backups as b
     monkeypatch.setenv("NO_DOTENV", "1")
-    st = Settings(mode="live", controller_url="https://unifi.invalid", api_key="k", db_path=str(tmp_path / "s.db"), data_dir=str(tmp_path))
+    st = Settings(mode="live", controller_url="https://unifi.invalid", verify_tls=True, api_key="k", db_path=str(tmp_path / "s.db"), data_dir=str(tmp_path))
     col = Collector(st, DB(st.db_path))
     rows = [{"filename": "autobackup_1.unf", "size": 4, "time": 1_800_000_000_000}]
     asked, made = [], []
@@ -392,13 +394,14 @@ def test_backup_download_needs_login(demo, monkeypatch, tmp_path):
     c = TestClient(main.app)
     info = c.get("/api/backups").json()
     name = info["files"][0]["name"]
-    assert info["files"] and not info["can_download"] and c.get(f"/api/backups/download/{name}").status_code == 403
+    dl = lambda n: c.post("/api/backups/download", json={"name": n})   # noqa: E731
+    assert info["files"] and not info["can_download"] and dl(name).status_code == 403
     monkeypatch.setattr(main.rt.settings, "auth", main.auth_mod.new_config("een-lang-wachtwoord"))
-    assert c.get(f"/api/backups/download/{name}").status_code == 401   # niet ingelogd
+    assert dl(name).status_code == 401   # niet ingelogd
     assert c.post("/api/auth/login", json={"password": "een-lang-wachtwoord"}).status_code == 200
-    r = c.get(f"/api/backups/download/{name}")
+    r = dl(name)
     assert r.status_code == 200 and r.content.startswith(b"demo") and "attachment" in r.headers["content-disposition"]
-    assert c.get("/api/backups/download/geheim.unf").status_code == 404
+    assert dl("geheim.unf").status_code == 404
     out = []
     rules_extra.backup_stale(out, {"backups": {"count": 0, "newest": None, "daily": False, "stale": True}}, __import__("app.rules", fromlist=["_issue"])._issue, None)
     assert out and out[0]["key"] == "backup_stale"

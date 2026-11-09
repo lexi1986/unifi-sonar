@@ -9,13 +9,20 @@ Twee bronnen:
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import ipaddress
 import logging
 import re
+import socket
+import ssl
 import time
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
+from cryptography import x509
 
 from . import segments
 from .config import Settings
@@ -232,6 +239,7 @@ def config_from_raw(raw: dict) -> dict:
     cfg["segments"] = segments.build(raw.get("networks"), raw.get("zones"),
                                      fw if raw.get("zones") is not None else None)
     cfg["dns_servers"] = dns_servers(raw.get("networks"))
+    cfg["rule_notes"] = {p["name"]: p["description"] for p in fw if p.get("name") and p.get("description")} if isinstance(fw, list) else {}
     return cfg
 
 
@@ -352,6 +360,7 @@ def normalize_flow(f: dict) -> dict:
     else:
         direction = "blocked" if blocked else "in" if incoming else "out"   # bijv. regioblokkade of firewallregel
     tx, rx = int(td.get("bytes_tx") or 0), int(td.get("bytes_rx") or 0)
+    reason, rule = _block_policy(f) if blocked else (None, None)
     return {
         "id": f.get("id") or f"{f.get('flow_start_time')}-{src.get('ip')}-{dst.get('ip')}-{dst.get('port')}",
         "ts": int((f.get("flow_end_time") or f.get("time") or f.get("flow_start_time") or 0) / 1000),
@@ -370,7 +379,9 @@ def normalize_flow(f: dict) -> dict:
         "up": rx if incoming else tx,
         "down": tx if incoming else rx,
         "risk": f.get("risk"),
-        "reason": _block_reason(f) if blocked else None,
+        "reason": reason,
+        "rule": rule,
+        "inbound": int(incoming),
     }
 
 
@@ -458,19 +469,21 @@ def normalize_usage(rows: list[dict]) -> list[dict]:
     return out
 
 
-def _block_reason(f: dict) -> str:
-    """Waardoor een verbinding tegengehouden werd, in gewone woorden."""
+def _block_policy(f: dict) -> tuple[str, str | None]:
+    """Waardoor een verbinding tegengehouden werd, in gewone woorden, plus de naam van de regel als die er is."""
     for p in f.get("policies") or []:
-        t, it = (p.get("type") or "").upper(), (p.get("internal_type") or "").upper()
+        t, it, name = (p.get("type") or "").upper(), (p.get("internal_type") or "").upper(), p.get("name") or None
         if "REGION" in it:
-            return "Regioblokkade"
+            return "Regioblokkade", None
+        if it == "CONNTRACK":        # geen regel van jezelf: het pakket hoorde niet bij een geldige verbinding
+            return "Ongeldige verbinding", None
         if t == "INTRUSION_PREVENTION" or "IPS" in it:
-            return "IPS"
+            return "IPS", name
         if t == "FIREWALL":
-            return "Firewallregel"
+            return "Firewallregel", name
         if t:
-            return t.replace("_", " ").capitalize()
-    return "Geblokkeerd"
+            return t.replace("_", " ").capitalize(), name
+    return "Geblokkeerd", None
 
 
 def normalize_ips(f: dict) -> dict:
@@ -565,17 +578,75 @@ def normalize_integration(devices: list[dict], stats: dict[str, dict], clients: 
 RICH_RETRY_SECONDS = 300
 
 
+def fetch_cert(url: str, timeout: float = 6) -> str:
+    """Het certificaat dat de controller laat zien (PEM). Er gaat nog geen sleutel of wachtwoord mee."""
+    parts = urlsplit(url)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with socket.create_connection((parts.hostname, parts.port or 443), timeout) as raw:
+        with ctx.wrap_socket(raw, server_hostname=parts.hostname) as tls:
+            return ssl.DER_cert_to_PEM_cert(tls.getpeercert(True))
+
+
+def cert_fingerprint(pem: str) -> str:
+    digest = hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest().upper()
+    return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+
+
+def cert_expired(pem: str) -> bool:
+    return x509.load_pem_x509_certificate(pem.encode()).not_valid_after_utc < datetime.now(timezone.utc)
+
+
+def pinned_context(pem: str) -> ssl.SSLContext:
+    """Vertrouwt precies dit ene certificaat, ook als dat zelf door een andere CA is uitgegeven."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False       # UniFi spreek je meestal aan op IP-adres; het certificaat zelf moet exact kloppen
+    ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    ctx.load_verify_locations(cadata=pem)
+    return ctx
+
+
+def controller_verify(s: Settings) -> bool | ssl.SSLContext:
+    if s.verify_tls:
+        return True
+    if not s.tls_pin or cert_expired(s.tls_pin):
+        return False                 # een verlopen certificaat valt niet te controleren; de instellingen tonen dat
+    return pinned_context(s.tls_pin)
+
+
+def certificate_changed(err: Exception) -> bool:
+    return "CERTIFICATE_VERIFY_FAILED" in str(err)
+
+
 class UnifiClient:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, persist_pin: bool = False):
         self.s = settings
-        self.http = httpx.AsyncClient(base_url=settings.controller_url, verify=settings.verify_tls,
-                                      timeout=20, follow_redirects=True)
+        self.persist_pin = persist_pin
+        self.http = self._new_http()
         self.source: str | None = None   # "legacy-key", "legacy-login" of "integration"
         self._retry_rich_at = 0.0        # wanneer we vanaf de beperkte bron weer de rijkere proberen
         self._logged_in = False
         self._csrf: str | None = None
         self._site_id: str | None = None
         self.errors: dict[str, Exception] = {}   # laatste fout per bron (voor de setup-wizard)
+
+    def _new_http(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(base_url=self.s.controller_url, verify=controller_verify(self.s),
+                                 timeout=20, follow_redirects=True)
+
+    async def prepare(self) -> None:
+        """Eerste verbinding zonder CA-controle: eerst het certificaat vastleggen, dan pas de sleutel versturen."""
+        if self.s.verify_tls or self.s.tls_pin or not self.s.controller_url.startswith("https://"):
+            return
+        self.s.tls_pin = await asyncio.to_thread(fetch_cert, self.s.controller_url)
+        log.info("Certificaat van de controller vastgelegd: %s", cert_fingerprint(self.s.tls_pin))
+        if self.persist_pin:
+            stored = Settings.load(self.s.data_dir)
+            stored.tls_pin = self.s.tls_pin
+            stored.save()
+        await self.http.aclose()
+        self.http = self._new_http()
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -851,6 +922,7 @@ class UnifiClient:
     async def fetch(self) -> dict:
         """Kies automatisch de rijkste bron die werkt en onthoud die. Staan we op de beperkte officiële API, dan
         proberen we elke 5 minuten weer de rijkere bronnen: één hapering mag ons daar niet blijvend laten staan."""
+        await self.prepare()
         rich = ("legacy-key", "legacy-login")
         order = [self.source] if self.source else []
         order += [s for s in (*rich, "integration") if s not in order]
@@ -880,4 +952,7 @@ class UnifiClient:
                 log.log(logging.INFO if retrying and src in rich else logging.WARNING, "Bron %s mislukt: %s", src, e)
                 self.errors[src] = e
                 last_err = e
+        if last_err and certificate_changed(last_err) and not self.s.verify_tls:
+            raise RuntimeError(L("Het certificaat van de controller is veranderd. Controleer en bevestig het onder Instellingen → Toegang.",
+                                 "The controller's certificate has changed. Check and confirm it under Settings → Access."))
         raise RuntimeError(L(f"Geen enkele UniFi-bron werkt: {last_err}", f"No UniFi source works: {last_err}"))

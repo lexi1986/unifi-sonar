@@ -504,6 +504,14 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .conn-table td { vertical-align: middle; }
 .conn-table .rank-name { font-weight: 500; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn-table .dir { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.conn-table .why-cue { color: var(--me-primary); font-size: 12px; }
+.conn-table tr[aria-selected="true"] { background: var(--me-surface-hover); box-shadow: inset 2px 0 0 var(--me-primary); }
+.why-card h3 { margin: 4px 0 10px; font-size: 18px; overflow-wrap: anywhere; }
+.why-card p { margin: 8px 0 0; line-height: 1.5; }
+.why-kind { color: var(--me-text-secondary); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.why-note { padding-left: 12px; border-left: 2px solid var(--me-border); color: var(--me-text-secondary); }
+.why-ips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-variant-numeric: tabular-nums; }
+.why-ips code { font-size: 13px; overflow-wrap: anywhere; }
 #w-conn .search .input { width: 280px; }
 #w-conn-cc .chip .icon { width: 14px; height: 14px; }
 #w-conn, #w-cty { scroll-margin-top: 84px; }
@@ -797,3 +805,9 @@ body.kiosk-paper .ks-foot .ks-acts { display: none; }
 .bk-main { min-width: 0; }
 a.btn { color: var(--me-text); text-decoration: none; }
 body.logged-out .topbar .lang-seg { display: none; }
+.recovery { margin-bottom: 16px; padding: 16px; border: 1px solid var(--me-primary-border); border-radius: 12px; background: var(--me-surface); }
+.recovery h3 { margin: 0 0 6px; }
+.recovery p { margin: 0 0 12px; color: var(--me-text-secondary); line-height: 1.5; }
+.recovery code { display: block; font-size: 17px; letter-spacing: 0.04em; overflow-wrap: anywhere; user-select: all; }
+.tls-fp { margin-top: 10px; }
+.tls-fp code { font-size: 12px; overflow-wrap: anywhere; }

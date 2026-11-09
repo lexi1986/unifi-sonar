@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_KEYS = ("mode", "controller_url", "site", "api_key", "username", "password", "verify_tls",
-               "allowed_hosts", "notify", "home_country", "mqtt", "language", "advisories", "auth", "backup_daily")
+               "allowed_hosts", "notify", "home_country", "mqtt", "language", "advisories", "auth", "backup_daily",
+               "backup_keys", "tls_pin")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -73,6 +74,7 @@ class Settings:
     username: str = ""
     password: str = ""
     verify_tls: bool = False
+    tls_pin: str = ""            # zonder verify_tls: het certificaat van de controller, vastgelegd bij de eerste verbinding
     poll_seconds: int = 60
     retention_days: int = 14
     db_path: str = ""                  # leeg = automatisch in data_dir (los bestand voor demodata)
@@ -86,6 +88,7 @@ class Settings:
     mqtt: dict = field(default_factory=dict)            # Home Assistant via MQTT, zie ha_mqtt.py
     notify: dict = field(default_factory=dict)          # meldingen naar buiten, zie notify.py
     auth: dict = field(default_factory=dict)            # optionele inlog (hash en geheim), zie auth.py
+    backup_keys: dict = field(default_factory=dict)   # openbare sleutel en de ingepakte privésleutel
     thresholds: Thresholds = field(default_factory=Thresholds)
 
     @property
