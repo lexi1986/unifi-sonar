@@ -110,7 +110,7 @@ BANNER
 fi
 
 for _ in $(seq 1 20); do
-  if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$PORT/api/status', timeout=2)" 2>/dev/null; then
+  if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$PORT/api/auth/state', timeout=2)" 2>/dev/null; then
     IP=$(hostname -I 2>/dev/null | awk '{print $1}')
     URL="http://${IP:-<ip-van-deze-machine>}$([ "$PORT" = 80 ] || echo ":$PORT")"
     say "Klaar! Open $URL in je browser; bij de eerste keer start de setup-wizard."
