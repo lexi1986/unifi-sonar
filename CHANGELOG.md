@@ -2,6 +2,18 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.9.0 – 2026-11-10
+
+### Added
+- **AdGuard Home integration** (optional, read-only), set up under Settings → AdGuard Home. One or more AdGuard servers, each with its own address and login.
+  - **Names instead of IP addresses**: connections that UniFi can't name get the name the device looked up just before, so the World page shows `api.tuya.com` instead of an address.
+  - **What your smart devices look up**: per smart device and server, the domains it uses. After a week of learning, a new domain gives a notification.
+  - **DNS servers watched**: Sonar asks each DNS server a question every 2 minutes. If one stops answering, gets slow, has protection off, gets errors from its upstream, or two AdGuards are set up differently (for example a rewrite on only one), you get an issue.
+  - **Malware and phishing** that AdGuard blocked, per device. Critical when the IPS stepped in for the same device too.
+  - **Devices that skip AdGuard**: internet traffic but not a single DNS query, usually their own DNS server or DNS-over-HTTPS.
+  - **Devices with their own DNS server**: listed separately, with whether your network redirects them to AdGuard (a NAT rule) or your firewall stops them. Queries redirected through the gateway are recognised by the gateway's LAN address.
+- **Privacy**: domains are only kept for smart devices and servers. For phones, laptops and tablets Sonar only counts how much they look up, unless you change that in Settings or per device.
+
 ## 1.8.0 – 2026-11-09
 
 ### Added

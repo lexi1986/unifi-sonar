@@ -39,7 +39,7 @@ from . import auth as auth_mod  # noqa: E402
 from . import backups as backups_mod  # noqa: E402
 from . import i18n  # noqa: E402
 from . import notify as notify_mod  # noqa: E402
-from . import ha_mqtt  # noqa: E402
+from . import adguard, ha_mqtt  # noqa: E402
 from . import passkeys as passkey_mod  # noqa: E402
 from . import setup as setup_mod  # noqa: E402
 from .collector import Collector  # noqa: E402
@@ -1177,6 +1177,102 @@ def vulnscan_accept(req: VulnAccept):
     collector, _ = _need()
     collector.vuln.accept(req.mac, req.port, req.accepted)
     return {"ok": True}
+
+
+class AdGuardInstance(BaseModel):
+    name: str = Field(default="", max_length=60)
+    url: str = Field(max_length=300)
+    username: str = Field(default="", max_length=120)
+    password: str | None = Field(default=None, max_length=200)   # None of leeg = bewaarde wachtwoord houden
+    verify_tls: bool = False
+
+
+class AdGuardSave(BaseModel):
+    instances: list[AdGuardInstance] = Field(default_factory=list, max_length=adguard.MAX_INSTANCES)
+    personal: bool = False
+
+
+def _ag_instances(req_instances: list[AdGuardInstance]) -> list[dict]:
+    old = {i.get("url"): i for i in (rt.settings.adguard or {}).get("instances") or []}
+    out = []
+    for i in req_instances:
+        url = i.url.strip().rstrip("/")
+        if not url:
+            continue
+        if not re.match(r"^(https?://)?[\w.\-\[\]:]+(/[\w.\-/]*)?$", url):
+            raise HTTPException(400, L(f"'{url}' is geen geldig adres. Gebruik bijvoorbeeld http://192.168.1.10.",
+                                       f"'{url}' is not a valid address. Use for example http://192.168.1.10."))
+        if "://" not in url:
+            url = "http://" + url
+        prev = old.get(url) or {}
+        out.append({"name": i.name.strip() or adguard.host_of(url), "url": url, "username": i.username.strip(),
+                    # een opgeslagen wachtwoord gaat nooit mee naar een ander adres
+                    "password": i.password if i.password else prev.get("password", ""), "verify_tls": i.verify_tls})
+    return out
+
+
+@app.get("/api/adguard")
+def adguard_view():
+    collector, db = _need()
+    cfg = collector.adguard.cfg
+    return {**adguard.view(collector.adguard, collector.latest or {}, db, int(time.time())),
+            "settings": {"personal": cfg["personal"], "instances": [{k: v for k, v in i.items() if k != "password"} | {"has_password": bool(i.get("password"))}
+                                                                     for i in cfg["instances"]]}}
+
+
+@app.post("/api/adguard/settings")
+def adguard_settings(req: AdGuardSave):
+    collector, _ = _need()
+    s = Settings.load(DATA_DIR)
+    old = {"instances": [], "personal": False, "watch": {}, **(s.adguard or {})}
+    s.adguard = {**old, "instances": _ag_instances(req.instances), "personal": req.personal}
+    s.save()
+    rt.settings.adguard = s.adguard
+    if old["personal"] and not req.personal:   # telefoons en laptops niet meer volgen: hun domeinen weg
+        snap = collector.latest or {}
+        segs = ((snap.get("config") or {}).get("segments") or {}).get("segments")
+        for c in snap.get("clients") or []:
+            if not collector.adguard.watched(c, segs):
+                collector.adguard.forget(c["mac"])
+    return {"ok": True}
+
+
+@app.post("/api/adguard/test")
+async def adguard_test(req: AdGuardInstance):
+    inst = _ag_instances([req])
+    if not inst:
+        raise HTTPException(400, L("Vul het adres van AdGuard Home in.", "Enter the address of AdGuard Home."))
+    return await adguard.test_instance(inst[0])
+
+
+class AdGuardWatch(BaseModel):
+    mac: str = Field(pattern=r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
+    watch: bool | None = None     # None = automatisch (slimme apparaten en servers wel, de rest niet)
+
+
+@app.post("/api/adguard/watch")
+def adguard_watch(req: AdGuardWatch):
+    collector, _ = _need()
+    mac = req.mac.lower()
+    s = Settings.load(DATA_DIR)
+    cfg = {"instances": [], "personal": False, "watch": {}, **(s.adguard or {})}
+    watch = {k: v for k, v in cfg["watch"].items() if k != mac}
+    if req.watch is not None:
+        watch[mac] = req.watch
+    s.adguard = {**cfg, "watch": watch}
+    s.save()
+    rt.settings.adguard = s.adguard
+    snap = collector.latest or {}
+    c = next((x for x in snap.get("clients") or [] if x["mac"] == mac), {"mac": mac})
+    if not collector.adguard.watched(c, ((snap.get("config") or {}).get("segments") or {}).get("segments")):
+        collector.adguard.forget(mac)
+    return {"ok": True}
+
+
+@app.get("/api/adguard/client/{mac}")
+def adguard_client(mac: str):
+    collector, db = _need()
+    return adguard.client_view(collector.adguard, collector.latest or {}, db, mac.lower(), int(time.time()))
 
 
 @app.get("/api/internet")

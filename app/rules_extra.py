@@ -478,3 +478,5 @@ def run_all(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     public_ip(out, snap, issue, gw)
     bufferbloat(out, snap, issue, gw)
     backup_stale(out, snap, issue, gw)
+    from . import adguard
+    adguard.issues(out, snap, db, ts, issue)

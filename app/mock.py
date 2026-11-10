@@ -106,6 +106,7 @@ FLOW_DEST = [
     ("ESP Weerstation", "openweathermap.org", "GB", 443, "HTTPS", 5_000),
     ("Galaxy S24", "tiktokcdn.com", "SG", 443, "HTTPS", 20_000_000), ("Kantoor-PC", "alicdn.com", "HK", 443, "HTTPS", 900_000), ("Warmtepomp", "daikineurope.com", "BE", 443, "HTTPS", 30_000),
 ]
+NAMELESS = {"Robotstofzuiger", "Shelly Plug Schuur", "Tado Bridge", "Zonnepanelen Omvormer", "ESP Weerstation", "Warmtepomp", "Docker Host"}
 FLOW_IN = [  # (apparaat, poort, dienst, land, grootte)
     ("Home Assistant", 8123, "HTTPS", "NL", 900_000), ("Home Assistant", 8123, "HTTPS", "ES", 600_000),
     ("NAS Synology", 22, "SSH", "CN", 4_000), ("NAS Synology", 22, "SSH", "US", 4_000), ("NAS Synology", 22, "SSH", "BR", 3_000),
@@ -393,11 +394,15 @@ class MockNetwork:
             b = int(size * 0.12 * rnd.lognormvariate(0, 1.1))
             t_end = ts - rnd.randint(0, int(dt))
             ext = f"203.0.113.{rnd.randint(1, 250)}"   # documentatie-adressen
+            nameless = who in NAMELESS     # UniFi weet niet altijd de naam; AdGuard vult die dan aan
+            if nameless:
+                from .mock_adguard import demo_ip
+                ext = demo_ip(domain)
             out.append({"id": f"mockf-{t_end}-{k}-{mac}", "action": "allowed", "direction": "outgoing", "protocol": "TCP",
                         "flow_start_time": (t_end - rnd.randint(1, 300)) * 1000, "flow_end_time": t_end * 1000,
                         "in": {"network_name": "Default"}, "out": {"network_name": "WAN"}, "service": svc, "risk": "low",
                         "source": {"ip": ip, "mac": mac, "client_name": who, "port": rnd.randint(30000, 60000)},
-                        "destination": {"ip": ext, "port": port, "domains": [domain], "region": cc},
+                        "destination": {"ip": ext, "port": port, "domains": [] if nameless else [domain], "region": cc},
                         "traffic_data": {"bytes_tx": int(b * 0.08), "bytes_rx": int(b * 0.92)}})
         for who, ip_, port, svc, dom in DNS_LEAKS:   # apparaten die om je eigen DNS-server heen gaan
             if rnd.random() < dt / 600 and who in names:

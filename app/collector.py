@@ -19,7 +19,7 @@ from .i18n import L
 from .ha_mqtt import HAMqtt
 from .unifi_client import (UnifiClient, config_from_raw, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
                            normalize_speedtests, wan_rates, normalize_client_usage, normalize_dpi)
-from . import advisories, backups, bufferbloat, schedules, vulnscan
+from . import adguard, advisories, backups, bufferbloat, schedules, vulnscan
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ class Collector:
         self.dpi: list[dict] = []
         self.advisories: dict = db.get_kv("advisories") or {}
         self.vuln = vulnscan.VulnScan(settings, db, self.mock)
+        self.adguard = adguard.AdGuard(settings, db, self.mock)
         self._adv_checked = 0
         self.bloat_history: list[dict] = (self.db.get_kv("bufferbloat") or {}).get("items", [])
         self._bloat: dict | None = None
@@ -626,6 +627,8 @@ class Collector:
         await self.sync_client_usage()       # zelf elk uur (wandklok), dus ook tijdens het vullen van de demo maar één keer
         await self._collect_advisories(ts)
         await self.vuln.tick(snap, ts)
+        await self.adguard.tick(snap, ts)
+        snap["adguard"] = self.adguard.for_rules()
         await self.collect_backups()
         snap["backups"] = backups.summary(self.s.data_dir, self.s.backup_daily) if self.backup_status["checked"] else None
         # In beide talen, zodat wisselen van taal direct werkt en ook opgeloste meldingen meegaan.
@@ -693,6 +696,7 @@ class Collector:
                 if time.time() - last_purge > 3600:
                     self.db.purge(int(time.time()) - self.s.retention_days * 86400)
                     self.db.purge_flows(int(time.time()) - FLOW_HOURS * 3600)
+                    self.adguard.purge(int(time.time()), self.s.retention_days)
                     last_purge = time.time()
             except Exception as e:  # noqa: BLE001 – collector mag niet stoppen
                 self.last_error = str(e)

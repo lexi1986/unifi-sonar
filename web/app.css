@@ -750,7 +750,9 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .adv-row a.rank-name { color: var(--me-text); text-decoration: none; font-weight: 600; }
 .adv-row a.rank-name:hover { color: var(--me-primary); text-decoration: underline; }
 .adv-badges { display: flex; align-items: center; gap: 8px; }
-#sec-vuln h3 { margin: 18px 0 6px; font-size: 14px; }
+#sec-vuln h3, #sec-dns h3 { margin: 18px 0 6px; font-size: 14px; }
+#sec-dns .linkbtn.plain { font-weight: 600; }
+@media (max-width: 640px) { #sec-dns .adv-row { grid-template-columns: minmax(0, 1fr); } }
 .vuln-host { padding: 10px 0; border-top: 1px solid var(--me-border); }
 .vuln-host:first-child { border-top: 0; }
 .vuln-port { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 6px 0 0; }

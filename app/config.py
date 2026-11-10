@@ -12,7 +12,7 @@ from pathlib import Path
 
 CONFIG_KEYS = ("mode", "controller_url", "site", "api_key", "username", "password", "verify_tls",
                "allowed_hosts", "notify", "home_country", "mqtt", "language", "advisories", "auth", "backup_daily",
-               "backup_keys", "tls_pin", "vulnscan")
+               "backup_keys", "tls_pin", "vulnscan", "adguard")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -89,6 +89,7 @@ class Settings:
     notify: dict = field(default_factory=dict)          # meldingen naar buiten, zie notify.py
     auth: dict = field(default_factory=dict)            # optionele inlog (hash en geheim), zie auth.py
     vulnscan: dict = field(default_factory=dict)        # outside (Shodan) en nightly (poortcheck 's nachts); beide uit tot je ze aanzet
+    adguard: dict = field(default_factory=dict)         # AdGuard Home: instances, personal, watch; zie adguard.py
     backup_keys: dict = field(default_factory=dict)   # openbare sleutel en de ingepakte privésleutel
     thresholds: Thresholds = field(default_factory=Thresholds)
 
