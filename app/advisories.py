@@ -67,6 +67,8 @@ def _kind(product: str) -> str | None:
     """Soort product in een advies. Gateways splitsen we: een UniFi Gateway (UXG) is een andere productlijn
     dan een console (Dream Machine, Dream Router, Cloud Gateway)."""
     p = product.lower()
+    if "unifi os server" in p:
+        return "os-server"     # staat niet in de inventaris: de API geeft die versie niet, zie vulnscan.os_server_minimum
     if "network application" in p or "network server" in p or re.search(r"\bunifi network\b", p):
         return "network"
     if "access point" in p or re.search(r"\buap\b", p):
@@ -132,7 +134,7 @@ def match(items: list[dict], inv: list[dict]) -> list[dict]:
     return out
 
 
-def summary_list(items: list[dict], inv: list[dict], limit: int = 8) -> list[dict]:
+def summary_list(items: list[dict], inv: list[dict], limit: int = 8, kev: dict | None = None) -> list[dict]:
     """Voor de pagina Beveiliging: de nieuwste adviezen, met of ze jou raken."""
     hits = {m["id"] for m in match(items, inv)}
     out = []
@@ -140,12 +142,13 @@ def summary_list(items: list[dict], inv: list[dict], limit: int = 8) -> list[dic
         products = sorted({p for s in a["summaries"] for p, _ in s["affected"]})
         scores = [s["score"] for s in a["summaries"] if s["score"] is not None]
         out.append({"id": a["id"], "title": a["title"], "url": a["url"], "ts": a["ts"], "products": products,
-                    "score": max(scores) if scores else None, "affects": a["id"] in hits})
+                    "score": max(scores) if scores else None, "affects": a["id"] in hits,
+                    "exploited": any(c in (kev or {}) for s in a["summaries"] for c in s["cves"])})
     return out
 
 
 def demo(now: int | None = None) -> list[dict]:
-    """Voor de demomodus: drie verzonnen adviezen, waarvan één de demo-AP's raakt."""
+    """Voor de demomodus: vier verzonnen adviezen, waarvan één de demo-AP's raakt."""
     now = now or int(time.time())
     return [
         {"id": "073", "title": "Security Advisory Bulletin 073 (demo)", "url": "https://community.ui.com/releases", "ts": now - 3 * 86400,
@@ -159,4 +162,7 @@ def demo(now: int | None = None) -> list[dict]:
         {"id": "071", "title": "Security Advisory Bulletin 071 (demo)", "url": "https://community.ui.com/releases", "ts": now - 30 * 86400,
          "summaries": [{"summary": "UniFi Switches could allow a denial of service.",
                         "affected": [("UniFi Switches", "6.9.0")], "fixed": [("UniFi Switches", "7.0.1")], "score": 5.3, "cves": []}]},
+        {"id": "070", "title": "Security Advisory Bulletin 070 (demo)", "url": "https://community.ui.com/releases", "ts": now - 60 * 86400,
+         "summaries": [{"summary": "UniFi OS Server could allow unauthorized changes to the system.",
+                        "affected": [("UniFi OS Server", "5.0.6")], "fixed": [("UniFi OS Server", "5.0.8")], "score": 10.0, "cves": ["CVE-2026-00001"]}]},
     ]

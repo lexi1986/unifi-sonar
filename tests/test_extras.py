@@ -107,7 +107,7 @@ def test_demo_issues(demo):
     leak = {i18n.issue(i, "en")["title"] for i in demo.latest["issues"] if i["key"].startswith("dns_leak")}
     assert "Fire TV bypasses your DNS server" in leak
     adv = next(i for i in demo.latest["issues"] if i["key"].startswith("advisory"))
-    assert adv["notify"] and adv["severity"] == "warning" and "AP Kantoor (6.5.62)" in adv["detail"]
+    assert adv["notify"] and adv["severity"] == "critical" and "AP Kantoor (6.5.62)" in adv["detail"]
     # de DNS-server zelf (upstream) telt niet als lek
     assert not any("Pi-hole" in i["title"] for i in demo.latest["issues"] if i["key"].startswith("dns_leak"))
 

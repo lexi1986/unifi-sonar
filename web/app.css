@@ -141,6 +141,9 @@ h3 { font-size: 15px; font-weight: 600; margin: 0; }
 .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 8px;
   border-radius: var(--me-radius-pill); white-space: nowrap; background: var(--me-elevated); color: var(--me-text-secondary); }
 .badge .icon { width: 13px; height: 13px; }
+button.badge { position: relative; border: 0; font-family: inherit; cursor: pointer; }
+button.badge::after { content: ""; position: absolute; inset: -10px -6px; }   /* groter raakvlak op touch */
+button.badge:hover { text-decoration: underline; }
 .badge.critical, .badge.err { background: var(--me-danger-tint); color: var(--me-danger); }
 .badge.warning { background: var(--me-warning-tint); color: var(--me-warning); }
 .badge.info { background: var(--me-primary-tint-strong); color: var(--me-primary); }
@@ -747,6 +750,11 @@ button.kpi-link:focus-visible { outline: none; border-color: var(--me-primary-bo
 .adv-row a.rank-name { color: var(--me-text); text-decoration: none; font-weight: 600; }
 .adv-row a.rank-name:hover { color: var(--me-primary); text-decoration: underline; }
 .adv-badges { display: flex; align-items: center; gap: 8px; }
+#sec-vuln h3 { margin: 18px 0 6px; font-size: 14px; }
+.vuln-host { padding: 10px 0; border-top: 1px solid var(--me-border); }
+.vuln-host:first-child { border-top: 0; }
+.vuln-port { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 6px 0 0; }
+@media (max-width: 640px) { .vuln-port, #sec-vuln .adv-row { grid-template-columns: minmax(0, 1fr); } }
 
 /* inlog */
 .wizard.login { max-width: 420px; margin-top: 12vh; }

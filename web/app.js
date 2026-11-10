@@ -1358,6 +1358,7 @@
       <section class="card" style="margin-bottom:16px" id="sec-seg-card"><div class="card-head"><h2 style="margin:0">${L("Netwerkscheiding", "Network segmentation")}</h2><span class="muted" id="sec-seg-sub"></span></div>
         <div class="seg-nets" id="sec-seg-nets"></div><div id="sec-seg-matrix"></div><div id="sec-seg-issues"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Firewall, DNS en adviezen", "Firewall, DNS and advisories")}</h2><span class="muted" id="sec-checks-sub"></span></div><div class="issue-list" id="sec-checks"></div></section>
+      <section class="card" style="margin-bottom:16px" id="h-vuln"><div class="card-head"><h2 style="margin:0">${L("Kwetsbaarheden", "Vulnerabilities")}</h2><span class="muted" id="sec-vuln-sub"></span></div><div id="sec-vuln"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Beveiligingsadviezen van Ubiquiti", "Ubiquiti security advisories")}</h2><span class="muted" id="sec-adv-sub"></span></div><div id="sec-adv"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Open naar internet", "Open to the internet")}</h2><span class="muted" id="sec-expo-sub"></span></div><div id="sec-expo"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h3>${L("Blokkades in de tijd", "Blocks over time")}</h3><span class="muted" id="sec-bucket"></span></div><div id="sec-chart"></div></section>
@@ -1365,6 +1366,11 @@
         <button class="chip" id="sec-ignored" aria-pressed="${secState.ignored}">${L("Genegeerde tonen", "Show ignored")} <span class="num" id="sec-ignored-n"></span></button></div>
       <div class="table-wrap" id="sec-table"></div>
       <section class="card" style="margin-top:16px" id="sec-ign-card" hidden><div class="card-head"><h3>${L("Negeerregels", "Ignore rules")}</h3><span class="muted">${L("tellen niet mee in de cijfers en geven geen meldingen", "not counted in the figures and raise no issues")}</span></div><div id="sec-ign"></div></section>`);
+    $("#sec-kpis").addEventListener("click", (e) => {
+      if (!e.target.closest("#sec-review")) return;
+      $('#sec-scope .chip[data-s="internal"]').click();
+      $("#sec-scope").scrollIntoView({ behavior: reduceMotion() ? "auto" : "smooth", block: "start" });
+    });
     $("#sec-range").addEventListener("click", (e) => {
       const b = e.target.closest("button[data-h]"); if (!b) return;
       secState.hours = +b.dataset.h; store.set("sec.hours", secState.hours);
@@ -1388,7 +1394,7 @@
     bindFlow($("#sec-seg-matrix"));
   }
   // ---- firewall-audit, DNS om je DNS-server heen en beveiligingsadviezen
-  const CHECK_KEYS = ["fw_", "dns_leak:", "advisory:"];
+  const CHECK_KEYS = ["fw_", "dns_leak:", "advisory:", "vuln:"];
   function renderSecChecks() {
     const el = $("#sec-checks"); if (!el) return;
     const list = (state.issues || []).filter((i) => !i.resolved_at && CHECK_KEYS.some((k) => i.key.startsWith(k)))
@@ -1408,11 +1414,109 @@
     el.innerHTML = `${d.enabled ? (d.items.length ? `<div class="adv-list">${d.items.map((x) => `<div class="adv-row ${x.affects ? "hit" : ""}">
         <div style="min-width:0"><a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" class="rank-name">${esc(x.title)}</a>
           <div class="cell-sub">${new Date(x.ts * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short", year: "numeric" })} · ${esc(x.products.slice(0, 3).join(", "))}${x.products.length > 3 ? "…" : ""}</div></div>
-        <div class="adv-badges">${x.score != null ? `<span class="num muted">${nf(x.score, 1)}</span>` : ""}${x.affects ? badge("critical", L("Geldt voor jou", "Affects you"), "alert") : badge("ok", L("Niet voor jou", "Not for you"), "check")}</div></div>`).join("")}</div>`
+        <div class="adv-badges">${x.score != null ? `<span class="num muted">${nf(x.score, 1)}</span>` : ""}${x.exploited ? badge("warning", L("Wordt misbruikt", "Exploited"), "alert") : ""}${x.affects ? badge("critical", L("Geldt voor jou", "Affects you"), "alert") : badge("ok", L("Niet voor jou", "Not for you"), "check")}</div></div>`).join("")}</div>`
         : `<p class="muted">${d.error ? `${L("Ophalen lukte niet", "Fetching failed")}: ${esc(d.error)}` : L("Nog niet opgehaald.", "Not fetched yet.")}</p>`) : ""}
       <p class="help" style="margin:10px 0 0">${hits ? "" : d.enabled && d.items.length ? `${L("Geen van de recente adviezen geldt voor jouw firmware.", "None of the recent advisories apply to your firmware.")} ` : ""}${L("Sonar haalt elke 6 uur de openbare lijst van Ubiquiti op en vergelijkt die met de firmware van je apparaten. Er gaat niets van jouw netwerk mee.", "Every 6 hours Sonar fetches Ubiquiti's public list and compares it with your devices' firmware. Nothing from your network is sent.")}</p>
       <label class="check" style="margin-top:8px"><input type="checkbox" id="adv-on" ${d.enabled ? "checked" : ""}> ${L("Beveiligingsadviezen ophalen", "Fetch security advisories")}</label>`;
     hydrateIcons(el);
+  }
+
+  // ------------------------------------------------------------------ kwetsbaarheden
+  let vulnTimer = null;
+  const COVER = { ok: ["ok", L("Bekeken", "Checked"), "check"], partial: ["warning", L("Deels", "Partly"), "info"], manual: ["warning", L("Zelf controleren", "Check yourself"), "alert"],
+    none: ["info", L("Niet beoordeeld", "Not assessed"), "info"], off: ["info", L("Niet gedaan", "Not done"), "info"] };
+  function vulnPort(h, o) {
+    const used = o.used_by.length ? ` ${L("Via de gateway gebruikt door", "Used through the gateway by")} ${esc(o.used_by.join(", "))}.` : "";
+    return `<div class="vuln-port"><div style="min-width:0"><span class="num">${o.port}</span> ${esc(o.name)}${o.why || used ? `<div class="cell-sub">${esc(o.why)}${used}</div>` : ""}</div>
+      <div class="adv-badges">${o.accepted ? `<span class="muted">${L("Hoort zo", "Expected")}</span>` : badge("warning", L("Nakijken", "Review"), "alert")}
+      <button class="btn ghost" data-acc="${esc(h.mac)}" data-port="${o.port}" data-on="${o.accepted ? 0 : 1}">${o.accepted ? L("Terugzetten", "Undo") : L("Hoort zo", "Expected")}</button></div></div>`;
+  }
+  const OUT_STATE = { expected: ["ok", L("Hoort bij je instellingen", "Matches your settings"), "check"], stale: ["info", L("Waarschijnlijk oud", "Probably outdated"), "info"],
+    lingering: ["warning", L("Nakijken", "Review"), "alert"], unexplained: ["warning", L("Nakijken", "Review"), "alert"], unknown: ["info", L("Niet te verklaren", "Can't explain"), "info"] };
+  function outsideWhy(r, days) {
+    const via = (v) => v.kind === "vpn" ? L(`VPN-server '${v.name}'`, `VPN server '${v.name}'`)
+      : `${v.kind === "upnp" ? L("UPnP-koppeling", "UPnP mapping") : "Port forward"} '${v.name}'${v.to ? ` → ${v.to}` : ""}`;
+    const names = r.via.map(via).join(", ");
+    const since = new Date(r.since * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short" });
+    if (r.state === "expected") {
+      const also = r.via.flatMap((v) => v.also);
+      return L(`Hoort bij ${names}.`, `Belongs to ${names}.`) + (also.length ? ` ${L("Dat apparaat heeft binnen je netwerk ook open", "Inside your network that device also has open")}: ${also.map((o) => `${o.port} ${o.name}`).join(", ")}.` : "");
+    }
+    if (r.state === "stale") return L(`Hoort bij ${names}, maar dat staat uit. Waarschijnlijk zijn de gegevens van Shodan ouder. Staat de poort er na ${days} dagen nog, dan wordt het een bevinding. In de lijst sinds ${since}.`,
+      `Belongs to ${names}, but that is switched off. Shodan's data is probably older. If the port is still listed after ${days} days, it becomes a finding. Listed since ${since}.`);
+    if (r.state === "lingering") return L(`Staat sinds ${since} bij Shodan, terwijl ${names} uitstaat. Ga na of de poort echt dicht is, bijvoorbeeld vanaf je telefoon via mobiel internet.`,
+      `Listed by Shodan since ${since}, while ${names} is switched off. Check that the port is really closed, for example from your phone on mobile data.`);
+    if (r.state === "unknown") return L("Sonar kan je port forwards niet lezen (dat kan alleen via de uitgebreide API), dus ook niet zeggen waar deze poort bij hoort.",
+      "Sonar can't read your port forwards (that needs the extended API), so it can't tell what this port belongs to.");
+    return L(`Je controller weet hier niets van: geen port forward, UPnP-koppeling of VPN-server op deze poort. Het kan een dienst op de gateway zelf zijn, of gegevens van Shodan die niet meer kloppen. In de lijst sinds ${since}.`,
+      `Your controller knows nothing about this: no port forward, UPnP mapping or VPN server on this port. It may be a service on the gateway itself, or Shodan data that is no longer correct. Listed since ${since}.`);
+  }
+  function outsidePort(r, days) {
+    const act = r.state !== "expected" && r.state !== "unknown";
+    return `<div class="vuln-port"><div style="min-width:0"><span class="num">${r.port}</span>${r.name ? ` ${esc(r.name)}` : ""}<div class="cell-sub">${esc(outsideWhy(r, days))}</div></div>
+      <div class="adv-badges">${r.accepted ? `<span class="muted">${L("Hoort zo", "Expected")}</span>` : badge(...OUT_STATE[r.state])}
+      ${act ? `<button class="btn ghost" data-acc="wan" data-port="${r.port}" data-on="${r.accepted ? 0 : 1}">${r.accepted ? L("Terugzetten", "Undo") : L("Hoort zo", "Expected")}</button>` : ""}</div></div>`;
+  }
+  function vulnHost(h) {
+    const risky = h.open.filter((o) => o.cls === "plain"), rest = h.open.filter((o) => o.cls !== "plain");
+    return `<div class="vuln-host"><div class="rank-name">${esc(h.name)} <span class="muted num">${esc(h.ip)} · ${esc(h.network)}</span></div>
+      ${risky.map((o) => vulnPort(h, o)).join("")}
+      ${rest.length ? `<div class="cell-sub">${L("Beheer of delen", "Admin or sharing")}: ${rest.map((o) => `${o.port} ${esc(o.name)}`).join(", ")}</div>` : ""}</div>`;
+  }
+  async function loadVuln() {
+    let d;
+    try { d = await api("/api/vulnscan"); } catch (e) { return; }
+    const el = $("#sec-vuln"); if (!el || current !== "beveiliging") return;
+    clearTimeout(vulnTimer);
+    if (d.running) vulnTimer = setTimeout(loadVuln, 3000);
+    $("#sec-vuln-sub").textContent = d.kev.fetched ? L(`lijst van ${nf(d.kev.count)} misbruikte lekken bijgewerkt ${stamp(d.kev.fetched)}`, `list of ${nf(d.kev.count)} exploited flaws updated ${stamp(d.kev.fetched)}`) : "";
+    const s = d.summary, sk = d.plan.skipped, out = d.outside, p = d.ports;
+    const notSeen = sk.iot + sk.guest + sk.unknown + sk.limit;
+    el.innerHTML = `
+      ${d.kev.error ? `<div class="banner err">${L("De KEV-lijst ophalen lukte niet", "Fetching the KEV list failed")}: ${esc(d.kev.error)}</div>` : ""}
+      <div class="kv" style="margin-bottom:12px">
+        <div><div class="k">${L("Echt misbruikt en bij jou", "Exploited and present here")}</div><div class="v">${nf(s.exploited)}</div></div>
+        <div><div class="k">${L("Bevindingen", "Findings")}</div><div class="v">${nf(s.findings)}</div></div>
+        <div><div class="k">${L("Bekeken", "Looked at")}</div><div class="v">${L(`${nf(s.checked)} van ${nf(s.total)} apparaten`, `${nf(s.checked)} of ${nf(s.total)} devices`)}</div></div>
+      </div>
+      ${d.exploited.length ? `<h3>${L("Bij jou en echt misbruikt", "Present here and exploited")}</h3><div class="adv-list">${d.exploited.map((x) => `<div class="adv-row hit"><div style="min-width:0"><a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" class="rank-name">${esc(x.title)}</a>
+        <div class="cell-sub">${esc(x.devices.map((v) => `${v.name} (${v.version})`).join(", "))}${x.fixed ? ` · ${L("opgelost in", "fixed in")} ${esc(x.fixed)}` : ""} · ${esc(x.cves.join(", "))}</div></div>
+        <div class="adv-badges">${x.ransomware ? badge("critical", "Ransomware", "alert") : ""}${badge("critical", L("Bijwerken", "Update"), "alert")}</div></div>`).join("")}</div>` : ""}
+      <h3>${L("Wat er bekeken is", "What was looked at")}</h3>
+      <div class="adv-list">${d.coverage.map((c) => `<div class="adv-row"><div style="min-width:0"><div class="rank-name">${esc(c.title)}</div><div class="cell-sub">${esc(c.text)}${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${L("Advies", "Advisory")}</a>` : ""}</div></div>
+        <div class="adv-badges">${badge(...COVER[c.state])}</div></div>`).join("")}</div>
+      ${out && out.state === "ok" ? `<h3>${L("Zo zie je er van buiten uit", "How you look from outside")}</h3>
+        <p class="help" style="margin:0">${esc(out.ip)} · ${L("bijgewerkt", "updated")} ${stamp(out.fetched)} · ${out.ports.length ? L("Shodan geeft geen protocol en geen datum. 'Sinds' is wanneer Sonar de poort voor het eerst in de lijst zag.", "Shodan gives no protocol and no date. 'Since' is when Sonar first saw the port listed.") : L("Shodan ziet geen open poorten.", "Shodan sees no open ports.")}</p>
+        ${out.explained.length ? `<div>${out.explained.map((r) => outsidePort(r, out.stale_days)).join("")}</div>` : ""}
+        ${out.vulns.length ? `<div class="adv-list">${out.vulns.slice(0, 30).map((v) => `<div class="adv-row"><div style="min-width:0"><div class="rank-name num">${esc(v.id)}</div>${v.name ? `<div class="cell-sub">${esc(v.name)}</div>` : ""}</div><div class="adv-badges">${v.exploited ? badge("critical", L("Wordt misbruikt", "Exploited"), "alert") : badge("info", L("Mogelijk", "Possible"), "info")}</div></div>`).join("")}</div>` : ""}` : ""}
+      ${d.hosts.length ? `<h3>${L("Open diensten", "Open services")}</h3><div>${d.hosts.map(vulnHost).join("")}</div>
+        <p class="help" style="margin:8px 0 0">${L("Open betekent dat de poort antwoord geeft. Of er een wachtwoord op zit, controleert Sonar bewust niet.", "Open means the port answers. Sonar deliberately does not check whether it has a password.")}</p>` : ""}
+      ${p.error && !d.running ? `<div class="banner err" style="margin-top:12px">${L("De poortcheck ging mis", "The port check failed")}: ${esc(p.error)}</div>` : ""}
+      <h3>${L("Poortcheck", "Port check")}</h3>
+      ${d.running ? `<p class="help" style="margin:0" role="status">${L("Bezig", "Running")}${d.running.total ? `: ${nf(d.running.done)} / ${nf(d.running.total)}` : "…"}</p>`
+        : `<p class="help" style="margin:0">${L(`Controleert ${d.plan.targets} apparaten op ${d.plan.ports} beheerpoorten, in ongeveer ${d.plan.minutes} min. Sonar maakt alleen verbinding en sluit meteen weer: geen wachtwoorden en geen exploits.${notSeen ? ` ${notSeen} apparaten slaan we over: ${sk.iot} slimme apparaten, ${sk.guest} gasten en ${sk.unknown + sk.limit} overig.` : ""} De controle komt vanaf het netwerk van Sonar, dus ze zegt niets over wat je slimme apparaten kunnen bereiken.`,
+            `Checks ${d.plan.targets} devices on ${d.plan.ports} admin ports, in about ${d.plan.minutes} min. Sonar only connects and closes right away: no passwords and no exploits.${notSeen ? ` ${notSeen} devices are skipped: ${sk.iot} smart devices, ${sk.guest} guests and ${sk.unknown + sk.limit} other.` : ""} The check runs from Sonar's network, so it says nothing about what your smart devices can reach.`)}${p.ran ? ` ${L("Laatst", "Last run")}: ${stamp(p.ran)}.` : ""}</p>
+           <div class="wiz-actions"><button type="button" class="btn" id="vuln-run" ${d.plan.targets ? "" : "disabled"}>${p.ran ? L("Opnieuw controleren", "Check again") : L("Poorten controleren", "Check ports")}</button></div>`}
+      <label class="check"><input type="checkbox" id="vuln-nightly" ${d.options.nightly ? "checked" : ""}> ${L("Elke nacht tussen 3 en 5 uur herhalen", "Repeat every night between 3 and 5 am")}</label>
+      <label class="check" style="margin-top:8px"><input type="checkbox" id="vuln-outside" ${d.options.outside ? "checked" : ""}> ${L("Mijn publieke adres dagelijks opzoeken bij Shodan InternetDB (je adres gaat dan naar Shodan)", "Look up my public address daily at Shodan InternetDB (your address is then sent to Shodan)")}</label>`;
+    hydrateIcons(el);
+  }
+  function bindVuln() {
+    const el = $("#sec-vuln");
+    el.addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-acc]");
+      try {
+        if (b) { b.disabled = true; await post("/api/vulnscan/accept", { mac: b.dataset.acc, port: +b.dataset.port, accepted: b.dataset.on === "1" }); }
+        else if (e.target.closest("#vuln-run")) { e.target.closest("#vuln-run").disabled = true; await post("/api/vulnscan/run", {}); }
+        else return;
+      } catch (err) { alert(err.message); }
+      loadVuln();
+    });
+    el.addEventListener("change", async (e) => {
+      const key = { "vuln-nightly": "nightly", "vuln-outside": "outside" }[e.target.id]; if (!key) return;
+      try { await post("/api/vulnscan/settings", { [key]: e.target.checked }); } catch (err) { alert(err.message); }
+      loadVuln();
+    });
   }
 
   // ------------------------------------------------------------------ netwerkscheiding
@@ -1735,7 +1839,7 @@
   }
   const srcLabel = (e) => `${esc(e.src_name && e.src_name !== e.src_ip ? e.src_name : e.src_ip)}${e.src_name && e.src_name !== e.src_ip ? `<div class="cell-sub">${esc(e.src_ip)}</div>` : ""}`;
   UPDATERS.beveiliging = async function () {
-    loadSegments(); renderSecChecks(); loadAdvisories();
+    loadSegments(); renderSecChecks(); loadAdvisories(); if (!$("#sec-vuln").dataset.bound) { $("#sec-vuln").dataset.bound = "1"; bindVuln(); } loadVuln();
     const d = await api(`/api/ips?hours=${secState.hours}&scope=${secState.scope}&ignored=${secState.ignored}`);
     if (current !== "beveiliging") return;
     const s = d.summary;
@@ -1746,7 +1850,7 @@
       <div class="card compact kpi"><div class="label">${icon("shield")}${L("Blokkades", "Blocks")}</div><div class="value">${nf(s.total)}</div><div class="sub">${L("afgelopen", "past")} ${per}</div></div>
       <div class="card compact kpi"><div class="label">${icon("globe")}${L("Van buiten", "From outside")}</div><div class="value">${nf(s.external)}</div><div class="sub">${L("tegengehouden door de IPS", "stopped by the IPS")}</div></div>
       <div class="card compact kpi"><div class="label">${icon("home")}${L("Van eigen apparaten", "From own devices")}</div><div class="value">${nf(s.internal)}</div>
-        <div class="sub">${s.internal ? badge("warning", L("Bekijken", "Review"), "alert") : badge("ok", L("Geen", "None"), "check")}</div></div>
+        <div class="sub">${s.internal ? `<button type="button" class="badge warning" id="sec-review" aria-controls="sec-table">${icon("alert")}${L("Bekijken", "Review")}</button>` : badge("ok", L("Geen", "None"), "check")}</div></div>
       <div class="card compact kpi"><div class="label">${icon("users")}${L("Unieke bronnen", "Unique sources")}</div><div class="value">${nf(s.sources)}</div><div class="sub">${L("IP-adressen", "IP addresses")}</div></div>`;
     const max1 = Math.max(1, ...d.by_signature.map((x) => x.count)), max2 = Math.max(1, ...d.by_source.map((x) => x.count));
     const srcName = (x) => (x.name && x.name !== x.ip ? `${x.name} (${x.ip})` : x.ip);

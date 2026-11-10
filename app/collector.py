@@ -19,7 +19,7 @@ from .i18n import L
 from .ha_mqtt import HAMqtt
 from .unifi_client import (UnifiClient, config_from_raw, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
                            normalize_speedtests, wan_rates, normalize_client_usage, normalize_dpi)
-from . import advisories, backups, bufferbloat, schedules
+from . import advisories, backups, bufferbloat, schedules, vulnscan
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ class Collector:
         self._ips_checked = 0
         self.config: dict | None = None          # wifi-instellingen, UPnP, port forwards
         self._cfg_checked = 0
-        self.sysinfo: dict = {"network_version": "demo"} if self.mock else {}
+        self.sysinfo: dict = {"network_version": "demo", "hardware": "UOSSERVER"} if self.mock else {}
         self._sys_checked = 0
         self.optional: dict[str, str | None] = {}   # optionele bronnen → None (ok) of foutmelding
         self.notifier = Notifier(settings, db)
@@ -77,6 +77,7 @@ class Collector:
         self._cu_checked = 0
         self.dpi: list[dict] = []
         self.advisories: dict = db.get_kv("advisories") or {}
+        self.vuln = vulnscan.VulnScan(settings, db, self.mock)
         self._adv_checked = 0
         self.bloat_history: list[dict] = (self.db.get_kv("bufferbloat") or {}).get("items", [])
         self._bloat: dict | None = None
@@ -624,6 +625,7 @@ class Collector:
             await self.sync_usage()
         await self.sync_client_usage()       # zelf elk uur (wandklok), dus ook tijdens het vullen van de demo maar één keer
         await self._collect_advisories(ts)
+        await self.vuln.tick(snap, ts)
         await self.collect_backups()
         snap["backups"] = backups.summary(self.s.data_dir, self.s.backup_daily) if self.backup_status["checked"] else None
         # In beide talen, zodat wisselen van taal direct werkt en ook opgeloste meldingen meegaan.
@@ -642,7 +644,8 @@ class Collector:
         si = self.sysinfo or {}
         inv = advisories.inventory(snap.get("devices", []), si.get("network_version"))
         items = (self.advisories or {}).get("items") or [] if self.s.advisories is not False else []
-        return {**self.insights, "advisories": advisories.match(items, inv)}
+        return {**self.insights, "advisories": vulnscan.mark_exploited(advisories.match(items, inv), self.vuln.kev_items),
+                "vuln": self.vuln.for_rules(snap.get("config"))}
 
     async def language_changed(self) -> None:
         """Andere taal gekozen: Home Assistant krijgt de sensornamen opnieuw in die taal."""

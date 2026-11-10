@@ -375,13 +375,14 @@ def advisory_issues(out: list[dict], ins: dict, issue) -> None:
         product = ms[0]["product"]
         cves = sorted({c for m in ms for c in m["cves"]})
         which = ", ".join(f"{n} ({v})" for n, v in list(devs.items())[:5])
-        i = issue(f"advisory:{aid}", "critical" if score >= 9 else "warning", "security", "site", "advisory",
+        hot = sorted({c for m in ms for c in m.get("exploited") or []})
+        i = issue(f"advisory:{aid}", "critical" if score >= 9 or hot else "warning", "security", "site", "advisory",
                   L(f"Beveiligingsadvies {aid} van Ubiquiti geldt voor je {product}",
                     f"Ubiquiti security advisory {aid} applies to your {product}"),
-                  L(f"{len(cves) or len(ms)} kwetsbaarhe{'den' if (len(cves) or len(ms)) > 1 else 'id'}, hoogste score "
+                  L(("Wordt volgens CISA echt misbruikt. " if hot else "") + f"{len(cves) or len(ms)} kwetsbaarhe{'den' if (len(cves) or len(ms)) > 1 else 'id'}, hoogste score "
                     f"{score:.1f}".replace(".", ",") + " van 10." + f" Getroffen: {which}" + (f"; opgelost in versie {fixed}." if fixed else ".")
                     + f" Ubiquiti: \"{ms[0]['summary'][:200]}\"",
-                    f"{len(cves) or len(ms)} vulnerabilit{'ies' if (len(cves) or len(ms)) > 1 else 'y'}, highest score "
+                    ("Exploited in the wild according to CISA. " if hot else "") + f"{len(cves) or len(ms)} vulnerabilit{'ies' if (len(cves) or len(ms)) > 1 else 'y'}, highest score "
                     f"{score:.1f} out of 10. Affected: {which}" + (f"; fixed in version {fixed}." if fixed else ".")
                     + f" Ubiquiti: \"{ms[0]['summary'][:200]}\""),
                   L("Werk bij via UniFi (Apparaten → Bijwerken, of Instellingen → Systeem voor de Network-app). "
@@ -390,6 +391,26 @@ def advisory_issues(out: list[dict], ins: dict, issue) -> None:
                     f"The full advisory: {ms[0]['url']}"), last_ts=ms[0]["ts"])
         i.update(notify=True)
         out.append(i)
+
+
+# ------------------------------------------------------------------ kwetsbaarheidscheck
+def vuln_issue(out: list[dict], ins: dict, issue) -> None:
+    """Bewust alleen een aantal: een melding kan bij een dienst van derden terechtkomen, de details blijven in Sonar."""
+    v = ins.get("vuln") or {}
+    n = v.get("findings") or 0
+    if n:
+        out.append(issue("vuln:findings", "critical" if v.get("exploited") else "warning", "security", "site", "vuln",
+                         L(f"Kwetsbaarheidscheck: {n} bevinding{'en' if n != 1 else ''}", f"Vulnerability check: {n} finding{'s' if n != 1 else ''}"),
+                         L("De details staan alleen in Sonar, onder Beveiliging → Kwetsbaarheden.", "The details are only in Sonar, under Security → Vulnerabilities."),
+                         L("Bekijk per bevinding of die dienst open moet staan. Hoort het zo, kies dan 'Hoort zo'.", "For each finding, check whether that service should be open. If it should, choose 'Expected'.")))
+    s = v.get("stale") or 0
+    if s:
+        out.append(issue("vuln:outside_stale", "info", "security", "site", "vuln",
+                         L(f"Shodan ziet {s} poort{'en' if s != 1 else ''} van iets wat uitstaat", f"Shodan sees {s} port{'s' if s != 1 else ''} of something that is switched off"),
+                         L("Waarschijnlijk zijn de gegevens van Shodan ouder dan je instellingen. De details staan in Sonar, onder Beveiliging → Kwetsbaarheden.",
+                           "Shodan's data is probably older than your settings. The details are in Sonar, under Security → Vulnerabilities."),
+                         L("Niets doen. Staat de poort er na twee weken nog, dan wordt het een bevinding en loont het om na te gaan of hij echt dicht is.",
+                           "Nothing to do. If the port is still listed after two weeks, it becomes a finding and it is worth checking that it is really closed.")))
 
 
 # ------------------------------------------------------------------ publiek IP-adres
@@ -453,6 +474,7 @@ def run_all(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     anomalies(out, snap, ins, ts, issue)
     quieter_channel(out, snap, ins, issue, db, ts)
     advisory_issues(out, ins, issue)
+    vuln_issue(out, ins, issue)
     public_ip(out, snap, issue, gw)
     bufferbloat(out, snap, issue, gw)
     backup_stale(out, snap, issue, gw)

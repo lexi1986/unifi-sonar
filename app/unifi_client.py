@@ -750,7 +750,13 @@ class UnifiClient:
             return {}
         rows = await self._legacy("stat/sysinfo", self.source == "legacy-key")
         si = rows[0] if rows else {}
-        return {"network_version": si.get("version"), "build": si.get("build"), "timezone": si.get("timezone")}
+        hardware = None
+        try:     # UniFi OS Server heeft geen firmware in de apparatenlijst; alleen het type is uit te lezen, niet de versie
+            r = await self.http.get("/api/system", headers=self._headers() if self.source == "legacy-key" else {})
+            hardware = ((r.json().get("hardware") or {}).get("shortname") or None) if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError, AttributeError):
+            pass
+        return {"network_version": si.get("version"), "build": si.get("build"), "timezone": si.get("timezone"), "hardware": hardware}
 
     # ----------------------------------------------------------- internet
     def _legacy_only(self) -> bool:

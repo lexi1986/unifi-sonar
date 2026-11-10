@@ -1105,7 +1105,7 @@ def advisories_list():
     a = collector.advisories or {}
     inv = adv.inventory((collector.latest or {}).get("devices", []), (collector.sysinfo or {}).get("network_version"))
     return {"enabled": rt.settings.advisories is not False, "fetched": a.get("fetched"), "error": a.get("error"),
-            "items": adv.summary_list(a.get("items") or [], inv), "feed": adv.FEED}
+            "items": adv.summary_list(a.get("items") or [], inv, kev=collector.vuln.kev_items), "feed": adv.FEED}
 
 
 class AdvisorySettings(BaseModel):
@@ -1123,6 +1123,59 @@ async def advisories_settings(req: AdvisorySettings):
             await rt.collector._collect_advisories(int(time.time()))
         else:
             rt.collector.advisories = {}
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------- kwetsbaarheidscheck
+@app.get("/api/vulnscan")
+def vulnscan_view():
+    collector, _ = _need()
+    items = (collector.advisories or {}).get("items") or []
+    return collector.vuln.view(collector.latest or {}, collector.sysinfo, items, rt.settings.advisories is not False)
+
+
+class VulnSettings(BaseModel):
+    outside: bool | None = None
+    nightly: bool | None = None
+
+
+@app.post("/api/vulnscan/settings")
+async def vulnscan_settings(req: VulnSettings):
+    collector, _ = _need()
+    s = Settings.load(DATA_DIR)
+    s.vulnscan = {**collector.vuln.options, **req.model_dump(exclude_none=True)}
+    rt.settings.vulnscan = s.vulnscan
+    s.save()
+    ip = ((collector.latest or {}).get("wan") or {}).get("wan_ip") or ""
+    if req.outside and ip:
+        await collector.vuln.refresh_outside(ip, int(time.time()))
+    elif req.outside is False:
+        collector.vuln.outside = None
+        collector.vuln._save()
+    return {"ok": True}
+
+
+@app.post("/api/vulnscan/run")
+async def vulnscan_run():
+    """Start alleen de poortcheck op apparaten uit de controller; er is bewust geen doel mee te geven."""
+    collector, _ = _need()
+    if not collector.latest:
+        raise HTTPException(409, L("Sonar heeft nog geen gegevens van je netwerk.", "Sonar has no data from your network yet."))
+    if not collector.vuln.start(collector.latest):
+        raise HTTPException(409, L("De poortcheck loopt al.", "The port check is already running."))
+    return {"ok": True}
+
+
+class VulnAccept(BaseModel):
+    mac: str = Field(max_length=32)
+    port: int
+    accepted: bool
+
+
+@app.post("/api/vulnscan/accept")
+def vulnscan_accept(req: VulnAccept):
+    collector, _ = _need()
+    collector.vuln.accept(req.mac, req.port, req.accepted)
     return {"ok": True}
 
 

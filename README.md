@@ -39,6 +39,7 @@ Sonar doesn't replace your controller; it sits next to it and does the thinking.
 - **DNS leaks:** devices that bypass your own DNS server (Pi-hole, AdGuard) with plain DNS, DNS-over-TLS or DNS-over-HTTPS, so your filters don't apply to them.
 - **Firewall audit:** rules that never match because an earlier rule catches everything, and allow rules that open your main network to IoT, guests or the internet.
 - **Ubiquiti security advisories** matched against the firmware of your APs, switches, gateway and Network app, with the version that fixes it.
+- **Vulnerability check**: flaws that are really being exploited (CISA KEV), optionally your public address via Shodan InternetDB (each open port matched against your port forwards, UPnP and VPN servers), and a slow port check you start yourself. It always shows what was and wasn't looked at; smart devices are never probed.
 - **Network segmentation:** your VLANs, their firewall zones and an interactive diagram of what may talk to what. Smart-home devices (Espressif, Tuya, Shelly, ESPHome…) on your main network are flagged.
 - **What's open to the internet:** UPnP, port forwards on commonly attacked ports, exposed SSH/RDP/databases, and **IPS blocks of your own devices** (attacks from outside are the IPS doing its job; your own device being blocked deserves a look).
 - **New devices** get a notification with vendor, network and AP. Devices with a rotating private Wi-Fi address are recognised by hostname.
@@ -148,7 +149,7 @@ Installed before version 1.2? Run the install command once more (or `pct exec <c
 
 ## Privacy and security
 
-- **Everything stays on your machine.** Nothing goes to the internet except downloading the software when installing or updating, the notifications to services you set up yourself, and every 6 hours fetching Ubiquiti's public list of security advisories (nothing about your network is sent; you can switch it off on the Security page). During a speed test Sonar also briefly opens connections to `www.cloudflare.com` to measure the delay; no data is sent.
+- **Everything stays on your machine.** Nothing goes to the internet except downloading the software when installing or updating, the notifications to services you set up yourself, and fetching two public lists: Ubiquiti's security advisories every 6 hours and CISA's list of exploited flaws once a day (nothing about your network is sent; you can switch both off on the Security page). Only if you turn it on, your public address is looked up at Shodan InternetDB once a day. During a speed test Sonar also briefly opens connections to `www.cloudflare.com` to measure the delay; no data is sent.
 - **Sonar doesn't change your UniFi settings.** The only actions are *Reconnect* for one Wi-Fi device, starting a speed test on the gateway, and *Pause* and *Fixed pause times*, which block a device in UniFi until the chosen time is up. If you turn it on, Sonar also asks the controller to make a backup. Everything else is read-only.
 - The API key, webhook URLs and MQTT password live only in `/var/lib/unifi-sonar/config.json`, readable only by the service. The browser never gets the key back.
 - With certificate verification off, Sonar pins your controller's certificate on first connection and won't send its key if the certificate changes; confirm a real change under *Settings → Access*. Updates only install published releases, and Python packages are checked against fixed hashes.
@@ -200,6 +201,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | `app/collector.py` | Measuring every minute, deltas (retries, errors, throughput), events |
 | `app/rules.py`, `app/rules_extra.py` | All issues, grouping by cause and scores |
 | `app/advisories.py` | Ubiquiti security advisories and matching them to your firmware |
+| `app/vulnscan.py` | Vulnerability check: exploited flaws, outside view, port check and what was covered |
+| `app/portprobe.py` | The port check itself, a separate process without Sonar's secrets |
 | `app/auth.py`, `app/passkeys.py` | Optional login with a password and passkeys |
 | `app/backups.py`, `app/bufferbloat.py` | Copies of UniFi backups, delay under load |
 | `app/notify.py` | Sending notifications (Home Assistant, ntfy, Discord, Slack, webhook) |

@@ -2,6 +2,17 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.8.0 – 2026-11-09
+
+### Added
+- **Vulnerability check** under Security, in three steps from careful to active:
+  - **Exploited flaws**: Ubiquiti's advisories are compared with your firmware and with CISA's list of flaws that are really being exploited. Those become critical.
+  - **Your public address** (off by default): a daily lookup at Shodan InternetDB. Your address is then sent to Shodan. Each open port Shodan sees is matched against your port forwards, UPnP mappings and VPN servers: ports that match are fine, ports of something switched off are probably outdated (they become a finding after two weeks), and ports your controller knows nothing about are a finding. For a forwarded port you also see what else that device has open inside your network.
+  - **Port check** (you start it): about 30 admin ports, slowly, only on devices from your controller. It only connects and closes, and it runs in its own process without your API key. Smart devices and guests are skipped.
+- The page always shows **what was looked at and what wasn't**, so "nothing found" can't be mistaken for "all clear". UniFi OS Server has no readable version, so it says "check yourself" with the minimum safe version.
+- A notification only gives the number of findings; the details stay in Sonar.
+- **Review** under From own devices on the Security page now filters the blocks table to your own devices.
+
 ## 1.7.0 – 2026-11-09
 
 ### Security
