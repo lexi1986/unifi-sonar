@@ -107,6 +107,9 @@ FLOW_DEST = [
     ("Galaxy S24", "tiktokcdn.com", "SG", 443, "HTTPS", 20_000_000), ("Kantoor-PC", "alicdn.com", "HK", 443, "HTTPS", 900_000), ("Warmtepomp", "daikineurope.com", "BE", 443, "HTTPS", 30_000),
 ]
 NAMELESS = {"Robotstofzuiger", "Shelly Plug Schuur", "Tado Bridge", "Zonnepanelen Omvormer", "ESP Weerstation", "Warmtepomp", "Docker Host"}
+# zonder naam in UniFi (hostnaam, fabrikant): de apparaatherkenning laat zien wat het zijn
+UNNAMED = {"Tado Bridge": (None, "Tado GmbH"), "Bosch Vaatwasser": ("lwip0", "BSH Hausgeräte GmbH"),
+           "Warmtepomp": ("espressif", "Espressif Inc.")}
 FLOW_IN = [  # (apparaat, poort, dienst, land, grootte)
     ("Home Assistant", 8123, "HTTPS", "NL", 900_000), ("Home Assistant", 8123, "HTTPS", "ES", 600_000),
     ("NAS Synology", 22, "SSH", "CN", 4_000), ("NAS Synology", 22, "SSH", "US", 4_000), ("NAS Synology", 22, "SSH", "BR", 3_000),
@@ -167,6 +170,7 @@ class MockNetwork:
         self.flap_state = True
         self.sonos_ap = AP_WK
         self.blocked: set[str] = set()   # gepauzeerde apparaten: verschijnen niet meer als client
+        self.names: dict[str, str] = {}   # namen die je in Sonar gaf (in het echt: in UniFi)
 
     # ----------------------------------------------------------------- helpers
     def _cnt(self, key: str, field: str, inc: float) -> float:
@@ -290,6 +294,13 @@ class MockNetwork:
                 "sw_mac": sw, "sw_port": port,
                 "satisfaction": 100, "uptime": int(self.t + 86400 * (i % 5 + 1)),
             })
+        for c in out:
+            raw = UNNAMED.get(c["name"])
+            if raw:   # UniFi kent geen naam: alleen een nietszeggende hostnaam en de fabrikant
+                c["hostname"], c["oui"] = raw
+                del c["name"]
+            if c["mac"] in self.names:
+                c["name"] = self.names[c["mac"]]
         return [c for c in out if c["mac"] not in self.blocked]
 
     def stat_device(self, dt: float, sta: list[dict]) -> list[dict]:

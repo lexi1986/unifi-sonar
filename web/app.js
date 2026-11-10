@@ -343,8 +343,14 @@
   // ---- internet pauzeren: blokkeert het apparaat in UniFi tot een tijdstip
   const PAUSES = [["30", L("30 minuten", "30 minutes")], ["60", L("1 uur", "1 hour")], ["120", L("2 uur", "2 hours")],
     ["morning", L("Tot morgen 07:00", "Until tomorrow 07:00")], ["", L("Tot ik hervat", "Until I resume")]];
+  // wie het precies is: naam, IP en MAC, zodat je zeker weet welk apparaat je blokkeert
+  const whoLine = (mac, ip) => {
+    const c = (state.snap?.clients || []).find((x) => x.mac === mac);
+    const addr = [c?.ip || ip, mac].filter(Boolean).join(" · ");
+    return `<div class="menu-who">${c?.name ? `<b>${esc(c.name)}</b>` : ""}<span>${esc(addr)}</span></div>`;
+  };
   const pauseMenu = (mac) => `<details class="mute pause"><summary class="btn">${icon("power")}${L("Pauzeren", "Pause")}</summary><div class="mute-menu" role="group" aria-label="${L("Pauzeren voor", "Pause for")}">
-      ${PAUSES.map(([v, l]) => `<button data-pause="${esc(mac)}" data-for="${v}">${l}</button>`).join("")}</div></details>`;
+      ${whoLine(mac)}${PAUSES.map(([v, l]) => `<button data-pause="${esc(mac)}" data-for="${v}">${l}</button>`).join("")}</div></details>`;
   function pauseUntil(v) {
     if (!v) return null;
     if (v === "morning") { const d = new Date(); d.setDate(d.getDate() + (d.getHours() >= 7 ? 1 : 0)); d.setHours(7, 0, 0, 0); return Math.floor(d / 1000); }
@@ -367,6 +373,74 @@
     if (current === "clients") loadPauses();
     return true;
   }
+  // ---- quarantaine: blokkeren tot je het zelf vrijgeeft, met de reden erbij
+  let qSeq = 0;
+  const quarantineMenu = (mac, reason = "", small = false, ip = null) => {
+    const id = `q-${++qSeq}`;
+    return `<details class="mute pause qmenu"><summary class="btn${small ? " small" : ""} danger">${icon("shield")}${L("Quarantaine", "Quarantine")}</summary>
+      <div class="mute-menu q-menu" role="group" aria-label="${L("In quarantaine zetten", "Put in quarantine")}">
+        ${whoLine(mac, ip)}<p>${L("Sonar blokkeert het apparaat in UniFi: geen internet en geen netwerk, tot je het zelf vrijgeeft. Een schema laat het niet los.",
+          "Sonar blocks the device in UniFi: no internet and no network until you release it. A schedule won't let it go.")}</p>
+        <label for="${id}">${L("Reden", "Reason")}</label>
+        <input class="input" id="${id}" maxlength="300" value="${esc(reason)}" placeholder="${L("bijv. malware gevonden", "e.g. malware found")}">
+        <button class="btn small danger" data-quarantine="${esc(mac)}">${icon("shield")}${L("In quarantaine zetten", "Put in quarantine")}</button></div></details>`;
+  };
+  // het menu opent naar de kant waar ruimte is (rechts uitgelijnd tenzij de knop links op het scherm staat)
+  document.addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (!(d instanceof HTMLDetailsElement) || !d.classList.contains("qmenu") || !d.open) return;
+    const m = d.querySelector(".q-menu"), r = d.getBoundingClientRect();
+    const left = r.right < Math.min(340, window.innerWidth - 32) + 16;
+    m.style.left = left ? "0" : "auto"; m.style.right = left ? "auto" : "0";
+    m.querySelector("input")?.focus();
+  }, true);
+  const releaseBtn = (mac) => `<button class="btn small" data-release="${esc(mac)}">${icon("check")}${L("Vrijgeven", "Release")}</button>`;
+  async function quarantineAction(e) {
+    const b = e.target.closest("[data-quarantine]"), r = e.target.closest("[data-release]");
+    if (!b && !r) return false;
+    e.preventDefault();
+    try {
+      if (b) {
+        const inp = b.parentElement.querySelector("input");
+        if (!inp.value.trim()) { inp.focus(); return true; }
+        b.disabled = true;
+        await post(`/api/clients/${encodeURIComponent(b.dataset.quarantine)}/quarantine`, { reason: inp.value.trim() });
+        if (state.drawer) closeDrawer();
+      } else {
+        const p = (await api("/api/pauses").catch(() => ({ pauses: [] }))).pauses.find((x) => x.mac === r.dataset.release);
+        const who = p ? `${p.name}${p.ip ? ` (${p.ip})` : ""}` : r.dataset.release;
+        if (!confirm(L(`${who} vrijgeven? Heb je het apparaat nagekeken? Het krijgt weer internet en netwerk.`, `Release ${who}? Have you checked the device? It gets internet and network back.`))) return true;
+        r.disabled = true;
+        await post(`/api/clients/${encodeURIComponent(r.dataset.release)}/resume`, {});
+      }
+    } catch (err) { alert(err.message); b && (b.disabled = false); }
+    await refresh();
+    if (current === "clients") loadPauses();
+    if (current === "security") loadAdGuard();
+    return true;
+  }
+  // ---- een naam geven (in UniFi)
+  const nameForm = (mac, value) => `<form class="name-form" data-name-form="${esc(mac)}" novalidate>
+      <label class="sr-only" for="nm-${esc(mac)}">${L("Naam", "Name")}</label>
+      <input class="input" id="nm-${esc(mac)}" maxlength="60" value="${esc(value)}" placeholder="${L("Naam", "Name")}">
+      <button class="btn small" type="submit">${L("Naam geven", "Set name")}</button></form>`;
+  const CONF = { high: ["ok", () => L("Zeker", "Certain")], medium: ["info", () => L("Waarschijnlijk", "Likely")], low: ["", () => L("Gok", "Guess")] };
+  const confBadge = (g) => g ? badge(CONF[g.confidence][0], CONF[g.confidence][1]()) : "";
+  document.addEventListener("submit", async (e) => {
+    const f = e.target.closest("[data-name-form]");
+    if (!f) return;
+    e.preventDefault();
+    const inp = f.querySelector("input"), btn = f.querySelector("button");
+    if (!inp.value.trim()) { inp.focus(); return; }
+    btn.disabled = true;
+    try {
+      const r = await post(`/api/clients/${encodeURIComponent(f.dataset.nameForm)}/name`, { name: inp.value.trim() });
+      btn.textContent = L("Opgeslagen", "Saved");
+      if (state.drawer?.id === f.dataset.nameForm) $("#drawer-title").textContent = r.name;
+      await refresh();
+      if (current === "clients") loadIdentify();
+    } catch (err) { alert(err.message); btn.disabled = false; }
+  });
   async function reconnectAction(e) {
     const b = e.target.closest("[data-reconnect]");
     if (!b) return false;
@@ -384,6 +458,7 @@
     return true;
   }
   function entityAction(i) {
+    if (i.client_mac && i.key.startsWith("quarantine:")) return "";   // geblokkeerd: UniFi toont hem niet meer als client
     if (i.client_mac) return `<button class="linkbtn" data-open="client" data-id="${esc(i.client_mac)}">${L("Bekijk client", "View client")}</button>`;
     if (i.device_mac) return `<button class="linkbtn" data-open="device" data-id="${esc(i.device_mac)}">${L("Bekijk", "View")} ${esc(devName(i.device_mac))}</button>`;
     return "";
@@ -407,6 +482,12 @@
       : `<details class="mute"><summary class="mutebtn">${L("Negeren", "Ignore")}</summary><div class="mute-menu" role="group" aria-label="${L("Negeren voor", "Ignore for")}">
            ${[[1, L("1 dag", "1 day")], [7, L("1 week", "1 week")], [30, L("30 dagen", "30 days")], ["", L("Altijd", "Always")]].map(([d, l]) => `<button data-mute="${k}" data-days="${d}">${l}</button>`).join("")}</div></details>`;
   }
+  function issueQuarantine(i) {
+    if (i.resolved_at || !i.client_mac) return "";
+    if (i.key.startsWith("quarantine:")) return releaseBtn(i.client_mac);
+    if (i.key.startsWith("dns_threat:")) return quarantineMenu(i.client_mac, i.title, true);
+    return "";
+  }
   function issueHTML(i, all, flat) {
     const members = all.filter((m) => m.group === i.key);
     const open = state.expanded.has(i.key);
@@ -428,7 +509,7 @@
         ${flat ? "" : `<div class="advice">${icon("bulb")}<span>${esc(i.advice)}</span></div>`}
         ${memberHTML}
       </div>
-      <div class="meta">${i.resolved_at ? badge("ok", L("Opgelost", "Resolved"), "check") : sevBadge(i.severity)}${mutedBadge}${when}${approveBtn}${entityAction(i)}${muteCtl}</div>
+      <div class="meta">${i.resolved_at ? badge("ok", L("Opgelost", "Resolved"), "check") : sevBadge(i.severity)}${mutedBadge}${when}${approveBtn}${issueQuarantine(i)}${entityAction(i)}${muteCtl}</div>
     </article>`;
   }
   async function muteAction(e) {
@@ -800,6 +881,7 @@
       <div class="page-head"><div><h1>Clients</h1><p class="subtitle" id="cl-sub"></p></div></div>
       <section class="card paused-card" id="cl-paused" hidden></section>
       <section class="card" id="cl-sched" style="margin-bottom:16px"></section>
+      <section class="card" id="cl-identify" style="margin-bottom:16px" hidden></section>
       <div class="toolbar">
         <label class="search"><span class="sr-only">${L("Zoeken", "Search")}</span>${icon("search")}<input class="input" id="cl-q" placeholder="${L("Zoek op naam, IP, MAC of fabrikant", "Search by name, IP, MAC or vendor")}" value="${esc(state.cq)}"></label>
         <div class="chips" role="group" aria-label="Type" id="cl-kind">${[["all", L("Alle", "All")], ["wifi", "Wifi"], ["wired", L("Bedraad", "Wired")], ["issues", L("Met problemen", "With problems")]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ckind === v}">${l}</button>`).join("")}</div>
@@ -814,12 +896,46 @@
       UPDATERS.clients();
     });
     $("#cl-up").addEventListener("change", (e) => { state.cuplink = e.target.value; UPDATERS.clients(); });
+    $("#cl-identify").addEventListener("click", (e) => {
+      if (e.target.closest("[data-id-all]")) { idState.all = !idState.all; renderIdentify(); return; }
+      const o = e.target.closest("[data-open]"); if (o) openDrawer("client", o.dataset.id, o);
+    });
+    loadIdentify();
     $("#cl-table").addEventListener("click", (e) => {
       const s = e.target.closest("th button");
       if (s) { const k = s.dataset.sort; state.csort = { key: k, dir: state.csort.key === k ? -state.csort.dir : (k === "name" || k === "uplink" ? 1 : -1) }; store.set("csort", state.csort); UPDATERS.clients(); return; }
       const r = e.target.closest("tr[data-id]"); if (r) openDrawer("client", r.dataset.id, r);
     });
     $("#cl-table").addEventListener("keydown", (e) => { const r = e.target.closest("tr[data-id]"); if (r && e.key === "Enter") openDrawer("client", r.dataset.id, r); });
+  }
+  const idState = { data: null, all: false };
+  async function loadIdentify() {
+    try { idState.data = (await api("/api/identify")).devices; } catch (e) { return; }
+    renderIdentify();
+  }
+  function renderIdentify() {
+    const el = $("#cl-identify");
+    if (!el || !idState.data) return;
+    const all = idState.data, shown = idState.all ? all : all.slice(0, 6);
+    el.hidden = !all.length;
+    const row = (d) => {
+      const g = d.guess;
+      const what = g ? `<b>${esc(g.label)}</b> · ${esc(g.kind_label)}` : L("Sonar weet het niet", "Sonar doesn't know");
+      const sub = [d.ip, d.hostname && d.hostname !== d.name ? d.hostname : ""].filter(Boolean).join(" · ");
+      return `<div class="id-row"><div class="id-main">
+          <div class="id-title">${`<button class="linkbtn plain rank-name" data-open="client" data-id="${esc(d.mac)}">${esc(d.name)}</button>`}${confBadge(g)}</div>
+          <div class="cell-sub">${what}${sub ? ` · ${esc(sub)}` : ""}</div>
+          ${g ? `<div class="cell-sub">${esc(g.evidence.join(" · "))}</div>` : ""}
+          ${g?.hint ? `<div class="cell-sub id-hint">${icon("bulb")}${esc(g.hint)}</div>` : ""}</div>
+        ${nameForm(d.mac, g?.name || "")}</div>`;
+    };
+    el.innerHTML = `<div class="card-head"><h2 style="margin:0">${icon("search")}${L("Apparaten zonder naam", "Devices without a name")} <span class="muted">(${all.length})</span></h2>
+        <span class="muted">${L("herkend aan wat ze opzoeken, hun fabrikant en hostnaam", "recognised by what they look up, their vendor and hostname")}</span></div>
+      ${shown.map(row).join("")}
+      ${all.length > 6 ? `<button class="linkbtn" data-id-all style="margin-top:10px">${idState.all ? L("Minder tonen", "Show fewer") : L(`Alle ${all.length} tonen`, `Show all ${all.length}`)}</button>` : ""}
+      <p class="help" style="margin:12px 0 0">${L("De naam komt in UniFi zelf, dus ook de UniFi-app ziet hem. Controleer het voorstel even: het is een gok op basis van het verkeer van de afgelopen week.",
+        "The name goes into UniFi itself, so the UniFi app sees it too. Check the suggestion first: it's a guess based on the past week's traffic.")}</p>`;
+    hydrateIcons(el);
   }
   async function loadPauses() {
     let d, s;
@@ -830,9 +946,12 @@
     if (!sched.edit) renderSchedules();
     const bySched = Object.entries(s.paused || {}).filter(([m]) => !d.pauses.some((p) => p.mac === m));
     el.hidden = !d.pauses.length && !bySched.length;
-    el.innerHTML = `<div class="card-head"><h2 style="margin:0">${icon("power")}${L("Gepauzeerd", "Paused")}</h2><span class="muted">${L("geen internet of netwerk tot de tijd om is", "no internet or network until the time is up")}</span></div>
-      ${d.pauses.map((p) => `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(p.name)}</div>
-        <div class="cell-sub">${p.until ? L(`tot ${stamp(p.until)} · nog ${dur(p.until - d.now)}`, `until ${stamp(p.until)} · ${dur(p.until - d.now)} left`) : L("tot je hervat", "until you resume")} · ${L("sinds", "since")} ${stamp(p.created)}</div></div>
+    const q = d.pauses.some((p) => p.reason);
+    el.innerHTML = `<div class="card-head"><h2 style="margin:0">${icon(q ? "shield" : "power")}${q ? L("Gepauzeerd en in quarantaine", "Paused and in quarantine") : L("Gepauzeerd", "Paused")}</h2><span class="muted">${q ? L("geen internet of netwerk tot de tijd om is of je het vrijgeeft", "no internet or network until the time is up or you release it") : L("geen internet of netwerk tot de tijd om is", "no internet or network until the time is up")}</span></div>
+      ${d.pauses.map((p) => p.reason ? `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(p.name)} ${badge("critical", L("Quarantaine", "Quarantine"), "shield")}</div>
+        <div class="cell-sub">${p.ip ? `${esc(p.ip)} · ` : ""}${esc(p.reason)} · ${L("sinds", "since")} ${stamp(p.created)}</div></div>${releaseBtn(p.mac)}</div>`
+        : `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(p.name)}</div>
+        <div class="cell-sub">${p.ip ? `${esc(p.ip)} · ` : ""}${p.until ? L(`tot ${stamp(p.until)} · nog ${dur(p.until - d.now)}`, `until ${stamp(p.until)} · ${dur(p.until - d.now)} left`) : L("tot je hervat", "until you resume")} · ${L("sinds", "since")} ${stamp(p.created)}</div></div>
         <button class="btn small" data-resume="${esc(p.mac)}">${icon("check")}${L("Hervatten", "Resume")}</button></div>`).join("")}
       ${bySched.map(([m, a]) => `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(a.name)}</div>
         <div class="cell-sub">${((sn) => L(`volgens '${sn}' tot ${stamp(a.until)}`, `by '${sn}' until ${stamp(a.until)}`))(esc(s.schedules.find((x) => x.id === a.id)?.name || ""))}</div></div>
@@ -1396,7 +1515,7 @@
     bindFlow($("#sec-seg-matrix"));
   }
   // ---- firewall-audit, DNS om je DNS-server heen en beveiligingsadviezen
-  const CHECK_KEYS = ["fw_", "dns_", "adguard:", "advisory:", "vuln:"];
+  const CHECK_KEYS = ["fw_", "dns_", "adguard:", "advisory:", "vuln:", "quarantine:"];
   function renderSecChecks() {
     const el = $("#sec-checks"); if (!el) return;
     const list = (state.issues || []).filter((i) => !i.resolved_at && CHECK_KEYS.some((k) => i.key.startsWith(k)))
@@ -1570,8 +1689,8 @@
       </div>
       <h3>${L("DNS-servers", "DNS servers")}</h3><div class="adv-list">${rows.map(srvRow).join("")}</div>
       ${drift.length ? `<h3>${L("Verschillen tussen je AdGuard-servers", "Differences between your AdGuard servers")}</h3><div class="adv-list">${drift.map((x) => `<div class="adv-row"><div style="min-width:0"><div class="rank-name">${esc(missing(x))}</div><div class="cell-sub">${esc(x.items.join(", "))}</div></div><div class="adv-badges">${badge("info", L("Uiteen", "Drifted"), "info")}</div></div>`).join("")}</div>` : ""}
-      ${d.threats.length ? `<h3>${L("Malware en phishing tegengehouden", "Malware and phishing blocked")}</h3><div class="adv-list">${d.threats.map((x) => `<div class="adv-row hit"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${esc(x.domains.slice(0, 4).join(", "))} · ${esc(x.lists.join(", "))} · ${L("laatst", "last")} ${ago2(x.last)}</div></div>
-        <div class="adv-badges"><span class="num muted">${nf(x.n)}×</span>${x.ips ? badge("critical", L("Ook IPS", "IPS too"), "alert") : badge("warning", L("Tegengehouden", "Blocked"), "shield")}</div></div>`).join("")}</div>` : ""}
+      ${d.threats.length ? `<h3>${L("Malware en phishing tegengehouden", "Malware and phishing blocked")}</h3><div class="adv-list">${d.threats.map((x) => `<div class="adv-row hit"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${x.mac && x.ip ? `${esc(x.ip)} · ` : ""}${esc(x.domains.slice(0, 4).join(", "))} · ${esc(x.lists.join(", "))} · ${L("laatst", "last")} ${ago2(x.last)}</div></div>
+        <div class="adv-badges"><span class="num muted">${nf(x.n)}×</span>${x.ips ? badge("critical", L("Ook IPS", "IPS too"), "alert") : badge("warning", L("Tegengehouden", "Blocked"), "shield")}${x.mac ? quarantineMenu(x.mac, L(`Malware/phishing: ${x.domains.slice(0, 2).join(", ")}`, `Malware/phishing: ${x.domains.slice(0, 2).join(", ")}`), true, x.ip) : ""}</div></div>`).join("")}</div>` : ""}
       ${d.new_domains.length ? `<h3>${L("Nieuwe domeinen bij gevolgde apparaten", "New domains on followed devices")}</h3><div class="adv-list">${d.new_domains.map((x) => `<div class="adv-row"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${x.domains.slice(0, 5).map((v) => `${esc(v.domain)}${v.blocked ? ` (${L("geblokkeerd", "blocked")})` : ""}`).join(", ")}${x.domains.length > 5 ? "…" : ""} · ${L("sinds", "since")} ${ago2(x.domains[x.domains.length - 1].first)}</div></div><div class="adv-badges">${badge("info", L("Nieuw", "New"), "info")}</div></div>`).join("")}</div>` : ""}
       <h3>${L("Apparaten die AdGuard overslaan", "Devices that skip AdGuard")}</h3>
       ${d.bypass.length ? `<div class="adv-list">${d.bypass.map((x) => `<div class="adv-row"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${L(`${nf(x.flows)} verbindingen met internet in 24 uur, geen enkele vraag aan AdGuard`, `${nf(x.flows)} internet connections in 24 hours, not a single query to AdGuard`)}</div></div><div class="adv-badges">${badge("warning", L("Nakijken", "Review"), "alert")}</div></div>`).join("")}</div>`
@@ -1877,7 +1996,7 @@
       if (ev.key === "Escape" && FL.edge != null) { FL.edge = null; drawFlow(); }
     });
   }
-  $("#view").addEventListener("click", async (e) => { if (current === "clients") await pauseAction(e); });
+  $("#view").addEventListener("click", async (e) => { if (await quarantineAction(e)) return; if (current === "clients") await pauseAction(e); });
   $("#view").addEventListener("click", async (e) => {   // één keer gebonden; #view blijft bestaan
     const g = e.target.closest("[data-ign]"), u = e.target.closest("[data-unign]");
     if ((!g && !u) || current !== "beveiliging") return;
@@ -2746,6 +2865,21 @@
     $("#dr-events").innerHTML = eventsHTML(h.events.slice(0, 60));
   }
 
+  async function loadClientIdentity(c) {
+    let r;
+    try { r = await api(`/api/identify/${encodeURIComponent(c.mac)}`); } catch (e) { $("#dr-id-card")?.remove(); return; }
+    const el = $("#dr-id");
+    if (!el || state.drawer?.id !== c.mac) return;
+    const g = r.guess;
+    $("#dr-id-badge").innerHTML = confBadge(g);
+    el.innerHTML = `${g ? `<div class="id-label">${esc(g.label)} <span class="muted">· ${esc(g.kind_label)}</span></div>
+        <div class="cell-sub" style="margin-top:4px">${esc(g.evidence.join(" · "))}</div>
+        ${g.hint ? `<div class="cell-sub id-hint">${icon("bulb")}${esc(g.hint)}</div>` : ""}`
+      : `<p class="muted" style="margin:0">${L("Sonar herkent dit apparaat niet aan zijn verkeer, fabrikant of hostnaam.", "Sonar doesn't recognise this device from its traffic, vendor or hostname.")}</p>`}
+      <div style="margin-top:12px">${nameForm(c.mac, r.unnamed ? g?.name || "" : c.name)}</div>
+      <p class="help" style="margin:8px 0 0">${L("De naam komt in UniFi zelf, dus ook de UniFi-app ziet hem.", "The name goes into UniFi itself, so the UniFi app sees it too.")}</p>`;
+    hydrateIcons(el);
+  }
   async function renderClientDrawer(c) {
     if (!c) return closeDrawer();
     const dm = devByMac();
@@ -2759,8 +2893,9 @@
         ["Retries", `${nf(c.retry_pct, 1)}%`], [L("Ervaring", "Experience"), nf(c.satisfaction)], [L("Snelheid", "Speed"), `${nf(c.tx_rate_mbps)} / ${nf(c.rx_rate_mbps)} Mbit/s`],
         [L("Met deze AP sinds", "On this AP since"), c.assoc_ts ? new Date(c.assoc_ts * 1000).toLocaleString(LOC, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : dur(c.uptime)]])}
       <div style="margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        ${c.wired ? "" : reconnectBtn(c.mac).replace('class="linkbtn"', 'class="btn"')}${pauseMenu(c.mac)}
+        ${c.wired ? "" : reconnectBtn(c.mac).replace('class="linkbtn"', 'class="btn"')}${pauseMenu(c.mac)}${quarantineMenu(c.mac)}
         <span class="muted" style="font-size:12px">${c.wired ? "" : L("Opnieuw verbinden: kort los, daarna kiest het zelf de beste AP. ", "Reconnect: briefly disconnects, then it picks the best AP itself. ")}${L("Pauzeren: geen internet of netwerk tot de tijd om is.", "Pause: no internet or network until the time is up.")}</span></div></div>`;
+    body += `<div class="card" id="dr-id-card"><div class="card-head"><h3>${L("Wat is dit?", "What is this?")}</h3><span id="dr-id-badge"></span></div><div id="dr-id"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
     body += relatedIssues((i) => i.client_mac === c.mac);
     if (!c.wired) {
       body += `<div class="card"><div class="card-head"><h3>${L("Signaalsterkte", "Signal strength")}</h3>${rangeSeg("dr-range")}</div><div id="dr-ch-sig"></div></div>
@@ -2772,7 +2907,7 @@
     if (!c.wired) body += `<div class="card"><h3 style="margin-bottom:8px">${L("Roaming en verbindingen", "Roaming and connections")}</h3><div class="events" id="dr-events"></div></div>`;
     body += `<div class="card" id="dr-dns-card" hidden><div class="card-head"><h3>DNS (AdGuard)</h3><span class="muted">${L("afgelopen 24 uur", "past 24 hours")}</span></div><div id="dr-dns"></div></div>`;
     $("#drawer-body").innerHTML = body;
-    loadClientPattern(c); loadClientUsageChart(c); loadClientDns(c);
+    loadClientPattern(c); loadClientUsageChart(c); loadClientDns(c); loadClientIdentity(c);
     if (!c.wired) { bindRange("dr-range", () => loadClientHistory(c)); await loadClientHistory(c); }
   }
   async function loadClientDns(c) {
@@ -3407,6 +3542,7 @@
   $("#drawer-close").onclick = closeDrawer;
   $("#scrim").onclick = closeDrawer;
   $("#drawer-body").addEventListener("click", async (e) => {
+    if (await quarantineAction(e)) return;
     if (await pauseAction(e)) return;
     if (await approveAction(e)) return;
     if (await reconnectAction(e)) return;

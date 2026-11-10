@@ -39,7 +39,7 @@ from . import auth as auth_mod  # noqa: E402
 from . import backups as backups_mod  # noqa: E402
 from . import i18n  # noqa: E402
 from . import notify as notify_mod  # noqa: E402
-from . import adguard, ha_mqtt  # noqa: E402
+from . import adguard, ha_mqtt, identify  # noqa: E402
 from . import passkeys as passkey_mod  # noqa: E402
 from . import setup as setup_mod  # noqa: E402
 from .collector import Collector  # noqa: E402
@@ -1528,13 +1528,16 @@ async def pause(mac: str, req: PauseRequest):
     now = int(time.time())
     if req.until is not None and req.until <= now:
         raise HTTPException(400, L("Het eindtijdstip ligt in het verleden", "The end time is in the past"))
+    if any(p["mac"] == mac and p.get("reason") for p in db.pauses()):
+        raise HTTPException(409, L("Dit apparaat staat in quarantaine; geef het eerst vrij", "This device is in quarantine; release it first"))
     c = next((x for x in (collector.latest or {}).get("clients", []) if x["mac"] == mac), None)
     name = c["name"] if c else next((p["name"] for p in db.pauses() if p["mac"] == mac), mac)
     try:
         await collector.set_blocked(mac, True)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, L(f"UniFi weigerde: {e}", f"UniFi refused: {e}")) from e
-    db.set_pause(mac, req.until, now, name)
+    ip = (c or {}).get("ip") or None
+    db.set_pause(mac, req.until, now, name, ip=ip)
     until = time.strftime("%d-%m %H:%M", time.localtime(req.until)) if req.until else None
     db.add_events([{"ts": now, "kind": "client_leave", "entity_type": "client", "entity_id": mac,
                     "message": i18n.bi(f"{name}: internet gepauzeerd tot {until or 'je hervat'}",
@@ -1553,9 +1556,79 @@ async def resume(mac: str):
         raise HTTPException(502, L(f"UniFi weigerde: {e}", f"UniFi refused: {e}")) from e
     db.clear_pause(mac)
     if p:
-        db.add_events([{"ts": int(time.time()), "kind": "client_join", "entity_type": "client", "entity_id": mac,
-                        "message": i18n.bi(f"{p['name']}: pauze opgeheven", f"{p['name']}: pause lifted")}])
+        msg = (i18n.bi(f"{p['name']}: uit quarantaine vrijgegeven", f"{p['name']}: released from quarantine") if p.get("reason")
+               else i18n.bi(f"{p['name']}: pauze opgeheven", f"{p['name']}: pause lifted"))
+        db.add_events([{"ts": int(time.time()), "kind": "client_join", "entity_type": "client", "entity_id": mac, "message": msg}])
+    if collector.latest and p and p.get("reason"):
+        collector.latest["issues"] = [i for i in collector.latest["issues"] if i["key"] != f"quarantine:{mac}"]
+        db.sync_issues(collector.latest["issues"], int(time.time()))
     return {"ok": True}
+
+
+class QuarantineRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=300)
+
+
+@app.post("/api/clients/{mac}/quarantine")
+async def quarantine(mac: str, req: QuarantineRequest):
+    """Quarantaine: het apparaat wordt in UniFi geblokkeerd tot je het zelf vrijgeeft, met de reden erbij.
+    Het staat tussen de pauzes, zodat schema's het niet per ongeluk weer toelaten."""
+    collector, db = _need()
+    mac = mac.lower()
+    now = int(time.time())
+    c = next((x for x in (collector.latest or {}).get("clients", []) if x["mac"] == mac), None)
+    if not c and not any(p["mac"] == mac for p in db.pauses()):
+        raise HTTPException(404, L("Onbekend apparaat", "Unknown device"))
+    name = c["name"] if c else next(p["name"] for p in db.pauses() if p["mac"] == mac)
+    try:
+        await collector.set_blocked(mac, True)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, L(f"UniFi weigerde: {e}", f"UniFi refused: {e}")) from e
+    reason = req.reason.strip()
+    ip = (c or {}).get("ip") or None
+    db.set_pause(mac, None, now, name, reason, ip)
+    who = f"{name} ({ip})" if ip else name
+    db.add_events([{"ts": now, "kind": "client_leave", "entity_type": "client", "entity_id": mac,
+                    "message": i18n.bi(f"{who}: in quarantaine gezet ({reason})", f"{who}: put in quarantine ({reason})")}])
+    return {"ok": True, "demo": bool(collector.mock)}
+
+
+class RenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+@app.post("/api/clients/{mac}/name")
+async def rename_client(mac: str, req: RenameRequest):
+    """Een naam geven, in UniFi zelf: dan ziet de UniFi-app hem ook."""
+    collector, _db = _need()
+    mac = mac.lower()
+    if not any(x["mac"] == mac for x in (collector.latest or {}).get("clients", [])):
+        raise HTTPException(404, L("Geen verbonden apparaat met dit MAC-adres", "No connected device with this MAC address"))
+    name = re.sub(r"\s+", " ", req.name).strip()
+    if not name:
+        raise HTTPException(400, L("Geef een naam op", "Enter a name"))
+    try:
+        await collector.rename(mac, name)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, L(f"UniFi weigerde: {e}", f"UniFi refused: {e}")) from e
+    return {"ok": True, "name": name, "demo": bool(collector.mock)}
+
+
+@app.get("/api/identify")
+def identify_list():
+    """Apparaten zonder eigen naam, met wat Sonar denkt dat het zijn."""
+    collector, db = _need()
+    snap = collector.latest or {}
+    return {"devices": identify.identify_all(snap, db, int(time.time()))}
+
+
+@app.get("/api/identify/{mac}")
+def identify_client(mac: str):
+    collector, db = _need()
+    r = identify.identify_one(collector.latest or {}, db, mac.lower(), int(time.time()))
+    if r is None:
+        raise HTTPException(404, L("Onbekend apparaat", "Unknown device"))
+    return r
 
 
 class UnmuteRequest(BaseModel):

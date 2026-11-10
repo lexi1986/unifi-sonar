@@ -72,6 +72,10 @@ class DB:
         for col, kind in (("reason", "TEXT"), ("rule", "TEXT"), ("inbound", "INT")):
             if col not in fcols:
                 self.conn.execute(f"ALTER TABLE flows ADD COLUMN {col} {kind}")
+        if "reason" not in {r[1] for r in self.conn.execute("PRAGMA table_info(pauses)")}:
+            self.conn.execute("ALTER TABLE pauses ADD COLUMN reason TEXT")   # gevuld = quarantaine
+        if "ip" not in {r[1] for r in self.conn.execute("PRAGMA table_info(pauses)")}:
+            self.conn.execute("ALTER TABLE pauses ADD COLUMN ip TEXT")       # geblokkeerd staat hij niet meer in UniFi's lijst
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(wan_samples)")}
         for col in ("rx_bps", "tx_bps"):
             if col not in cols:
@@ -264,9 +268,14 @@ class DB:
             return new
 
     # ------------------------------------------------------------- internet pauzeren
-    def set_pause(self, mac: str, until: int | None, created: int, name: str) -> None:
+    def set_pause(self, mac: str, until: int | None, created: int, name: str, reason: str | None = None,
+                  ip: str | None = None) -> None:
         with self.lock, self.conn:
-            self.conn.execute("INSERT OR REPLACE INTO pauses VALUES (?,?,?,?)", (mac, until, created, name))
+            if not ip:   # een pauze die een pauze vervangt: het bekende adres houden
+                old = self.conn.execute("SELECT ip FROM pauses WHERE mac=?", (mac,)).fetchone()
+                ip = old[0] if old else None
+            self.conn.execute("INSERT OR REPLACE INTO pauses (mac, until, created, name, reason, ip) VALUES (?,?,?,?,?,?)",
+                              (mac, until, created, name, reason, ip))
 
     def clear_pause(self, mac: str) -> None:
         with self.lock, self.conn:

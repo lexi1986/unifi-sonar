@@ -114,8 +114,9 @@ class MockAPI:
     def _log(self) -> list[dict]:
         now = time.time()
         out = []
+        by_mac = {mac: n for n, (mac, _ip) in _clients().items()}   # op MAC: ook apparaten zonder naam in UniFi
         for c in self.snap.get("clients") or []:
-            who = c.get("name")
+            who = by_mac.get(c.get("mac"), c.get("name"))
             if who == BYPASS or not c.get("ip"):
                 continue
             for d in _domains(who)[:3] or ["connectivitycheck.gstatic.com"]:

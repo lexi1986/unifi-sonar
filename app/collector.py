@@ -366,6 +366,15 @@ class Collector:
             return
         await self.client.block(mac, blocked)
 
+    async def rename(self, mac: str, name: str) -> None:
+        if self.mock:
+            self.mock.names[mac] = name
+        else:
+            await self.client.rename(mac, name)
+        for c in (self.latest or {}).get("clients", []):   # meteen zichtbaar, niet pas na de volgende ronde
+            if c["mac"] == mac:
+                c["name"] = name
+
     async def _expire_pauses(self, ts: int) -> None:
         """Pauzes waarvan de tijd om is: apparaat weer toelaten."""
         for p in self.db.pauses():

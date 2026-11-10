@@ -478,5 +478,25 @@ def run_all(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     public_ip(out, snap, issue, gw)
     bufferbloat(out, snap, issue, gw)
     backup_stale(out, snap, issue, gw)
+    quarantined(out, db, issue)
     from . import adguard
     adguard.issues(out, snap, db, ts, issue)
+
+
+def quarantined(out: list[dict], db, issue) -> None:
+    """Zolang een apparaat in quarantaine staat een herinnering, zodat het niet vergeten wordt."""
+    for p in (db.pauses() if hasattr(db, "pauses") else []):
+        if not p.get("reason"):
+            continue
+        when = time.strftime("%d-%m %H:%M", time.localtime(p["created"]))
+        addr = f"{p['ip']}, {p['mac']}" if p.get("ip") else p["mac"]
+        out.append(issue(f"quarantine:{p['mac']}", "warning", "security", "client", p["mac"],
+                         L(f"{p['name']} staat in quarantaine", f"{p['name']} is in quarantine"),
+                         L(f"{p['name']} ({addr}) is sinds {when} geblokkeerd in UniFi: geen internet en geen netwerk. Reden: {p['reason']}",
+                           f"{p['name']} ({addr}) has been blocked in UniFi since {when}: no internet and no network. Reason: {p['reason']}"),
+                         L("Controleer het apparaat: een virusscan, onbekende apps of extensies weg, wachtwoorden wijzigen, "
+                           "eventueel terugzetten naar fabrieksinstellingen. Geef het daarna vrij in de details van het apparaat "
+                           "of op de pagina Clients.",
+                           "Check the device: a virus scan, remove unknown apps or extensions, change passwords, reset it to "
+                           "factory settings if needed. Then release it in the device details or on the Clients page."),
+                         client_mac=p["mac"], last_ts=p["created"]))

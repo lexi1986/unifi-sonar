@@ -702,9 +702,9 @@ def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
         out.append(issue(f"dns_threat:{mac or t['ip']}", "critical" if both else "warning", "security", "client" if mac else "site",
                          mac or t["ip"],
                          L(f"AdGuard hield malware of phishing tegen voor {who}", f"AdGuard blocked malware or phishing for {who}"),
-                         L(f"{t['n']} keer in het afgelopen etmaal, via {', '.join(t['lists'])}: {', '.join(t['domains'][:3])}"
+                         L(f"{who}{' (' + t['ip'] + ')' if mac and t.get('ip') else ''}: {t['n']} keer in het afgelopen etmaal, via {', '.join(t['lists'])}: {', '.join(t['domains'][:3])}"
                            f"{'…' if len(t['domains']) > 3 else ''}." + (f" Ook de IPS greep {t['ips']} keer in bij dit apparaat." if both else ""),
-                           f"{t['n']} times in the past day, via {', '.join(t['lists'])}: {', '.join(t['domains'][:3])}"
+                           f"{who}{' (' + t['ip'] + ')' if mac and t.get('ip') else ''}: {t['n']} times in the past day, via {', '.join(t['lists'])}: {', '.join(t['domains'][:3])}"
                            f"{'…' if len(t['domains']) > 3 else ''}." + (f" The IPS also stepped in {t['ips']} times for this device." if both else "")),
                          L("Eén keer is meestal een foute link of advertentie. Komt het vaker terug, of grijpt ook de IPS in, controleer het apparaat "
                            "dan op malware en kijk welke app of extensie dit opvraagt.",

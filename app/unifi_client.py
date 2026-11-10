@@ -914,6 +914,21 @@ class UnifiClient:
         if r.status_code != 200 or (body.get("meta") or {}).get("rc") not in (None, "ok"):
             raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")
 
+    async def rename(self, mac: str, name: str) -> None:
+        """De naam (alias) van een apparaat in UniFi zetten: eerst het id van de bekende client opzoeken."""
+        if self.source not in ("legacy-key", "legacy-login"):
+            raise RuntimeError(L("Een naam geven kan alleen via de uitgebreide API", "Naming only works via the extended API"))
+        headers = self._write_headers()
+        base = f"/proxy/network/api/s/{self.s.site}"
+        r = await self.http.get(f"{base}/stat/user/{mac.lower()}", headers=headers)
+        rows = r.json().get("data", []) if r.status_code == 200 else []
+        if not rows or not rows[0].get("_id"):
+            raise RuntimeError(L("UniFi kent dit apparaat niet", "UniFi doesn't know this device"))
+        r = await self.http.put(f"{base}/rest/user/{rows[0]['_id']}", headers=headers, json={"name": name})
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code != 200 or (body.get("meta") or {}).get("rc") not in (None, "ok"):
+            raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")
+
     async def block(self, mac: str, blocked: bool) -> None:
         """Apparaat blokkeren of weer toelaten (UniFi 'block-sta'/'unblock-sta'): geblokkeerd kan het niet
         verbinden met wifi of het netwerk. Sonar gebruikt dit voor 'internet pauzeren'."""

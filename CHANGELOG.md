@@ -2,6 +2,13 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.10.0 – 2026-11-10
+
+### Added
+- **Devices without a name** on the Clients page: Sonar guesses what each one is from what it looked up in the past week (connections and AdGuard), its vendor and its hostname, and shows the evidence and how sure it is. A generic domain (Google Play, iCloud) never outweighs a known vendor with a fixed MAC address, so a Nest Hub isn't called a phone. A smart device on your main network gets a hint to move it to your IoT network.
+- **Set name**: give a device a name in UniFi itself, from that list or from the new *What is this?* card in the device details. The UniFi app sees the name too.
+- **Quarantine**: block a device until you release it, with the reason next to it. Offered next to malware and phishing that AdGuard blocked, on those issues and in the device details. A schedule never lets a quarantined device go, a pause can't replace it, and an issue reminds you while it lasts.
+
 ## 1.9.0 – 2026-11-10
 
 ### Added

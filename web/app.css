@@ -821,3 +821,31 @@ body.logged-out .topbar .lang-seg { display: none; }
 .recovery code { display: block; font-size: 17px; letter-spacing: 0.04em; overflow-wrap: anywhere; user-select: all; }
 .tls-fp { margin-top: 10px; }
 .tls-fp code { font-size: 12px; overflow-wrap: anywhere; }
+
+/* quarantaine en apparaatherkenning */
+.btn.danger { color: var(--me-danger); border-color: color-mix(in srgb, var(--me-danger) 45%, var(--me-border)); }
+.btn.danger:hover { background: var(--me-danger-tint); }
+.qmenu > summary { list-style: none; }
+.qmenu > summary::-webkit-details-marker { display: none; }
+.q-menu { min-width: 280px; max-width: min(340px, calc(100vw - 32px)); padding: 12px; gap: 8px; }
+.q-menu p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--me-text-secondary); }
+.q-menu label { font-size: 12px; font-weight: 500; color: var(--me-text-secondary); }
+.q-menu .btn.small { align-self: flex-start; padding: 4px 10px; }
+.q-menu .btn.small:hover { background: var(--me-danger-tint); }
+.id-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 0; border-top: 1px solid var(--me-border); }
+.id-row:first-of-type { border-top: 0; }
+.id-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.id-main .cell-sub { margin-top: 3px; }
+.id-hint { display: flex; align-items: flex-start; gap: 6px; color: var(--me-warning); }
+.id-hint .icon { width: 14px; height: 14px; flex: none; margin-top: 1px; }
+.name-form { display: flex; gap: 8px; align-items: center; }
+.name-form .input { width: 220px; min-height: 30px; padding: 4px 10px; }
+@media (max-width: 720px) {
+  .id-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .name-form .input { flex: 1; width: auto; min-width: 0; }
+}
+.id-label { font-weight: 600; color: var(--me-text); }
+.menu-who { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--me-border); font-size: 12px; }
+.menu-who b { color: var(--me-text); font-weight: 600; }
+.menu-who span { color: var(--me-text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.q-menu .menu-who { padding: 0 0 8px; }
