@@ -2,6 +2,12 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.10.1 – 2026-11-11
+
+### Fixed
+- **Every issue now has a way through to its details.** Issues about your whole network (vulnerability check, Ubiquiti advisories, AdGuard and DNS, firewall and segmentation, port forwards and UPnP, internet, backups, Wi-Fi channels, changing Wi-Fi addresses) had no button. They now get one that opens the right page and scrolls to the right card, which lights up briefly.
+- **View finding** on the vulnerability check jumps straight to the open port that is the finding, with the device it belongs to in view.
+
 ## 1.10.0 – 2026-11-10
 
 ### Added

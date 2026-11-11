@@ -457,9 +457,66 @@
     }
     return true;
   }
+  // meldingen over de hele site: de plek in Sonar waar de details staan
+  const ISSUE_TARGETS = [
+    [/^vuln:outside_stale/, "beveiliging", "#h-vuln", () => L("Bekijk poort", "View port"), ".vuln-port.stale"],
+    [/^vuln:/, "beveiliging", "#h-vuln", () => L("Bekijk bevinding", "View finding"), ".vuln-port.finding"],
+    [/^advisory:/, "beveiliging", "#sec-adv", () => L("Bekijk advies", "View advisory")],
+    [/^(adguard:|dns_new:|dns_bypass:|dns_threat:)/, "beveiliging", "#h-dns", () => L("Bekijk DNS", "View DNS")],
+    [/^(fw_|segment)/, "beveiliging", "#sec-seg-card", () => L("Bekijk netwerkscheiding", "View segmentation")],
+    [/^(pf_|upnp_|vpn_open)/, "beveiliging", "#sec-expo", () => L("Bekijk wat open staat", "View what's open")],
+    [/^(wan_|speed_low|bufferbloat)/, "internet", null, () => L("Bekijk internet", "View internet")],
+    [/^backup_stale/, "instellingen", "#h-backups", () => L("Bekijk backups", "View backups")],
+    [/^cfg_(quieter|ch24)/, "apparaten", null, () => L("Bekijk apparaten", "View devices")],
+    [/^mac_rotate/, "clients", null, () => L("Bekijk clients", "View clients")],
+  ];
+  async function goSection(page, sel, fine) {
+    if (state.drawer) closeDrawer();
+    if (current !== page) location.hash = "#/" + page;
+    const find = () => (current === page && sel ? $(sel) : null);
+    if (!sel) { window.scrollTo(0, 0); return; }
+    let el = find();
+    for (let n = 0; !el && n < 40; n++) { await new Promise((r) => setTimeout(r, 75)); el = find(); }
+    if (!el) return;
+    let box = el.closest("section") || el;
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let gap = 12;   // bij een rij extra ruimte, zodat de kop erboven (welk apparaat) zichtbaar blijft
+    const align = (behavior) => window.scrollTo({ top: box.getBoundingClientRect().top + window.scrollY - ($(".topbar")?.offsetHeight || 0) - gap, behavior });
+    align(calm ? "auto" : "smooth");
+    box.setAttribute("tabindex", "-1");
+    box.focus({ preventScroll: true });
+    const flash = (n) => { n.classList.remove("section-flash"); void n.offsetWidth; n.classList.add("section-flash"); setTimeout(() => n.classList.remove("section-flash"), 2200); };
+    flash(box);
+    if (fine) {     // de precieze rij: die wordt soms nog geladen
+      let row = box.querySelector(fine);
+      for (let n = 0; !row && n < 40 && current === page; n++) { await new Promise((r) => setTimeout(r, 75)); row = box.querySelector(fine); }
+      if (row) {
+        for (let d = row.closest("details"); d; d = d.parentElement?.closest("details")) d.open = true;
+        box.classList.remove("section-flash");
+        box = row;
+        gap = 72;
+        align(calm ? "auto" : "smooth");
+        flash(row);
+      }
+    }
+    // kaarten erboven laden nog en duwen hem weg: één keer bijstellen, tenzij je zelf al scrolt
+    let moved = false;
+    const stop = () => { moved = true; };
+    window.addEventListener("wheel", stop, { once: true, passive: true });
+    window.addEventListener("touchstart", stop, { once: true, passive: true });
+    setTimeout(() => { if (!moved) align("auto"); window.removeEventListener("wheel", stop); window.removeEventListener("touchstart", stop); }, 1000);
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-section]");
+    if (!b) return;
+    e.preventDefault();
+    goSection(b.dataset.section, b.dataset.sel || null, b.dataset.fine || null);
+  });
   function entityAction(i) {
     if (i.client_mac && i.key.startsWith("quarantine:")) return "";   // geblokkeerd: UniFi toont hem niet meer als client
     if (i.client_mac) return `<button class="linkbtn" data-open="client" data-id="${esc(i.client_mac)}">${L("Bekijk client", "View client")}</button>`;
+    const t = ISSUE_TARGETS.find(([rx]) => rx.test(i.key));
+    if (t) return `<button class="linkbtn" data-section="${t[1]}"${t[2] ? ` data-sel="${t[2]}"` : ""}${t[4] ? ` data-fine="${t[4]}"` : ""}>${t[3]()}</button>`;
     if (i.device_mac) return `<button class="linkbtn" data-open="device" data-id="${esc(i.device_mac)}">${L("Bekijk", "View")} ${esc(devName(i.device_mac))}</button>`;
     return "";
   }
@@ -1548,7 +1605,7 @@
     none: ["info", L("Niet beoordeeld", "Not assessed"), "info"], off: ["info", L("Niet gedaan", "Not done"), "info"] };
   function vulnPort(h, o) {
     const used = o.used_by.length ? ` ${L("Via de gateway gebruikt door", "Used through the gateway by")} ${esc(o.used_by.join(", "))}.` : "";
-    return `<div class="vuln-port"><div style="min-width:0"><span class="num">${o.port}</span> ${esc(o.name)}${o.why || used ? `<div class="cell-sub">${esc(o.why)}${used}</div>` : ""}</div>
+    return `<div class="vuln-port${o.accepted ? "" : " finding"}"><div style="min-width:0"><span class="num">${o.port}</span> ${esc(o.name)}${o.why || used ? `<div class="cell-sub">${esc(o.why)}${used}</div>` : ""}</div>
       <div class="adv-badges">${o.accepted ? `<span class="muted">${L("Hoort zo", "Expected")}</span>` : badge("warning", L("Nakijken", "Review"), "alert")}
       <button class="btn ghost" data-acc="${esc(h.mac)}" data-port="${o.port}" data-on="${o.accepted ? 0 : 1}">${o.accepted ? L("Terugzetten", "Undo") : L("Hoort zo", "Expected")}</button></div></div>`;
   }
@@ -1574,7 +1631,8 @@
   }
   function outsidePort(r, days) {
     const act = r.state !== "expected" && r.state !== "unknown";
-    return `<div class="vuln-port"><div style="min-width:0"><span class="num">${r.port}</span>${r.name ? ` ${esc(r.name)}` : ""}<div class="cell-sub">${esc(outsideWhy(r, days))}</div></div>
+    const cls = r.accepted ? "" : r.state === "stale" ? " stale" : r.state === "unexplained" || r.state === "lingering" ? " finding" : "";
+    return `<div class="vuln-port${cls}"><div style="min-width:0"><span class="num">${r.port}</span>${r.name ? ` ${esc(r.name)}` : ""}<div class="cell-sub">${esc(outsideWhy(r, days))}</div></div>
       <div class="adv-badges">${r.accepted ? `<span class="muted">${L("Hoort zo", "Expected")}</span>` : badge(...OUT_STATE[r.state])}
       ${act ? `<button class="btn ghost" data-acc="wan" data-port="${r.port}" data-on="${r.accepted ? 0 : 1}">${r.accepted ? L("Terugzetten", "Undo") : L("Hoort zo", "Expected")}</button>` : ""}</div></div>`;
   }

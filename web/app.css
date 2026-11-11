@@ -849,3 +849,13 @@ body.logged-out .topbar .lang-seg { display: none; }
 .menu-who b { color: var(--me-text); font-weight: 600; }
 .menu-who span { color: var(--me-text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .q-menu .menu-who { padding: 0 0 8px; }
+
+/* doorklikken vanuit een melding: laat even zien waar je terechtkomt */
+.section-flash { animation: section-flash 2.2s ease-out; outline: none; }
+section[tabindex="-1"]:focus { outline: none; }
+@keyframes section-flash {
+  0%, 45% { border-color: var(--me-primary); box-shadow: 0 0 0 1px var(--me-primary), 0 0 24px rgba(57, 216, 244, 0.28); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .section-flash { animation: none; border-color: var(--me-primary); } }
+.vuln-port.section-flash { border-radius: var(--me-radius-sm); }
