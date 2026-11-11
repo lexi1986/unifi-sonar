@@ -4,6 +4,8 @@
 
 **UniFi laat zien wat er gebeurt. Sonar vertelt wat er mis is, en hoe je het oplost.**
 
+<p align="center"><a href="docs/launch/unifi-sonar-launch.mp4"><img src="docs/launch/unifi-sonar-launch.jpg" alt="Lanceervideo: Sonar vertelt wat er mis is, en hoe je het oplost" width="720"></a><br><a href="docs/launch/unifi-sonar-launch.mp4">▶ Bekijk de lanceervideo van 20 seconden (Engels)</a></p>
+
 UniFi Sonar leest je UniFi-controller uit (gateway, switches, access points en alle clients), bewaart een paar weken historie en zoekt zelf naar problemen: zwak wifi-signaal, veel retries, drukke kanalen, kabelproblemen, apparaten die op de verkeerde AP blijven hangen, wifi-instellingen die je netwerk trager maken, poorten die openstaan naar internet en wat de IPS van je gateway tegenhoudt. Bij elke melding staat uitleg en een concreet advies, en als je wilt krijg je een bericht op je telefoon.
 
 > Onofficieel hobbyproject. Niet verbonden aan of goedgekeurd door Ubiquiti. "UniFi" is een merk van Ubiquiti Inc.

@@ -4,6 +4,8 @@
 
 **UniFi shows you what's happening. Sonar tells you what's wrong, and how to fix it.**
 
+<p align="center"><a href="docs/launch/unifi-sonar-launch.mp4"><img src="docs/launch/unifi-sonar-launch.jpg" alt="Launch video: Sonar tells you what's wrong, and how to fix it" width="720"></a><br><a href="docs/launch/unifi-sonar-launch.mp4">▶ Watch the 20-second launch video</a></p>
+
 UniFi Sonar is a self-hosted dashboard for your UniFi network. It reads your controller (gateway, switches, access points and every client), keeps a few weeks of history and hunts for problems on its own: weak Wi-Fi, devices stuck on a far-away access point, busy channels, flaky cables, devices that bypass your Pi-hole or AdGuard, firewall rules that don't do what you think, Ubiquiti security advisories for your exact firmware, and more. Every issue comes with a plain-language explanation and a concrete fix, and it can ping your phone or Home Assistant.
 
 <p align="center"><img src="docs/screenshots/en/globe.gif" alt="The live 3D globe: every connection through your gateway as a stream of light" width="720"></p>
