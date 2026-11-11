@@ -277,26 +277,36 @@
     const stale = s.last_ok && Date.now() / 1000 - s.last_ok > s.poll_seconds * 3;
     const dot = s.last_error || stale ? "err" : s.mode === "mock" ? "warn" : "";
     const src = s.mode === "mock" ? L("Demodata", "Demo data") : `Live · ${SOURCE_LABEL[s.source] || s.source || "?"}`;
-    $("#status").innerHTML = `<span class="dot ${dot}"></span>${esc(src)} · ${L(`${ago(s.last_ok)} geleden`, `${ago(s.last_ok)} ago`)}`;
+    const age = L(`${ago(s.last_ok)} geleden`, `${ago(s.last_ok)} ago`);
+    $("#status").innerHTML = `<span class="dot ${dot}"></span><span class="st-src">${esc(src)} · </span><span class="st-age">${age}</span>`;
+    $("#status").title = `${src} · ${age}`;
     const top = (state.issues || []).filter((i) => !i.group && !i.resolved_at && !i.muted);
-    const cnt = $("#nav-issues");
-    cnt.textContent = top.length;
-    cnt.className = "count" + (h.critical ? " crit" : "");
+    [$("#nav-issues"), $("#tab-issues")].forEach((cnt) => {
+      cnt.textContent = top.length;
+      cnt.hidden = false;
+      cnt.className = "count" + (h.critical ? " crit" : "");
+    });
   }
 
   // ------------------------------------------------------------------ router
   const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, internet: mountInternet, wereld: mountWorld, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings, kiosk: mountKiosk };
   let current = null;
+  const MORE_ROUTES = ["apparaten", "internet", "wereld", "tijdlijn", "instellingen"];
+  function closeMore() { $("#more-sheet").hidden = true; $("#tab-more").setAttribute("aria-expanded", "false"); }
   function route() {
     const [name, id] = location.hash.replace(/^#\/?/, "").split("/");
+    const before = current;
     current = routes[name] ? name : "overzicht";
+    if (before && before !== current) window.scrollTo(0, 0);   // een andere pagina begint bovenaan
+    closeMore();
+    $("#tab-more").classList.toggle("on", MORE_ROUTES.includes(current));
     state.pendingOpen = id && current !== "kiosk" ? decodeURIComponent(id) : null;   // deep link naar een detailpaneel
     const kmode = current === "kiosk" && (id === "globe" || id === "paper") ? id : "";
     if (current !== "kiosk") stopKiosk();
     else if (kmode !== kio.mode) { stopKiosk(); kio.mode = kmode; $("#view").dataset.mounted = ""; }
     document.body.classList.toggle("kiosk", current === "kiosk");
     document.body.classList.toggle("kiosk-paper", current === "kiosk" && kio.mode === "paper");
-    document.querySelectorAll(".nav a, .iconlink").forEach((a) => { if (a.dataset.route === current) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+    document.querySelectorAll(".nav a, .iconlink, .tabbar a, .more-sheet a").forEach((a) => { if (a.dataset.route === current) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     update();
     $("#view").focus({ preventScroll: true });
   }
@@ -470,7 +480,35 @@
     [/^cfg_(quieter|ch24)/, "apparaten", null, () => L("Bekijk apparaten", "View devices")],
     [/^mac_rotate/, "clients", null, () => L("Bekijk clients", "View clients")],
   ];
-  async function goSection(page, sel, fine) {
+  // ---- springknoppen op lange pagina's: plakken onder de kopbalk en volgen waar je bent
+  const jumpBar = (page, items) => `<nav class="jumpbar" aria-label="${L("Op deze pagina", "On this page")}">${items.map(([sel, l, quiet]) =>
+    `<button class="chip" data-section="${page}" data-sel="${sel}"${quiet ? " data-quiet" : ""} aria-pressed="false">${esc(l)}</button>`).join("")}</nav>`;
+  const stickyTop = () => ($(".topbar")?.offsetHeight || 0) + ($("#view .jumpbar")?.offsetHeight || 0);
+  let spyQueued = false;
+  function jumpSpy() {
+    spyQueued = false;
+    const bar = $("#view .jumpbar"); if (!bar) return;
+    const line = stickyTop() + 40;
+    let on = null;
+    bar.querySelectorAll("button").forEach((b) => {
+      const t = $(b.dataset.sel), box = t && (t.closest("section") || t);
+      b.hidden = !box || box.hidden || box.offsetParent === null;
+      if (!b.hidden && (box.getBoundingClientRect().top <= line || !on)) on = b;
+    });
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) on = [...bar.querySelectorAll("button:not([hidden])")].pop() || on;
+    bar.querySelectorAll("button").forEach((b) => {
+      const is = b === on;
+      if ((b.getAttribute("aria-pressed") === "true") !== is) {
+        b.setAttribute("aria-pressed", is);
+        if (is && bar.scrollWidth > bar.clientWidth) bar.scrollTo({ left: b.offsetLeft - bar.clientWidth / 2 + b.offsetWidth / 2, behavior: "auto" });
+      }
+    });
+  }
+  const queueSpy = () => { if (!spyQueued) { spyQueued = true; requestAnimationFrame(jumpSpy); } };
+  window.addEventListener("scroll", queueSpy, { passive: true });
+  window.addEventListener("resize", queueSpy);
+  setInterval(queueSpy, 1500);      // kaarten laden na: knoppen van verborgen onderdelen bijwerken
+  async function goSection(page, sel, fine, quiet) {
     if (state.drawer) closeDrawer();
     if (current !== page) location.hash = "#/" + page;
     const find = () => (current === page && sel ? $(sel) : null);
@@ -481,12 +519,18 @@
     let box = el.closest("section") || el;
     const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
     let gap = 12;   // bij een rij extra ruimte, zodat de kop erboven (welk apparaat) zichtbaar blijft
-    const align = (behavior) => window.scrollTo({ top: box.getBoundingClientRect().top + window.scrollY - ($(".topbar")?.offsetHeight || 0) - gap, behavior });
-    align(calm ? "auto" : "smooth");
+    // korte sprongen vloeiend, lange direct: schermen lang voorbij zien vliegen helpt niemand
+    let smooth = false;
+    const align = (instant) => {
+      const top = box.getBoundingClientRect().top + window.scrollY - stickyTop() - gap;
+      smooth = !instant && !calm && Math.abs(top - window.scrollY) < window.innerHeight * 1.5;
+      window.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
+    };
+    align();
     box.setAttribute("tabindex", "-1");
     box.focus({ preventScroll: true });
     const flash = (n) => { n.classList.remove("section-flash"); void n.offsetWidth; n.classList.add("section-flash"); setTimeout(() => n.classList.remove("section-flash"), 2200); };
-    flash(box);
+    if (!quiet) flash(box);
     if (fine) {     // de precieze rij: die wordt soms nog geladen
       let row = box.querySelector(fine);
       for (let n = 0; !row && n < 40 && current === page; n++) { await new Promise((r) => setTimeout(r, 75)); row = box.querySelector(fine); }
@@ -495,7 +539,7 @@
         box.classList.remove("section-flash");
         box = row;
         gap = 72;
-        align(calm ? "auto" : "smooth");
+        align();
         flash(row);
       }
     }
@@ -504,13 +548,24 @@
     const stop = () => { moved = true; };
     window.addEventListener("wheel", stop, { once: true, passive: true });
     window.addEventListener("touchstart", stop, { once: true, passive: true });
-    setTimeout(() => { if (!moved) align("auto"); window.removeEventListener("wheel", stop); window.removeEventListener("touchstart", stop); }, 1000);
+    let fixed = false;
+    const fix = () => {
+      if (fixed) return;
+      fixed = true;
+      if (!moved && current === page) align(true);
+      window.removeEventListener("wheel", stop); window.removeEventListener("touchstart", stop);
+    };
+    // nooit bijstellen terwijl een vloeiende scroll nog loopt: die schiet dan door
+    if (smooth && "onscrollend" in window) {
+      window.addEventListener("scrollend", () => setTimeout(fix, 200), { once: true });
+      setTimeout(() => { fixed = true; window.removeEventListener("wheel", stop); window.removeEventListener("touchstart", stop); }, 4000);
+    } else setTimeout(fix, smooth ? 1500 : 800);
   }
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-section]");
     if (!b) return;
     e.preventDefault();
-    goSection(b.dataset.section, b.dataset.sel || null, b.dataset.fine || null);
+    goSection(b.dataset.section, b.dataset.sel || null, b.dataset.fine || null, "quiet" in b.dataset);
   });
   function entityAction(i) {
     if (i.client_mac && i.key.startsWith("quarantine:")) return "";   // geblokkeerd: UniFi toont hem niet meer als client
@@ -545,6 +600,13 @@
     if (i.key.startsWith("dns_threat:")) return quarantineMenu(i.client_mac, i.title, true);
     return "";
   }
+  // advies: bij kritiek en waarschuwing meteen zichtbaar, bij info achter één klik (dat scheelt veel scrollen)
+  function adviceHTML(i) {
+    const box = `<div class="advice">${icon("bulb")}<span>${esc(i.advice)}</span></div>`;
+    if (i.severity !== "info" || i.resolved_at) return box;
+    const k = `adv:${i.key}`, open = state.expanded.has(k);
+    return `<button class="toggle" aria-expanded="${open}" data-expand="${esc(k)}">${icon("chevron")}${open ? L("Verberg advies", "Hide advice") : L("Wat kun je doen?", "What can you do?")}</button>${open ? box : ""}`;
+  }
   function issueHTML(i, all, flat) {
     const members = all.filter((m) => m.group === i.key);
     const open = state.expanded.has(i.key);
@@ -563,7 +625,7 @@
       <div>
         <div class="title">${esc(i.title)}</div>
         <div class="detail">${esc(i.detail)}</div>
-        ${flat ? "" : `<div class="advice">${icon("bulb")}<span>${esc(i.advice)}</span></div>`}
+        ${flat ? "" : adviceHTML(i)}
         ${memberHTML}
       </div>
       <div class="meta">${i.resolved_at ? badge("ok", L("Opgelost", "Resolved"), "check") : sevBadge(i.severity)}${mutedBadge}${when}${approveBtn}${issueQuarantine(i)}${entityAction(i)}${muteCtl}</div>
@@ -935,16 +997,25 @@
   function mountClients() {
     const uplinks = state.snap.devices.filter((d) => d.type !== "gateway");
     mount("clients", `
-      <div class="page-head"><div><h1>Clients</h1><p class="subtitle" id="cl-sub"></p></div></div>
-      <section class="card paused-card" id="cl-paused" hidden></section>
-      <section class="card" id="cl-sched" style="margin-bottom:16px"></section>
-      <section class="card" id="cl-identify" style="margin-bottom:16px" hidden></section>
+      <div class="page-head"><div><h1>Clients</h1><p class="subtitle" id="cl-sub"></p></div>
+        <div class="seg" role="group" aria-label="${L("Onderdeel", "Section")}" id="cl-tabs"></div></div>
+      <div id="cl-pane-names" hidden>
+        <section class="card" id="cl-identify" style="margin-bottom:16px" hidden></section></div>
+      <div id="cl-pane-pause" hidden>
+        <section class="card paused-card" id="cl-paused" hidden></section>
+        <section class="card" id="cl-sched" style="margin-bottom:16px"></section></div>
+      <div id="cl-pane-list">
       <div class="toolbar">
         <label class="search"><span class="sr-only">${L("Zoeken", "Search")}</span>${icon("search")}<input class="input" id="cl-q" placeholder="${L("Zoek op naam, IP, MAC of fabrikant", "Search by name, IP, MAC or vendor")}" value="${esc(state.cq)}"></label>
         <div class="chips" role="group" aria-label="Type" id="cl-kind">${[["all", L("Alle", "All")], ["wifi", "Wifi"], ["wired", L("Bedraad", "Wired")], ["issues", L("Met problemen", "With problems")]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ckind === v}">${l}</button>`).join("")}</div>
         <label><span class="sr-only">${L("Verbonden met", "Connected to")}</span><select class="input" id="cl-up"><option value="">${L("Alle AP's en switches", "All APs and switches")}</option>${uplinks.map((d) => `<option value="${esc(d.mac)}" ${state.cuplink === d.mac ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></label>
       </div>
-      <div class="table-wrap" id="cl-table"></div>`);
+      <div class="table-wrap" id="cl-table"></div></div>`);
+    $("#cl-tabs").addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-tab]"); if (!b) return;
+      clTab.now = b.dataset.tab; store.set("cltab", clTab.now); renderClTabs();
+    });
+    renderClTabs();
     $("#cl-q").addEventListener("input", (e) => { state.cq = e.target.value; UPDATERS.clients(); });
     $("#cl-kind").addEventListener("click", (e) => {
       const b = e.target.closest(".chip"); if (!b) return;
@@ -965,6 +1036,17 @@
     });
     $("#cl-table").addEventListener("keydown", (e) => { const r = e.target.closest("tr[data-id]"); if (r && e.key === "Enter") openDrawer("client", r.dataset.id, r); });
   }
+  // ---- tabs: de lijst eerst; naamloze apparaten en pauzes staan erachter
+  const clTab = { now: store.get("cltab", "list"), names: 0, paused: 0 };
+  function renderClTabs() {
+    const el = $("#cl-tabs"); if (!el) return;
+    if (clTab.now === "names" && !clTab.names) clTab.now = "list";
+    const tabs = [["list", L("Lijst", "List"), state.snap?.clients.length || 0, true], ["names", L("Zonder naam", "No name"), clTab.names, clTab.names > 0],
+      ["pause", L("Pauzes", "Pauses"), clTab.paused, true]];
+    const html = tabs.filter((t) => t[3]).map(([k, l, n]) => `<button data-tab="${k}" aria-pressed="${clTab.now === k}">${l}${k === "pause" && !n ? "" : ` <span class="tab-n${k === "pause" && n ? " warn" : ""}">${n}</span>`}</button>`).join("");
+    if (el.innerHTML !== html) el.innerHTML = html;     // niet onnodig vervangen: de focus blijft dan staan
+    for (const k of ["list", "names", "pause"]) $(`#cl-pane-${k}`).hidden = clTab.now !== k;
+  }
   const idState = { data: null, all: false };
   async function loadIdentify() {
     try { idState.data = (await api("/api/identify")).devices; } catch (e) { return; }
@@ -975,6 +1057,7 @@
     if (!el || !idState.data) return;
     const all = idState.data, shown = idState.all ? all : all.slice(0, 6);
     el.hidden = !all.length;
+    clTab.names = all.length; renderClTabs();
     const row = (d) => {
       const g = d.guess;
       const what = g ? `<b>${esc(g.label)}</b> · ${esc(g.kind_label)}` : L("Sonar weet het niet", "Sonar doesn't know");
@@ -1003,6 +1086,7 @@
     if (!sched.edit) renderSchedules();
     const bySched = Object.entries(s.paused || {}).filter(([m]) => !d.pauses.some((p) => p.mac === m));
     el.hidden = !d.pauses.length && !bySched.length;
+    clTab.paused = d.pauses.length + bySched.length; renderClTabs();
     const q = d.pauses.some((p) => p.reason);
     el.innerHTML = `<div class="card-head"><h2 style="margin:0">${icon(q ? "shield" : "power")}${q ? L("Gepauzeerd en in quarantaine", "Paused and in quarantine") : L("Gepauzeerd", "Paused")}</h2><span class="muted">${q ? L("geen internet of netwerk tot de tijd om is of je het vrijgeeft", "no internet or network until the time is up or you release it") : L("geen internet of netwerk tot de tijd om is", "no internet or network until the time is up")}</span></div>
       ${d.pauses.map((p) => p.reason ? `<div class="rank-row paused-row"><div class="rank-main"><div class="rank-name">${esc(p.name)} ${badge("critical", L("Quarantaine", "Quarantine"), "shield")}</div>
@@ -1525,6 +1609,8 @@
     mount("beveiliging", `
       <div class="page-head"><div><h1>${L("Beveiliging", "Security")}</h1><p class="subtitle">${L("Wat de IPS op je gateway tegenhield, wat er openstaat naar internet en hoe je netwerken van elkaar gescheiden zijn. Aanvallen van buiten zijn normaal; blokkades van <b>eigen apparaten</b> verdienen aandacht.", "What the IPS on your gateway stopped, what is open to the internet and how your networks are separated. Attacks from outside are normal; blocks of <b>your own devices</b> deserve attention.")}</p></div>
         <div class="seg" role="group" aria-label="${L("Periode", "Period")}" id="sec-range">${[[24, L("24 u", "24 h")], [168, "7 d"], [336, "14 d"]].map(([h, l]) => `<button data-h="${h}" aria-pressed="${secState.hours === h}">${l}</button>`).join("")}</div></div>
+      ${jumpBar("beveiliging", [["#sec-kpis", L("Blokkades", "Blocks"), 1], ["#sec-seg-card", L("Netwerkscheiding", "Segmentation")], ["#sec-checks", L("Bevindingen", "Findings")],
+        ["#h-dns", "DNS"], ["#h-vuln", L("Kwetsbaarheden", "Vulnerabilities")], ["#sec-adv", L("Adviezen", "Advisories")], ["#sec-expo", L("Open poorten", "Open ports")], ["#sec-table", L("Alle blokkades", "All blocks")]])}
       <div id="sec-banner"></div>
       <section class="grid kpis" id="sec-kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))"></section>
       <section class="grid cols-2" style="margin-bottom:16px">
@@ -2259,6 +2345,8 @@
   // ------------------------------------------------------------------ instellingen
   function mountSettings() {
     mount("instellingen", `<div class="page-head"><div><h1>${L("Instellingen", "Settings")}</h1><p class="subtitle">${L("Koppeling, taal, meldingen naar je telefoon, toegang en probleemoplossing.", "Connection, language, notifications to your phone, access and troubleshooting.")}</p></div></div>
+      ${jumpBar("instellingen", [["#h-conn", L("Koppeling", "Connection"), 1], ["#h-lang", L("Taal", "Language")], ["#h-notify", L("Meldingen", "Notifications")], ["#h-mqtt", "Home Assistant"],
+        ["#h-adguard", "AdGuard"], ["#h-access", L("Toegang", "Access")], ["#h-backups", "Backups"], ["#h-kiosk", L("Muurscherm", "Wall display")], ["#h-debug", L("Probleemoplossing", "Troubleshooting")]])}
       <div class="settings">
         <section class="card" aria-labelledby="h-conn"><h2 id="h-conn">${L("Koppeling", "Connection")}</h2><div id="set-conn"></div></section>
         <section class="card" aria-labelledby="h-lang"><h2 id="h-lang">${L("Taal", "Language")}</h2>
@@ -2690,22 +2778,58 @@
     config: ["settings", "cfg"], wan_ip: ["globe", "cfg"],
   };
   const EKIND = { all: null, config: ["config"], device: ["device_offline", "device_online", "device_reboot", "device_upgrade"], port: ["port_down", "port_up"], roam: ["roam"], client: ["client_join", "client_leave"] };
-  function eventsHTML(evts) {
+  // Een apparaat dat steeds tussen dezelfde twee access points wisselt, vult anders de hele tijdlijn: vanaf drie keer
+  // op één dag wordt het één regel, met de losse wissels erachter.
+  const GROUP_MIN = 3;
+  function roamGroups(evts) {
+    const dayOf = (e) => new Date(e.ts * 1000).toDateString();
+    const groups = new Map();
+    evts.forEach((e) => {
+      if (e.kind !== "roam") return;
+      const m = /^(.*): (.+) → (.+)$/.exec(e.message || "");
+      if (!m) return;
+      const key = `tl:${dayOf(e)}|${e.entity_id || m[1]}|${[m[2], m[3]].sort().join("|")}`;
+      const g = groups.get(key) || { key, who: m[1], aps: [m[2], m[3]].sort(), items: [] };
+      g.items.push(e);
+      groups.set(key, g);
+      e._g = g;
+    });
+    groups.forEach((g) => { if (g.items.length < GROUP_MIN) g.items.forEach((e) => { delete e._g; }); });
+  }
+  function eventsHTML(evts, group) {
     let day = "", out = "";
+    if (group) roamGroups(evts);
+    const row = (e, sub) => {
+      const [ic, cls] = EV[e.kind] || ["activity", ""];
+      return `<div class="event${sub ? " sub" : ""}"><span class="time">${hhmm(e.ts)}</span><span class="eico ${cls}">${icon(ic)}</span><span>${esc(e.message)}</span></div>`;
+    };
     evts.forEach((e) => {
       const d = new Date(e.ts * 1000).toLocaleDateString(LOC, { weekday: "long", day: "numeric", month: "long" });
       if (d !== day) { out += `<div class="day">${d}</div>`; day = d; }
-      const [ic, cls] = EV[e.kind] || ["activity", ""];
-      out += `<div class="event"><span class="time">${hhmm(e.ts)}</span><span class="eico ${cls}">${icon(ic)}</span><span>${esc(e.message)}</span></div>`;
+      const g = e._g;
+      if (!g) { out += row(e); return; }
+      if (g.items[0] !== e) return;            // de groep staat bij zijn nieuwste wissel
+      const open = state.expanded.has(g.key), n = g.items.length, first = g.items[n - 1].ts;
+      out += `<div class="event grp"><span class="time">${hhmm(e.ts)}</span><span class="eico roam">${icon("roam")}</span>
+        <span>${esc(L(`${g.who} wisselde ${n}× tussen ${g.aps[0]} en ${g.aps[1]}, sinds ${hhmm(first)}`, `${g.who} switched ${n}× between ${g.aps[0]} and ${g.aps[1]}, since ${hhmm(first)}`))}
+        <button class="toggle" aria-expanded="${open}" data-expand="${esc(g.key)}">${icon("chevron")}${open ? L("Verberg", "Hide") : L("Toon alle", "Show all")}</button></span></div>`;
+      if (open) out += g.items.map((x) => row(x, true)).join("");
     });
     return out || `<div class="empty">${L("Geen gebeurtenissen in deze periode", "No events in this period")}</div>`;
   }
+  let tlEvents = [];
   function mountTimeline() {
     mount("tijdlijn", `
       <div class="page-head"><div><h1>${L("Tijdlijn", "Timeline")}</h1><p class="subtitle">${L("Wat er in je netwerk gebeurde: herstarts, links die wegvallen, roaming en clients die komen en gaan.", "What happened in your network: restarts, links dropping, roaming and clients coming and going.")}</p></div>${rangeSeg("tl-range")}</div>
       <div class="toolbar"><div class="chips" role="group" aria-label="${L("Soort", "Type")}" id="tl-kind">${[["all", L("Alles", "All")], ["config", L("Instellingen", "Settings")], ["device", L("Apparaten", "Devices")], ["port", L("Poorten", "Ports")], ["roam", "Roaming"], ["client", "Clients"]].map(([v, l]) => `<button class="chip" data-k="${v}" aria-pressed="${state.ekind === v}">${l}</button>`).join("")}</div></div>
       <div class="card"><div class="events" id="tl-list"></div></div>`);
     bindRange("tl-range", UPDATERS.tijdlijn);
+    $("#tl-list").addEventListener("click", (e) => {
+      const x = e.target.closest("[data-expand]"); if (!x) return;
+      const k = x.dataset.expand; state.expanded.has(k) ? state.expanded.delete(k) : state.expanded.add(k);
+      $("#tl-list").innerHTML = eventsHTML(tlEvents, true);
+      hydrateIcons($("#tl-list"));
+    });
     $("#tl-kind").addEventListener("click", (e) => {
       const b = e.target.closest(".chip"); if (!b) return;
       state.ekind = b.dataset.k;
@@ -2716,7 +2840,9 @@
   UPDATERS.tijdlijn = async function () {
     const evts = await api(`/api/events?hours=${state.hours}&limit=1000`);
     const kinds = EKIND[state.ekind];
-    $("#tl-list").innerHTML = eventsHTML(kinds ? evts.filter((e) => kinds.includes(e.kind)) : evts);
+    tlEvents = kinds ? evts.filter((e) => kinds.includes(e.kind)) : evts;
+    $("#tl-list").innerHTML = eventsHTML(tlEvents, true);
+    hydrateIcons($("#tl-list"));
   };
 
   // ------------------------------------------------------------------ drawer
@@ -3623,7 +3749,19 @@
   });
   let rt;
   window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (current === "overzicht") loadOverviewCharts(); if (current === "internet") { loadInternet(); drawLive(); renderUsage(); } if (current === "wereld") renderWorld(); if (current === "apparaten" && devView.mode === "map") renderTopo(); if (state.drawer) renderDrawer(); }, 250); });
+  document.querySelectorAll(".nav a").forEach((a) => { a.title = a.querySelector(".lbl").textContent; });   // voor de icoonmodus op smalle vensters
   window.addEventListener("hashchange", route);
+  $("#tab-more").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = $("#more-sheet").hidden;
+    $("#more-sheet").hidden = !open;
+    $("#tab-more").setAttribute("aria-expanded", String(open));
+    if (open) $("#more-sheet a").focus();
+  });
+  document.addEventListener("click", (e) => { if (!$("#more-sheet").hidden && !e.target.closest("#more-sheet")) closeMore(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#more-sheet").hidden) { closeMore(); $("#tab-more").focus(); } });
+  // hoogte van de kopbalk als CSS-variabele: springknoppen plakken er net onder
+  new ResizeObserver(() => document.documentElement.style.setProperty("--topbar-h", `${$(".topbar").offsetHeight}px`)).observe($(".topbar"));
   const start = () => { route(); refresh(); setInterval(refresh, 30000); };
   // Nog geen taal gekozen: de pagina volgde de browser; leg die keuze vast, zodat ook meldingen in die taal gaan.
   if (document.documentElement.dataset.langSet === "0") post("/api/language", { language: LANG }).catch(() => {}).finally(start);

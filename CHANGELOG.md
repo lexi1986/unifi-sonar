@@ -2,6 +2,20 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.11.0 – 2026-11-11
+
+### Changed
+- **A lower top bar.** Everything fits on one row: 63 pixels instead of 159 on a laptop, 49 instead of 155 on a phone. The language switch now lives in Settings only (and in the setup wizard), and on narrower windows the status shows just the age of the last reading, with the source in the tooltip.
+- **Phone menu at the bottom.** Overview, Issues, Clients and Security are one tap away; the other pages are under *More*. Before, five of the eight pages were hidden behind a sideways swipe.
+- **Clients opens with the list.** Devices without a name and pauses moved behind tabs, each with its count, instead of sitting above the list.
+- **Jump buttons on Security and Settings.** A row under the top bar takes you to each part of these long pages and shows where you are. Parts that aren't there (for example DNS without AdGuard) get no button.
+- **Issues are shorter.** For info issues the advice is behind *What can you do?*; critical issues and warnings still show it right away.
+- **Timeline without repetition.** A device that keeps switching between the same two access points becomes one line ("switched 113× between … since 16:52") that you can expand.
+
+### Fixed
+- Opening another page now starts at the top instead of keeping the previous page's scroll position.
+- Jumping to a far-away section no longer scrolls smoothly past many screens (and could overshoot); long jumps go there directly.
+
 ## 1.10.1 – 2026-11-11
 
 ### Fixed
