@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import pihole
 from .i18n import L
 from .segments import client_segment, smart_reason
 
@@ -82,8 +83,10 @@ def interesting(name: str) -> bool:
 _FRAC = re.compile(r"(\.\d{6})\d+")
 
 
-def parse_time(s: str) -> float:
-    """AdGuard geeft nanoseconden; Python kan er zes aan."""
+def parse_time(s) -> float:
+    """AdGuard geeft een tijdstip met nanoseconden (Python kan er zes aan); Pi-hole geeft seconden als getal."""
+    if isinstance(s, (int, float)):
+        return float(s)
     try:
         return datetime.fromisoformat(_FRAC.sub(r"\1", s.replace("Z", "+00:00"))).timestamp()
     except (ValueError, AttributeError):
@@ -195,6 +198,8 @@ class AuthError(Exception):
 class API:
     """Eén AdGuard Home. Alleen GET-verzoeken."""
 
+    kind, label = "adguard", "AdGuard Home"
+
     def __init__(self, inst: dict) -> None:
         self.name = inst.get("name") or host_of(inst.get("url", ""))
         self.url = (inst.get("url") or "").rstrip("/")
@@ -217,6 +222,60 @@ class API:
             raise RuntimeError(L("geen AdGuard Home op dit adres", "no AdGuard Home at this address")) from None
 
 
+    # ---- wat Sonar nodig heeft; pihole.API heeft dezelfde methodes
+    async def status(self, http) -> dict:
+        s = await self.get(http, "/control/status")
+        return {"version": s.get("version"), "running": s.get("running"), "protection": s.get("protection_enabled")}
+
+    async def settings(self, http) -> tuple[dict[int, str], dict]:
+        f = await self.get(http, "/control/filtering/status")
+        rw = await self.get(http, "/control/rewrite/list")
+        info = await self.get(http, "/control/dns_info")
+        names = {x["id"]: x.get("name") or x.get("url") or "" for x in f.get("filters") or [] if "id" in x}
+        return names, {
+            "rewrites": sorted(f"{r.get('domain')} → {r.get('answer')}" for r in rw or [] if r.get("enabled", True)),
+            "lists": sorted(x.get("url") or x.get("name") for x in f.get("filters") or [] if x.get("enabled")),
+            "upstreams": sorted(u for u in info.get("upstream_dns") or [] if u and not u.startswith("#")),
+            "rules": len([r for r in f.get("user_rules") or [] if r.strip() and not r.startswith("!")])}
+
+    async def stats(self, http) -> dict:
+        d = await self.get(http, "/control/stats")
+        return {"queries": d.get("num_dns_queries") or 0, "blocked": d.get("num_blocked_filtering") or 0,
+                "avg_ms": round((d.get("avg_processing_time") or 0) * 1000, 1),
+                "upstreams": [{"name": k, "avg_ms": round(v * 1000, 1)} for e in d.get("top_upstreams_avg_time") or []
+                              for k, v in e.items()][:5]}
+
+    async def log(self, http, since: float, page: int, max_pages: int) -> tuple[list[dict], str | None]:
+        return await fetch_log(self, http, since), None
+
+    async def test(self) -> dict:
+        async with self.client() as http:
+            st = await self.status(http)
+            q = await self.get(http, "/control/querylog", limit=1)
+        return {"ok": True, "version": st.get("version"), "protection": st.get("protection"), "log": bool(q.get("data"))}
+
+
+KINDS = {"adguard": API, "pihole": pihole.API}
+
+
+def kind_of(inst: dict) -> str:
+    return inst.get("kind") if inst.get("kind") in KINDS else "adguard"
+
+
+def make_api(inst: dict):
+    return KINDS[kind_of(inst)](inst)
+
+
+def product(kinds) -> str:
+    """Hoe Sonar je DNS-filter noemt in teksten: de naam van het product, of iets algemeens als je er twee soorten hebt."""
+    ks = set(kinds)
+    if ks == {"adguard"}:
+        return "AdGuard"
+    if ks == {"pihole"}:
+        return "Pi-hole"
+    return L("je DNS-filter", "your DNS filter")
+
+
 async def fetch_log(api, http, since: float) -> list[dict]:
     """Nieuwe querylog-regels na 'since', nieuwste eerst, in pagina's terug in de tijd."""
     out: list[dict] = []
@@ -236,15 +295,10 @@ async def fetch_log(api, http, since: float) -> list[dict]:
 
 async def test_instance(inst: dict) -> dict:
     """Voor de knop 'Verbinding testen'."""
-    api = API(inst)
     try:
-        async with api.client() as http:
-            st = await api.get(http, "/control/status")
-            q = await api.get(http, "/control/querylog", limit=1)
-        return {"ok": True, "version": st.get("version"), "protection": st.get("protection_enabled"),
-                "log": bool(q.get("data"))}
+        return {**await make_api(inst).test(), "kind": kind_of(inst)}
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": str(e)[:200] or type(e).__name__}
+        return {"ok": False, "kind": kind_of(inst), "error": str(e)[:200] or type(e).__name__}
 
 
 # ------------------------------------------------------------------ verzamelen
@@ -280,7 +334,7 @@ class AdGuard:
         if self.mock:
             from .mock_adguard import MockAPI
             return [MockAPI(i, n) for n, i in enumerate(self.instances())]
-        return [API(i) for i in self.instances()]
+        return [make_api(i) for i in self.instances()]
 
     @property
     def active(self) -> bool:
@@ -297,9 +351,13 @@ class AdGuard:
 
     # de ronde
     async def tick(self, snap: dict, ts: int) -> None:
+        apis = self.apis()
+        urls = {a.url for a in apis}
+        for d in (self.status, self.config, self.lists, self.servfail):     # een server die je weghaalde telt niet meer mee
+            for u in [u for u in d if u not in urls]:
+                del d[u]
         if not self.active or ts < time.time() - 120:     # demo: niet tijdens het vullen met historie
             return
-        apis = self.apis()
         if self.mock:
             from .mock_adguard import MockAPI
             MockAPI.snap = snap
@@ -320,32 +378,21 @@ class AdGuard:
 
     async def _one(self, api, snap: dict, ts: int, due_stats: bool, due_cfg: bool) -> None:
         st = self.status.setdefault(api.url, {"name": api.name, "url": api.url})
-        st["name"] = api.name
+        st.update(name=api.name, kind=api.kind)
         try:
             async with api.client() as http:
                 t0 = time.monotonic()
-                s = await api.get(http, "/control/status")
+                s = await api.status(http)
                 st.update(ok=True, error=None, checked=ts, http_ms=round((time.monotonic() - t0) * 1000), version=s.get("version"),
-                          running=s.get("running"), protection=s.get("protection_enabled"))
+                          running=s.get("running"), protection=s.get("protection"))
                 if due_cfg or api.url not in self.lists:
-                    f = await api.get(http, "/control/filtering/status")
-                    self.lists[api.url] = {x["id"]: x.get("name") or x.get("url") or "" for x in f.get("filters") or [] if "id" in x}
-                    rw = await api.get(http, "/control/rewrite/list")
-                    info = await api.get(http, "/control/dns_info")
-                    self.config[api.url] = {
-                        "rewrites": sorted(f"{r.get('domain')} → {r.get('answer')}" for r in rw or [] if r.get("enabled", True)),
-                        "lists": sorted(x.get("url") or x.get("name") for x in f.get("filters") or [] if x.get("enabled")),
-                        "upstreams": sorted(u for u in info.get("upstream_dns") or [] if u and not u.startswith("#")),
-                        "rules": len([r for r in f.get("user_rules") or [] if r.strip() and not r.startswith("!")])}
+                    self.lists[api.url], cfg = await api.settings(http)
+                    self.config[api.url] = {**cfg, "kind": api.kind}
                 if due_stats or "stats" not in st:
-                    d = await api.get(http, "/control/stats")
-                    st["stats"] = {"queries": d.get("num_dns_queries") or 0, "blocked": d.get("num_blocked_filtering") or 0,
-                                   "avg_ms": round((d.get("avg_processing_time") or 0) * 1000, 1),
-                                   "upstreams": [{"name": k, "avg_ms": round(v * 1000, 1)} for e in d.get("top_upstreams_avg_time") or []
-                                                 for k, v in e.items()][:5]}
+                    st["stats"] = await api.stats(http)
                 first = api.url not in self.cursor
                 since = self.cursor.get(api.url) or ts - 3600     # de eerste keer alleen het laatste uur
-                items = await fetch_log(api, http, since)
+                items, st["note"] = await api.log(http, since, PAGE, MAX_PAGES)
             if items:
                 self.cursor[api.url] = max(parse_time(i.get("time")) for i in items)
             elif first:
@@ -354,7 +401,7 @@ class AdGuard:
                 self.since = ts
             self.ingest(items, snap, api.url, ts)
         except Exception as e:  # noqa: BLE001 – een AdGuard die niet antwoordt mag de rest niet ophouden
-            log.info("AdGuard %s: %s", api.name, e)
+            log.info("%s %s: %s", api.label, api.name, e)
             st.update(ok=False, error=str(e)[:200] or type(e).__name__, checked=ts)
 
     async def _probe(self, snap: dict, apis, ts: int) -> None:
@@ -460,31 +507,35 @@ class AdGuard:
     # ------------------------------------------------------------- uitkomst
     def servers(self) -> list[dict]:
         out = []
+        kinds = {host_of(u): st.get("kind") for u, st in self.status.items()}
         for h, q in self.probes.items():
             last = list(q)
             ok = [p["ms"] for p in last[-10:] if p["ok"] and p["ms"] is not None]
             down = len(last) >= 3 and not any(p["ok"] for p in last[-3:])
-            out.append({"host": h, "name": last[-1]["name"], "ok": last[-1]["ok"], "down": down, "ms": last[-1].get("ms"),
+            out.append({"host": h, "name": last[-1]["name"], "kind": kinds.get(h), "ok": last[-1]["ok"], "down": down, "ms": last[-1].get("ms"),
                         "median_ms": sorted(ok)[len(ok) // 2] if ok else None, "error": last[-1].get("error"),
                         "history": [p["ms"] if p["ok"] else None for p in last], "checked": last[-1]["ts"]})
         return out
 
     def drift(self) -> dict | None:
-        cfgs = [(self.status.get(u, {}).get("name") or u, c) for u, c in self.config.items()]
-        if len(cfgs) < 2:
-            return None
-        out = []
-        for key, label in (("rewrites", "rewrites"), ("lists", "lists"), ("upstreams", "upstreams")):
-            sets = [(n, set(c[key])) for n, c in cfgs]
-            union = set().union(*(s for _, s in sets))
-            for n, s in sets:
-                missing = sorted(union - s)
-                if missing:
-                    out.append({"what": label, "missing_on": n, "items": missing[:10], "n": len(missing)})
-        rules = {n: c["rules"] for n, c in cfgs}
-        if len(set(rules.values())) > 1:
-            out.append({"what": "rules", "missing_on": None, "items": [f"{n}: {v}" for n, v in rules.items()], "n": 0})
-        return {"items": out, "names": [n for n, _ in cfgs]}
+        """Verschillen tussen servers van hetzelfde soort: een AdGuard en een Pi-hole stel je anders in, die vergelijkt Sonar niet."""
+        out, names = [], []
+        for kind in KINDS:
+            cfgs = [(self.status.get(u, {}).get("name") or u, c) for u, c in self.config.items() if c.get("kind", "adguard") == kind]
+            if len(cfgs) < 2:
+                continue
+            names += [n for n, _ in cfgs]
+            for key, label in (("rewrites", "rewrites"), ("lists", "lists"), ("upstreams", "upstreams")):
+                sets = [(n, set(c[key])) for n, c in cfgs]
+                union = set().union(*(s for _, s in sets))
+                for n, s in sets:
+                    missing = sorted(union - s)
+                    if missing:
+                        out.append({"what": label, "missing_on": n, "items": missing[:10], "n": len(missing), "kind": kind})
+            rules = {n: c["rules"] for n, c in cfgs}
+            if len(set(rules.values())) > 1:
+                out.append({"what": "rules", "missing_on": None, "items": [f"{n}: {v}" for n, v in rules.items()], "n": 0, "kind": kind})
+        return {"items": out, "names": names} if names else None
 
     def for_rules(self) -> dict:
         servfail = {}
@@ -492,7 +543,9 @@ class AdGuard:
             recent = [x for x in q if x[0] >= time.time() - 3600]
             n, f = sum(x[1] for x in recent), sum(x[2] for x in recent)
             servfail[self.status.get(url, {}).get("name") or url] = (n, f)
+        kinds = sorted({kind_of(i) for i in self.instances()})
         return {"active": self.active, "since": self.since, "servers": self.servers(), "drift": self.drift(),
+                "kinds": kinds, "product": product(kinds),
                 "apis": [{k: v for k, v in s.items() if k != "stats"} for s in self.status.values()], "servfail": servfail,
                 "watch": self.cfg["watch"], "personal": self.cfg["personal"]}
 
@@ -545,13 +598,13 @@ def coverage(db, ts: int) -> dict:
 def bypass(snap: dict, db, ts: int, ag: dict) -> tuple[list[dict], str | None]:
     """Apparaten met verkeer naar internet die AdGuard nooit iets vragen. Tweede waarde: waarom er niet gekeken is."""
     if not ag.get("since") or ag["since"] > ts - DAY:
-        return [], L("Sonar volgt AdGuard nog geen etmaal.", "Sonar hasn't followed AdGuard for a full day yet.")
+        return [], L(f"Sonar volgt {ag.get('product') or 'AdGuard'} nog geen etmaal.", f"Sonar hasn't followed {ag.get('product') or 'AdGuard'} for a full day yet.")
     cov = coverage(db, ts)
     if cov["queries"] and cov["unknown"] / cov["queries"] > 0.1:
         return [], L("Meer dan 10% van de vragen komt van adressen die Sonar niet aan een apparaat kan koppelen (bijvoorbeeld IPv6), "
-                     "dus het kan niet zeggen wie AdGuard overslaat.",
+                     f"dus het kan niet zeggen wie {ag.get('product') or 'AdGuard'} overslaat.",
                      "More than 10% of queries come from addresses Sonar can't link to a device (IPv6, for example), "
-                     "so it can't tell who skips AdGuard.")
+                     f"so it can't tell who skips {ag.get('product') or 'AdGuard'}.")
     resolvers = _resolvers(snap, ag)
     own = {m for m, o in own_dns(snap, db, ts, ag).items() if not o["dot"]}   # doorgelaten DoT gaat echt om AdGuard heen
     flows = {r["client_mac"]: (r["n"], r["last"]) for r in db.q(
@@ -613,6 +666,8 @@ def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     dhcp = (snap.get("config") or {}).get("dns_servers") or []
     servers = ag.get("servers") or []
     first_api = host_of((ag.get("apis") or [{}])[0].get("url") or "") if ag.get("apis") else None
+    P = ag.get("product") or "AdGuard"
+    label = lambda kind: "Pi-hole" if kind == "pihole" else "AdGuard" if kind == "adguard" else L("de DNS-server", "the DNS server")
 
     # 3. bewaking: antwoorden je DNS-servers nog, en snel genoeg?
     for s in servers:
@@ -625,43 +680,58 @@ def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
                                f"Sonar asked {s['host']} a DNS question three times in a row and got no answer"
                                f"{' (' + s['error'] + ')' if s.get('error') and s['error'] != 'timeout' else ''}."),
                              L("Gaat al je DNS via deze server, bijvoorbeeld door een NAT-regel die DNS omleidt, dan kan nu niemand in huis "
-                               "nog namen opzoeken. Herstart AdGuard, of zet de omleiding tijdelijk uit tot hij weer draait.",
+                               f"nog namen opzoeken. Herstart {label(s.get('kind'))}, of zet de omleiding tijdelijk uit tot hij weer draait.",
                                "If all your DNS goes through this server, for example because of a NAT rule that redirects DNS, nobody at "
-                               "home can look up names right now. Restart AdGuard, or switch off the redirect until it runs again."),
+                               f"home can look up names right now. Restart {label(s.get('kind'))}, or switch off the redirect until it runs again."),
                              last_ts=s["checked"]))
         elif s["median_ms"] is not None and s["median_ms"] > SLOW_MS:
             out.append(issue(f"adguard:slow:{s['host']}", "warning", "wan", "site", "dns",
                              L(f"DNS van {s['name']} is traag", f"DNS from {s['name']} is slow"),
                              L(f"Een DNS-antwoord duurt de laatste tijd ongeveer {s['median_ms']:.0f} ms; normaal is onder de 50 ms.",
                                f"A DNS answer takes about {s['median_ms']:.0f} ms lately; normal is under 50 ms."),
-                             L("Kijk in AdGuard bij Instellingen → DNS-instellingen welke upstream traag is, en zet 'Parallelle verzoeken' "
-                               "of 'Snelste IP-adres' aan. Controleer ook of de machine waar AdGuard op draait niet overbelast is.",
-                               "In AdGuard, check under Settings → DNS settings which upstream is slow, and turn on 'Parallel requests' or "
-                               "'Fastest IP address'. Also check that the machine AdGuard runs on isn't overloaded."), metric="ms",
+                             (L("Kijk in Pi-hole bij Settings → DNS welke upstream je gebruikt en probeer een andere. Controleer ook of de "
+                                "machine waar Pi-hole op draait niet overbelast is.",
+                                "In Pi-hole, check under Settings → DNS which upstream you use and try another one. Also check that the "
+                                "machine Pi-hole runs on isn't overloaded.") if s.get("kind") == "pihole" else
+                              L("Kijk in AdGuard bij Instellingen → DNS-instellingen welke upstream traag is, en zet 'Parallelle verzoeken' "
+                                "of 'Snelste IP-adres' aan. Controleer ook of de machine waar AdGuard op draait niet overbelast is.",
+                                "In AdGuard, check under Settings → DNS settings which upstream is slow, and turn on 'Parallel requests' or "
+                                "'Fastest IP address'. Also check that the machine AdGuard runs on isn't overloaded.")), metric="ms",
                              value=s["median_ms"], threshold=SLOW_MS))
     for a in ag.get("apis") or []:
+        A, pi = label(a.get("kind")), a.get("kind") == "pihole"
         if a.get("ok") is False:
             out.append(issue(f"adguard:api:{host_of(a['url'])}", "warning", "config", "site", "dns",
                              L(f"Sonar kan {a['name']} niet uitlezen", f"Sonar can't read {a['name']}"),
-                             L(f"De API van AdGuard gaf: {a.get('error')}. Zolang dat zo is, ziet Sonar geen nieuwe DNS-vragen van dit adres.",
-                               f"AdGuard's API returned: {a.get('error')}. Until that is fixed, Sonar sees no new DNS queries from this address."),
-                             L("Controleer het adres, de gebruikersnaam en het wachtwoord onder Instellingen → AdGuard Home.",
-                               "Check the address, username and password under Settings → AdGuard Home.")))
+                             L(f"De API van {A} gaf: {a.get('error')}. Zolang dat zo is, ziet Sonar geen nieuwe DNS-vragen van dit adres.",
+                               f"The API of {A} returned: {a.get('error')}. Until that is fixed, Sonar sees no new DNS queries from this address."),
+                             L(f"Controleer het adres en het wachtwoord{'' if pi else ' en de gebruikersnaam'} onder Instellingen → DNS-filter.",
+                               f"Check the address and password{'' if pi else ' and the username'} under Settings → DNS filter.")))
         elif a.get("protection") is False:
             out.append(issue(f"adguard:protection:{host_of(a['url'])}", "warning", "security", "site", "dns",
                              L(f"Bescherming van {a['name']} staat uit", f"Protection on {a['name']} is off"),
-                             L("AdGuard beantwoordt DNS-vragen, maar blokkeert niets: geen advertenties, geen trackers en geen malware.",
-                               "AdGuard answers DNS queries but blocks nothing: no ads, no trackers and no malware."),
-                             L("Zet in AdGuard bovenaan de bescherming weer aan. Stond hij tijdelijk uit, dan gaat hij vanzelf weer aan.",
-                               "Turn protection back on at the top of AdGuard. If it was paused, it comes back on by itself.")))
+                             L(f"{A} beantwoordt DNS-vragen, maar blokkeert niets: geen advertenties, geen trackers en geen malware.",
+                               f"{A} answers DNS queries but blocks nothing: no ads, no trackers and no malware."),
+                             (L("Zet in Pi-hole het blokkeren weer aan (Enable Blocking in het menu). Stond het tijdelijk uit, dan gaat het vanzelf weer aan.",
+                                "Turn blocking back on in Pi-hole (Enable Blocking in the menu). If it was paused, it comes back on by itself.") if pi else
+                              L("Zet in AdGuard bovenaan de bescherming weer aan. Stond hij tijdelijk uit, dan gaat hij vanzelf weer aan.",
+                                "Turn protection back on at the top of AdGuard. If it was paused, it comes back on by itself."))))
+        elif a.get("note"):
+            out.append(issue(f"adguard:hidden:{host_of(a['url'])}", "info", "config", "site", "dns",
+                             L(f"{a['name']} verbergt gegevens voor Sonar", f"{a['name']} hides data from Sonar"),
+                             str(a["note"]) + ".",
+                             L("Wil je dat Sonar per apparaat ziet wat het opzoekt, zet dan in Pi-hole bij Settings → Privacy het niveau op "
+                               "'Show everything'. Wil je dat niet, negeer deze melding dan.",
+                               "If you want Sonar to see what each device looks up, set the level to 'Show everything' in Pi-hole under "
+                               "Settings → Privacy. If you don't, ignore this issue.")))
     for name, (n, f) in (ag.get("servfail") or {}).items():
         if n >= 50 and f / n > 0.05:
             out.append(issue(f"adguard:servfail:{name}", "warning", "wan", "site", "dns",
                              L(f"{name} krijgt geen antwoord van zijn upstream", f"{name} gets no answer from its upstream"),
                              L(f"{f} van de {n} DNS-vragen van het afgelopen uur eindigden in een fout (SERVFAIL).",
                                f"{f} of the {n} DNS queries in the past hour ended in an error (SERVFAIL)."),
-                             L("Test in AdGuard onder Instellingen → DNS-instellingen de upstreams en voeg een tweede upstream toe.",
-                               "In AdGuard, test the upstreams under Settings → DNS settings and add a second upstream."),
+                             L(f"Controleer in {P} bij de DNS-instellingen de upstreams en voeg een tweede upstream toe.",
+                               f"In {P}, check the upstreams under the DNS settings and add a second upstream."),
                              metric="%", value=100 * f / n, threshold=5))
     d = ag.get("drift")
     if d and d["items"]:
@@ -672,12 +742,13 @@ def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
         if any(x["what"] == "rules" for x in d["items"]):
             parts.append(L("het aantal eigen regels verschilt", "the number of custom rules differs"))
         out.append(issue("adguard:drift", "info", "config", "site", "dns",
-                         L("Je AdGuard-servers lopen uiteen", "Your AdGuard servers have drifted apart"),
+                         L(f"Je {P}-servers lopen uiteen" if P in ("AdGuard", "Pi-hole") else "Je DNS-filters lopen uiteen",
+                           f"Your {P} servers have drifted apart" if P in ("AdGuard", "Pi-hole") else "Your DNS filters have drifted apart"),
                          "; ".join(parts) + ".",
                          L("Valt de ene uit, dan gedraagt de andere zich anders: een naam die alleen op de ene een rewrite heeft, werkt dan niet "
-                           "meer. Zet ze gelijk, of laat ze bijhouden met adguardhome-sync.",
+                           "meer. Zet ze gelijk, of laat ze bijhouden met " + ("nebula-sync." if all(x.get("kind") == "pihole" for x in d["items"]) else "adguardhome-sync." if all(x.get("kind") == "adguard" for x in d["items"]) else "adguardhome-sync of nebula-sync."),
                            "If one fails, the other behaves differently: a name with a rewrite on only one of them stops working. "
-                           "Make them the same, or keep them in sync with adguardhome-sync.")))
+                           "Make them the same, or keep them in sync with " + ("nebula-sync." if all(x.get("kind") == "pihole" for x in d["items"]) else "adguardhome-sync." if all(x.get("kind") == "adguard" for x in d["items"]) else "adguardhome-sync or nebula-sync."))))
 
     # 2. wat belt je IoT naar huis?
     for mac, doms in new_domains(db, ts).items():
@@ -690,9 +761,9 @@ def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
                            f"After a week of learning, this device looked up {len(doms)} domain{'s' if len(doms) != 1 else ''} it never used "
                            f"before in the past day: {names}."),
                          L("Vaak is dit een firmware-update of een nieuwe dienst van de fabrikant. Ken je het domein niet en past het niet "
-                           "bij het merk, zoek het dan op of blokkeer het in AdGuard.",
+                           f"bij het merk, zoek het dan op of blokkeer het in {P}.",
                            "Often this is a firmware update or a new service from the vendor. If you don't know the domain and it doesn't "
-                           "match the brand, look it up or block it in AdGuard."), client_mac=mac, last_ts=doms[0]["first"]))
+                           f"match the brand, look it up or block it in {P}."), client_mac=mac, last_ts=doms[0]["first"]))
 
     # 4. malware en phishing tegengehouden
     for t in threats(db, ts):
@@ -701,7 +772,7 @@ def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
         both = t["ips"] > 0
         out.append(issue(f"dns_threat:{mac or t['ip']}", "critical" if both else "warning", "security", "client" if mac else "site",
                          mac or t["ip"],
-                         L(f"AdGuard hield malware of phishing tegen voor {who}", f"AdGuard blocked malware or phishing for {who}"),
+                         L(f"{P[0].upper() + P[1:]} hield malware of phishing tegen voor {who}", f"{P[0].upper() + P[1:]} blocked malware or phishing for {who}"),
                          L(f"{who}{' (' + t['ip'] + ')' if mac and t.get('ip') else ''}: {t['n']} keer in het afgelopen etmaal, via {', '.join(t['lists'])}: {', '.join(t['domains'][:3])}"
                            f"{'…' if len(t['domains']) > 3 else ''}." + (f" Ook de IPS greep {t['ips']} keer in bij dit apparaat." if both else ""),
                            f"{who}{' (' + t['ip'] + ')' if mac and t.get('ip') else ''}: {t['n']} times in the past day, via {', '.join(t['lists'])}: {', '.join(t['domains'][:3])}"
@@ -715,13 +786,13 @@ def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     rows, _ = bypass(snap, db, ts, ag)
     for b in rows:
         out.append(issue(f"dns_bypass:{b['mac']}", "info", "security", "client", b["mac"],
-                         L(f"{b['name']} vraagt AdGuard nooit iets", f"{b['name']} never asks AdGuard anything"),
-                         L(f"Dit apparaat maakte het afgelopen etmaal {b['flows']} verbindingen met internet, maar zocht niets op bij AdGuard.",
-                           f"This device made {b['flows']} internet connections in the past day, but looked up nothing at AdGuard."),
+                         L(f"{b['name']} vraagt {P} nooit iets", f"{b['name']} never asks {P} anything"),
+                         L(f"Dit apparaat maakte het afgelopen etmaal {b['flows']} verbindingen met internet, maar zocht niets op bij {P}.",
+                           f"This device made {b['flows']} internet connections in the past day, but looked up nothing at {P}."),
                          L("Waarschijnlijk heeft het een eigen DNS-server ingesteld (een NAT-regel die DNS omleidt vangt dat op, maar dan ziet "
-                           "AdGuard alleen je gateway als afzender) of gebruikt het DNS-over-HTTPS. Zet in het apparaat of de browser "
+                           f"{P} alleen je gateway als afzender) of gebruikt het DNS-over-HTTPS. Zet in het apparaat of de browser "
                            "'Beveiligde DNS' uit, of blokkeer de bekende DoH-servers in je firewall.",
-                           "It probably has its own DNS server set (a NAT rule that redirects DNS catches that, but then AdGuard only sees "
+                           f"It probably has its own DNS server set (a NAT rule that redirects DNS catches that, but then {P} only sees "
                            "your gateway as the sender) or it uses DNS-over-HTTPS. Turn off 'Secure DNS' in the device or browser, or block "
                            "the known DoH servers in your firewall."), client_mac=b["mac"], last_ts=b["last"]))
 
@@ -738,7 +809,10 @@ def view(ag_obj: AdGuard, snap: dict, db, ts: int) -> dict:
     watched = sum(1 for c in clients.values() if ag_obj.watched(c, segs))
     return {
         "active": ag["active"], "mock": bool(ag_obj.mock), "since": ag["since"], "personal": cfg["personal"],
-        "instances": [{"name": a.name, "url": a.url, **{k: v for k, v in ag_obj.status.get(a.url, {}).items() if k not in ("name", "url")},
+        "product": ag["product"], "kinds": ag["kinds"],
+        # Pi-hole bewaart geen antwoorden: namen bij verbindingen kan alleen met een AdGuard erbij
+        "names": "adguard" in ag["kinds"] or bool(ag_obj.mock),
+        "instances": [{"name": a.name, "url": a.url, "kind": a.kind, **{k: v for k, v in ag_obj.status.get(a.url, {}).items() if k not in ("name", "url", "kind")},
                        "stats": stats.get(a.url)} for a in ag_obj.apis()],
         "servers": ag["servers"], "drift": ag["drift"], "totals": {k: v for k, v in coverage(db, ts).items() if k != "per"},
         "threats": [{**t, "name": _who(clients, db, t["mac"]) if t["mac"] else t["ip"]} for t in threats(db, ts)],
@@ -763,6 +837,7 @@ def client_view(ag_obj: AdGuard, snap: dict, db, mac: str, ts: int) -> dict:
     doms = [dict(r) for r in db.q("SELECT domain, first, last, n, blocked FROM dns_domains WHERE mac=? ORDER BY n DESC LIMIT 40", (mac,))] if watched else []
     for d in doms:
         d["new"] = bool(start and start <= ts - LEARN_DAYS * DAY and d["first"] >= ts - DAY)
-    return {"active": ag_obj.active, "watched": watched, "auto": device_class(c, segs), "override": ag_obj.cfg["watch"].get(mac),
+    return {"active": ag_obj.active, "product": product(kind_of(i) for i in ag_obj.instances()) if ag_obj.active else None,
+            "watched": watched, "auto": device_class(c, segs), "override": ag_obj.cfg["watch"].get(mac),
             "queries": sum(q for q, _ in hourly.values()), "blocked": sum(b for _, b in hourly.values()),
             "learning_until": start + LEARN_DAYS * DAY if start and start > ts - LEARN_DAYS * DAY else None, "domains": doms}

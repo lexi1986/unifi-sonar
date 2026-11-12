@@ -426,7 +426,7 @@
     } catch (err) { alert(err.message); b && (b.disabled = false); }
     await refresh();
     if (current === "clients") loadPauses();
-    if (current === "security") loadAdGuard();
+    if (current === "beveiliging") loadAdGuard();
     return true;
   }
   // ---- een naam geven (in UniFi)
@@ -1620,7 +1620,7 @@
       <section class="card" style="margin-bottom:16px" id="sec-seg-card"><div class="card-head"><h2 style="margin:0">${L("Netwerkscheiding", "Network segmentation")}</h2><span class="muted" id="sec-seg-sub"></span></div>
         <div class="seg-nets" id="sec-seg-nets"></div><div id="sec-seg-matrix"></div><div id="sec-seg-issues"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Firewall, DNS en adviezen", "Firewall, DNS and advisories")}</h2><span class="muted" id="sec-checks-sub"></span></div><div class="issue-list" id="sec-checks"></div></section>
-      <section class="card" style="margin-bottom:16px" id="h-dns"><div class="card-head"><h2 style="margin:0">${L("DNS via AdGuard", "DNS via AdGuard")}</h2><span class="muted" id="sec-dns-sub"></span></div><div id="sec-dns"></div></section>
+      <section class="card" style="margin-bottom:16px" id="h-dns"><div class="card-head"><h2 style="margin:0" id="h-dns-title">${L("DNS-filter", "DNS filter")}</h2><span class="muted" id="sec-dns-sub"></span></div><div id="sec-dns"></div></section>
       <section class="card" style="margin-bottom:16px" id="h-vuln"><div class="card-head"><h2 style="margin:0">${L("Kwetsbaarheden", "Vulnerabilities")}</h2><span class="muted" id="sec-vuln-sub"></span></div><div id="sec-vuln"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Beveiligingsadviezen van Ubiquiti", "Ubiquiti security advisories")}</h2><span class="muted" id="sec-adv-sub"></span></div><div id="sec-adv"></div></section>
       <section class="card" style="margin-bottom:16px"><div class="card-head"><h2 style="margin:0">${L("Open naar internet", "Open to the internet")}</h2><span class="muted" id="sec-expo-sub"></span></div><div id="sec-expo"></div></section>
@@ -1793,12 +1793,14 @@
     const el = $("#sec-dns"); if (!el || current !== "beveiliging") return;
     if (!d.active) {
       $("#sec-dns-sub").textContent = "";
-      el.innerHTML = `<p class="help" style="margin:0">${L("Koppel AdGuard Home en Sonar laat zien welke namen achter je verbindingen zitten, wat je slimme apparaten opzoeken, of je DNS-servers het doen, wat AdGuard aan malware tegenhield en welke apparaten AdGuard overslaan.",
-        "Connect AdGuard Home and Sonar shows the names behind your connections, what your smart devices look up, whether your DNS servers work, what malware AdGuard blocked and which devices skip AdGuard.")}</p>
-        <div class="wiz-actions"><a class="btn" href="#/instellingen">${L("AdGuard koppelen", "Connect AdGuard")}</a></div>`;
+      $("#h-dns-title").textContent = L("DNS-filter", "DNS filter");
+      el.innerHTML = `<p class="help" style="margin:0">${L("Koppel AdGuard Home of Pi-hole en Sonar laat zien wat je slimme apparaten opzoeken, of je DNS-servers het doen, wat er aan malware werd tegengehouden en welke apparaten je filter overslaan. Met AdGuard Home ook welke namen achter je verbindingen zitten.", "Connect AdGuard Home or Pi-hole and Sonar shows what your smart devices look up, whether your DNS servers work, what malware was blocked and which devices skip your filter. With AdGuard Home also the names behind your connections.")}</p>
+        <div class="wiz-actions"><a class="btn" href="#/instellingen">${L("DNS-filter koppelen", "Connect DNS filter")}</a></div>`;
       return;
     }
     const t = d.totals, pct = t.queries ? Math.round(100 * t.blocked / t.queries) : 0;
+    const P = d.product || "AdGuard", KIND = { adguard: "AdGuard Home", pihole: "Pi-hole" };
+    $("#h-dns-title").textContent = `DNS via ${P}`;
     $("#sec-dns-sub").textContent = d.since ? L(`gevolgd sinds ${new Date(d.since * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short" })}`, `followed since ${new Date(d.since * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short" })}`) : "";
     const probes = new Map(d.servers.map((s) => [s.host, s]));
     const rows = d.instances.map((i) => ({ i, p: probes.get(agHost(i.url)) }));
@@ -1809,7 +1811,7 @@
       if (i && i.ok === false) b.push(badge("warning", L("Niet uit te lezen", "Can't read"), "alert"));
       if (i && i.protection === false) b.push(badge("warning", L("Bescherming uit", "Protection off"), "alert"));
       const host = p ? p.host : agHost(i.url);
-      const sub = [host !== (i?.name || p.name) ? host : "", !i ? L("alleen DNS-controle, niet gekoppeld", "DNS check only, not linked") : "", i?.version, i?.stats ? L(`${nf(i.stats.queries)} vragen in AdGuard`, `${nf(i.stats.queries)} queries in AdGuard`) : "", i && !p ? L("geen DNS-controle", "no DNS check") : "", i?.error || ""].filter(Boolean).join(" · ");
+      const sub = [host !== (i?.name || p.name) ? host : "", !i ? L("alleen DNS-controle, niet gekoppeld", "DNS check only, not linked") : "", i ? [KIND[i.kind] || "", i.version].filter(Boolean).join(" ") : "", i?.stats ? L(`${nf(i.stats.queries)} vragen geteld`, `${nf(i.stats.queries)} queries counted`) : "", i && !p ? L("geen DNS-controle", "no DNS check") : "", i?.error || "", i?.note || ""].filter(Boolean).join(" · ");
       return `<div class="adv-row"><div style="min-width:0"><div class="rank-name">${esc(i?.name || p.name)}</div><div class="cell-sub">${esc(sub)}</div></div><div class="adv-badges">${b.join("")}</div></div>`;
     };
     const what = { rewrites: ["rewrite", "rewrites"], lists: [L("filterlijst", "filter list"), L("filterlijsten", "filter lists")], upstreams: ["upstream", "upstreams"] };
@@ -1818,10 +1820,10 @@
     const ago2 = (ts) => new Date(ts * 1000).toLocaleString(LOC, { weekday: "short", hour: "2-digit", minute: "2-digit" });
     const ownRow = (x) => {
       const parts = [];
-      if (x.redirected) parts.push(L(`${nf(x.redirected)}× omgeleid naar AdGuard`, `${nf(x.redirected)}× redirected to AdGuard`));
+      if (x.redirected) parts.push(L(`${nf(x.redirected)}× omgeleid naar ${P}`, `${nf(x.redirected)}× redirected to ${P}`));
       if (x.blocked) parts.push(L(`${nf(x.blocked)}× tegengehouden door je firewall`, `${nf(x.blocked)}× stopped by your firewall`));
       if (x.dot) parts.push(L(`${nf(x.dot)}× DNS-over-TLS doorgelaten`, `${nf(x.dot)}× DNS-over-TLS let through`));
-      const b = x.dot ? badge("warning", L("Om AdGuard heen", "Around AdGuard"), "alert")
+      const b = x.dot ? badge("warning", L("Om je filter heen", "Around your filter"), "alert")
         : x.redirected ? badge("ok", L("Omgeleid", "Redirected"), "check") : badge("ok", L("Tegengehouden", "Stopped"), "shield");
       return `<div class="adv-row"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${esc(x.servers.join(", "))} · ${parts.join(" · ")}</div></div><div class="adv-badges">${b}</div></div>`;
     };
@@ -1832,16 +1834,17 @@
         <div><div class="k">${L("Omgeleid via de gateway", "Redirected via the gateway")}</div><div class="v">${nf(t.redirected)}</div></div>
       </div>
       <h3>${L("DNS-servers", "DNS servers")}</h3><div class="adv-list">${rows.map(srvRow).join("")}</div>
-      ${drift.length ? `<h3>${L("Verschillen tussen je AdGuard-servers", "Differences between your AdGuard servers")}</h3><div class="adv-list">${drift.map((x) => `<div class="adv-row"><div style="min-width:0"><div class="rank-name">${esc(missing(x))}</div><div class="cell-sub">${esc(x.items.join(", "))}</div></div><div class="adv-badges">${badge("info", L("Uiteen", "Drifted"), "info")}</div></div>`).join("")}</div>` : ""}
+      ${drift.length ? `<h3>${L("Verschillen tussen je DNS-servers", "Differences between your DNS servers")}</h3><div class="adv-list">${drift.map((x) => `<div class="adv-row"><div style="min-width:0"><div class="rank-name">${esc(missing(x))}</div><div class="cell-sub">${esc(x.items.join(", "))}</div></div><div class="adv-badges">${badge("info", L("Uiteen", "Drifted"), "info")}</div></div>`).join("")}</div>` : ""}
       ${d.threats.length ? `<h3>${L("Malware en phishing tegengehouden", "Malware and phishing blocked")}</h3><div class="adv-list">${d.threats.map((x) => `<div class="adv-row hit"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${x.mac && x.ip ? `${esc(x.ip)} · ` : ""}${esc(x.domains.slice(0, 4).join(", "))} · ${esc(x.lists.join(", "))} · ${L("laatst", "last")} ${ago2(x.last)}</div></div>
         <div class="adv-badges"><span class="num muted">${nf(x.n)}×</span>${x.ips ? badge("critical", L("Ook IPS", "IPS too"), "alert") : badge("warning", L("Tegengehouden", "Blocked"), "shield")}${x.mac ? quarantineMenu(x.mac, L(`Malware/phishing: ${x.domains.slice(0, 2).join(", ")}`, `Malware/phishing: ${x.domains.slice(0, 2).join(", ")}`), true, x.ip) : ""}</div></div>`).join("")}</div>` : ""}
       ${d.new_domains.length ? `<h3>${L("Nieuwe domeinen bij gevolgde apparaten", "New domains on followed devices")}</h3><div class="adv-list">${d.new_domains.map((x) => `<div class="adv-row"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${x.domains.slice(0, 5).map((v) => `${esc(v.domain)}${v.blocked ? ` (${L("geblokkeerd", "blocked")})` : ""}`).join(", ")}${x.domains.length > 5 ? "…" : ""} · ${L("sinds", "since")} ${ago2(x.domains[x.domains.length - 1].first)}</div></div><div class="adv-badges">${badge("info", L("Nieuw", "New"), "info")}</div></div>`).join("")}</div>` : ""}
-      <h3>${L("Apparaten die AdGuard overslaan", "Devices that skip AdGuard")}</h3>
-      ${d.bypass.length ? `<div class="adv-list">${d.bypass.map((x) => `<div class="adv-row"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${L(`${nf(x.flows)} verbindingen met internet in 24 uur, geen enkele vraag aan AdGuard`, `${nf(x.flows)} internet connections in 24 hours, not a single query to AdGuard`)}</div></div><div class="adv-badges">${badge("warning", L("Nakijken", "Review"), "alert")}</div></div>`).join("")}</div>`
-        : `<p class="help" style="margin:0">${d.bypass_why ? esc(d.bypass_why) : L("Elk apparaat met internetverkeer vraagt ook iets aan AdGuard.", "Every device with internet traffic also asks AdGuard something.")}</p>`}
+      <h3>${L(`Apparaten die ${P} overslaan`, `Devices that skip ${P}`)}</h3>
+      ${d.bypass.length ? `<div class="adv-list">${d.bypass.map((x) => `<div class="adv-row"><div style="min-width:0">${openCli(x.mac, x.name)}<div class="cell-sub">${L(`${nf(x.flows)} verbindingen met internet in 24 uur, geen enkele vraag aan ${P}`, `${nf(x.flows)} internet connections in 24 hours, not a single query to ${P}`)}</div></div><div class="adv-badges">${badge("warning", L("Nakijken", "Review"), "alert")}</div></div>`).join("")}</div>`
+        : `<p class="help" style="margin:0">${d.bypass_why ? esc(d.bypass_why) : L(`Elk apparaat met internetverkeer vraagt ook iets aan ${P}.`, `Every device with internet traffic also asks ${P} something.`)}</p>`}
       ${(d.own_dns || []).length ? `<h3>${L("Apparaten met een eigen DNS-server", "Devices with their own DNS server")}</h3><div class="adv-list">${d.own_dns.map(ownRow).join("")}</div>` : ""}
-      <p class="help" style="margin:12px 0 0">${L(`Omgeleide vragen zijn van apparaten met een eigen DNS-server: je NAT-regel stuurt ze naar AdGuard, maar dan ziet AdGuard alleen de gateway als afzender. ${d.not_watched ? `Domeinen bewaart Sonar alleen van de ${nf(d.watched)} apparaten die het volgt (slimme apparaten en servers${d.personal ? ", en telefoons en laptops" : ""}); van de andere ${nf(d.not_watched)} telt het alleen hoeveel ze opzoeken.` : `Sonar volgt alle ${nf(d.watched)} apparaten en bewaart van elk welke domeinen het opzoekt. Per apparaat zet je dat uit in de apparaatkaart.`}`,
-        `Redirected queries come from devices with their own DNS server: your NAT rule sends them to AdGuard, but then AdGuard only sees the gateway as the sender. ${d.not_watched ? `Sonar keeps domains only for the ${nf(d.watched)} devices it follows (smart devices and servers${d.personal ? ", and phones and laptops" : ""}); for the other ${nf(d.not_watched)} it only counts how much they look up.` : `Sonar follows all ${nf(d.watched)} devices and keeps which domains each one looks up. Turn that off per device in the device panel.`}`)}</p>`;
+      ${d.names ? "" : `<p class="help" style="margin:12px 0 0">${L("Pi-hole bewaart niet welk adres bij een domein hoort. Namen bij verbindingen die UniFi niet kan benoemen kan Sonar daarom alleen aanvullen met een AdGuard Home.", "Pi-hole doesn't keep which address belongs to a domain. That's why Sonar can only add names to connections UniFi can't name with an AdGuard Home.")}</p>`}
+      <p class="help" style="margin:12px 0 0">${L(`Omgeleide vragen zijn van apparaten met een eigen DNS-server: je NAT-regel stuurt ze naar ${P}, maar dan ziet ${P} alleen de gateway als afzender. ${d.not_watched ? `Domeinen bewaart Sonar alleen van de ${nf(d.watched)} apparaten die het volgt (slimme apparaten en servers${d.personal ? ", en telefoons en laptops" : ""}); van de andere ${nf(d.not_watched)} telt het alleen hoeveel ze opzoeken.` : `Sonar volgt alle ${nf(d.watched)} apparaten en bewaart van elk welke domeinen het opzoekt. Per apparaat zet je dat uit in de apparaatkaart.`}`,
+        `Redirected queries come from devices with their own DNS server: your NAT rule sends them to ${P}, but then ${P} only sees the gateway as the sender. ${d.not_watched ? `Sonar keeps domains only for the ${nf(d.watched)} devices it follows (smart devices and servers${d.personal ? ", and phones and laptops" : ""}); for the other ${nf(d.not_watched)} it only counts how much they look up.` : `Sonar follows all ${nf(d.watched)} devices and keeps which domains each one looks up. Turn that off per device in the device panel.`}`)}</p>`;
     hydrateIcons(el);
   }
 
@@ -2346,7 +2349,7 @@
   function mountSettings() {
     mount("instellingen", `<div class="page-head"><div><h1>${L("Instellingen", "Settings")}</h1><p class="subtitle">${L("Koppeling, taal, meldingen naar je telefoon, toegang en probleemoplossing.", "Connection, language, notifications to your phone, access and troubleshooting.")}</p></div></div>
       ${jumpBar("instellingen", [["#h-conn", L("Koppeling", "Connection"), 1], ["#h-lang", L("Taal", "Language")], ["#h-notify", L("Meldingen", "Notifications")], ["#h-mqtt", "Home Assistant"],
-        ["#h-adguard", "AdGuard"], ["#h-access", L("Toegang", "Access")], ["#h-backups", "Backups"], ["#h-kiosk", L("Muurscherm", "Wall display")], ["#h-debug", L("Probleemoplossing", "Troubleshooting")]])}
+        ["#h-adguard", L("DNS-filter", "DNS filter")], ["#h-access", L("Toegang", "Access")], ["#h-backups", "Backups"], ["#h-kiosk", L("Muurscherm", "Wall display")], ["#h-debug", L("Probleemoplossing", "Troubleshooting")]])}
       <div class="settings">
         <section class="card" aria-labelledby="h-conn"><h2 id="h-conn">${L("Koppeling", "Connection")}</h2><div id="set-conn"></div></section>
         <section class="card" aria-labelledby="h-lang"><h2 id="h-lang">${L("Taal", "Language")}</h2>
@@ -2355,8 +2358,8 @@
           <p class="help" style="margin:-4px 0 4px">${L("Krijg een bericht als er iets misgaat: via Home Assistant, ntfy, Discord, Slack of een eigen webhook.", "Get a message when something goes wrong: via Home Assistant, ntfy, Discord, Slack or your own webhook.")}</p><div id="set-notify"></div></section>
         <section class="card" aria-labelledby="h-mqtt"><h2 id="h-mqtt">Home Assistant (MQTT)</h2>
           <p class="help" style="margin:-4px 0 4px">${L("Zet de netwerkscore, meldingen, internetsnelheid, datagebruik en een speedtest-knop in Home Assistant. HA herkent alles vanzelf via MQTT-discovery.", "Put the network score, issues, internet speed, data usage and a speed test button in Home Assistant. HA picks everything up automatically via MQTT discovery.")}</p><div id="set-mqtt"></div></section>
-        <section class="card" aria-labelledby="h-adguard"><h2 id="h-adguard">AdGuard Home</h2>
-          <p class="help" style="margin:-4px 0 4px">${L("Namen bij je verbindingen, wat je slimme apparaten opzoeken, of je DNS-servers het doen en wat AdGuard aan malware tegenhield. Sonar leest alleen.", "Names for your connections, what your smart devices look up, whether your DNS servers work and what malware AdGuard blocked. Sonar only reads.")}</p><div id="set-adguard"></div></section>
+        <section class="card" aria-labelledby="h-adguard"><h2 id="h-adguard">${L("DNS-filter: AdGuard Home of Pi-hole", "DNS filter: AdGuard Home or Pi-hole")}</h2>
+          <p class="help" style="margin:-4px 0 4px">${L("Wat je slimme apparaten opzoeken, of je DNS-servers het doen, wat er aan malware werd tegengehouden en wie je filter overslaat. Met AdGuard Home ook namen bij je verbindingen. Sonar leest alleen.", "What your smart devices look up, whether your DNS servers work, what malware was blocked and who skips your filter. With AdGuard Home also names for your connections. Sonar only reads.")}</p><div id="set-adguard"></div></section>
         <section class="card" aria-labelledby="h-access"><h2 id="h-access">${L("Toegang", "Access")}</h2><div id="set-access"></div></section>
         <section class="card" aria-labelledby="h-backups"><h2 id="h-backups">${L("UniFi-backups", "UniFi backups")}</h2><div id="set-backups"></div></section>
         <section class="card" aria-labelledby="h-kiosk"><h2 id="h-kiosk">${L("Muurscherm", "Wall display")}</h2>
@@ -2373,6 +2376,8 @@
     });
     loadNotify(); loadMqtt(); loadAgSettings(); loadAccess(); loadBackups(); loadDebug();
     $("#set-adguard").addEventListener("click", (e) => { const b = e.target.closest("[data-ag]"); if (b) agAction(b.dataset.ag, b); });
+    // een ander soort server: de velden passen zich aan, en een opgeslagen wachtwoord hoort daar niet meer bij
+    $("#set-adguard").addEventListener("change", (e) => { if (e.target.matches("[data-ag-kind]")) { e.target.closest(".ag-row").dataset.pw = "0"; loadAgSettings(agRows()); } });
     $("#set-mqtt").addEventListener("click", (e) => { const b = e.target.closest("[data-mq]"); if (b) mqttAction(b.dataset.mq, b); });
   }
   UPDATERS.instellingen = async function () {   // alleen de koppeling ververst; formulieren blijven staan
@@ -2467,48 +2472,52 @@
   // ---- AdGuard Home
   let agData = null;
   function agRows() {   // wat er nu in het formulier staat
-    return [...document.querySelectorAll("#ag-list .ag-row")].map((r) => ({ name: r.querySelector("[name=name]").value, url: r.querySelector("[name=url]").value,
+    return [...document.querySelectorAll("#ag-list .ag-row")].map((r) => ({ kind: r.querySelector("[name=kind]").value, name: r.querySelector("[name=name]").value, url: r.querySelector("[name=url]").value,
       username: r.querySelector("[name=username]").value, password: r.querySelector("[name=password]").value || null,
       verify_tls: r.querySelector("[name=verify_tls]").checked, has_password: r.dataset.pw === "1" }));
   }
   async function loadAgSettings(rows) {
     if (!rows) { try { agData = await api("/api/adguard"); } catch (e) { return; } rows = agData.settings.instances; }
     const el = $("#set-adguard"); if (!el) return;
-    if (!rows.length) rows = [{ name: "", url: "", username: "", has_password: false, verify_tls: false }];
+    if (!rows.length) rows = [{ kind: "adguard", name: "", url: "", username: "", has_password: false, verify_tls: false }];
     const st = new Map((agData?.instances || []).map((i) => [i.url, i]));
     const keep = L("opgeslagen (leeg laten = behouden, zolang het adres gelijk blijft)", "stored (leave empty = keep, as long as the address stays the same)");
     el.innerHTML = `<div id="ag-list">${rows.map((r, n) => {
       const s = st.get(r.url && !r.url.includes("://") ? "http://" + r.url : r.url);
       const state = !s || agData?.mock ? "" : s.ok ? badge("ok", `${L("Verbonden", "Connected")}${s.version ? ` · ${s.version}` : ""}`, "check") : s.ok === false ? badge("critical", s.error || L("Fout", "Error"), "octagon") : "";
+      const pi = r.kind === "pihole";
       return `<div class="ag-row" data-pw="${r.has_password ? 1 : 0}">${n ? `<hr class="sep">` : ""}
         <form class="form-grid" onsubmit="return false">
-          <div class="field"><label for="ag-name-${n}">${L("Naam", "Name")}</label><input class="input" id="ag-name-${n}" name="name" value="${esc(r.name || "")}" placeholder="${L("bijv. AdGuard 1", "e.g. AdGuard 1")}"></div>
-          <div class="field"><label for="ag-url-${n}">${L("Adres", "Address")}</label><input class="input" id="ag-url-${n}" name="url" value="${esc(r.url || "")}" placeholder="http://192.168.1.10"></div>
-          <div class="field"><label for="ag-user-${n}">${L("Gebruikersnaam", "Username")}</label><input class="input" id="ag-user-${n}" name="username" autocomplete="off" value="${esc(r.username || "")}"></div>
-          <div class="field"><label for="ag-pw-${n}">${L("Wachtwoord", "Password")}</label><input class="input" id="ag-pw-${n}" name="password" type="password" autocomplete="new-password" placeholder="${r.has_password ? keep : ""}"></div>
+          <div class="field"><label for="ag-kind-${n}">${L("Soort", "Type")}</label><select class="input" id="ag-kind-${n}" name="kind" data-ag-kind><option value="adguard" ${pi ? "" : "selected"}>AdGuard Home</option><option value="pihole" ${pi ? "selected" : ""}>Pi-hole (${L("versie 6", "version 6")})</option></select></div>
+          <div class="field"><label for="ag-name-${n}">${L("Naam", "Name")}</label><input class="input" id="ag-name-${n}" name="name" value="${esc(r.name || "")}" placeholder="${pi ? L("bijv. Pi-hole 1", "e.g. Pi-hole 1") : L("bijv. AdGuard 1", "e.g. AdGuard 1")}"></div>
+          <div class="field"><label for="ag-url-${n}">${L("Adres", "Address")}</label><input class="input" id="ag-url-${n}" name="url" value="${esc(r.url || "")}" placeholder="${pi ? "http://pi.hole" : "http://192.168.1.10"}"></div>
+          <div class="field" ${pi ? "hidden" : ""}><label for="ag-user-${n}">${L("Gebruikersnaam", "Username")}</label><input class="input" id="ag-user-${n}" name="username" autocomplete="off" value="${esc(r.username || "")}"></div>
+          <div class="field"><label for="ag-pw-${n}">${pi ? L("Wachtwoord of app-wachtwoord", "Password or app password") : L("Wachtwoord", "Password")}</label><input class="input" id="ag-pw-${n}" name="password" type="password" autocomplete="new-password" placeholder="${r.has_password ? keep : ""}"></div>
           <div class="field" style="grid-column:1/-1"><label class="check"><input type="checkbox" name="verify_tls" ${r.verify_tls ? "checked" : ""}> ${L("Certificaat controleren (alleen bij https met een geldig certificaat)", "Verify certificate (only for https with a valid certificate)")}</label></div>
         </form>
         <div class="wiz-actions" style="margin-top:4px;align-items:center"><button class="btn" data-ag="test" data-n="${n}">${L("Verbinding testen", "Test connection")}</button>${rows.length > 1 ? `<button class="btn ghost" data-ag="remove" data-n="${n}">${L("Verwijderen", "Remove")}</button>` : ""}<span class="ag-msg">${state}</span></div></div>`;
     }).join("")}</div>
-      ${rows.length < 4 ? `<div class="wiz-actions" style="margin-top:12px"><button class="btn ghost" data-ag="add">${L("Nog een AdGuard toevoegen", "Add another AdGuard")}</button></div>` : ""}
+      ${rows.length < 4 ? `<div class="wiz-actions" style="margin-top:12px"><button class="btn ghost" data-ag="add">${L("Nog een DNS-server toevoegen", "Add another DNS server")}</button></div>` : ""}
       <hr class="sep"><label class="check"><input type="checkbox" id="ag-personal" ${agData?.settings.personal ? "checked" : ""}> ${L("Ook domeinen van telefoons, laptops en tablets bewaren", "Also keep domains of phones, laptops and tablets")}</label>
       <p class="help">${L("Standaard bewaart Sonar alleen welke domeinen slimme apparaten en servers opzoeken. Van de andere apparaten telt het alleen hoeveel ze opzoeken, want hun querylog is in feite de browsegeschiedenis van wie ze gebruikt. Per apparaat kun je dit aanpassen in de details van dat apparaat.",
         "By default Sonar only keeps which domains smart devices and servers look up. For other devices it only counts how much they look up, because their query log is in effect the browsing history of whoever uses them. You can change this per device in that device's details.")}</p>
       <div class="wiz-actions" style="margin-top:8px;align-items:center"><button class="btn primary" data-ag="save">${L("Opslaan", "Save")}</button><span id="ag-msg"></span></div>
-      <p class="help">${L("AdGuard Home kent geen gebruikers die alleen mogen lezen. Sonar doet alleen leesverzoeken en het wachtwoord blijft op deze machine. Het adres is dat van de beheerpagina van AdGuard, met de poort als die niet 80 of 443 is.",
-        "AdGuard Home has no read-only users. Sonar only makes read requests and the password stays on this machine. The address is that of AdGuard's admin page, with the port if it isn't 80 or 443.")}</p>`;
+      <p class="help">${L("Het adres is dat van de beheerpagina, met de poort als die niet 80 of 443 is. Sonar doet alleen leesverzoeken en het wachtwoord blijft op deze machine. AdGuard Home en Pi-hole kennen geen gebruikers die alleen mogen lezen.",
+        "The address is that of the admin page, with the port if it isn't 80 or 443. Sonar only makes read requests and the password stays on this machine. AdGuard Home and Pi-hole have no read-only users.")}</p>
+      <p class="help">${L("Pi-hole: alleen versie 6. Maak het liefst een app-wachtwoord aan (Pi-hole → Settings → Web interface / API → Configure app password); dat is ook nodig als je 2FA gebruikt. Pi-hole bewaart niet welk adres bij een domein hoort, dus namen bij verbindingen vult Sonar alleen aan met een AdGuard Home.",
+        "Pi-hole: version 6 only. Preferably create an app password (Pi-hole → Settings → Web interface / API → Configure app password); you need one anyway if you use 2FA. Pi-hole doesn't keep which address belongs to a domain, so Sonar only adds names to connections with an AdGuard Home.")}</p>`;
     hydrateIcons(el);
   }
   async function agAction(act, b) {
     const rows = agRows(), n = +b.dataset.n;
-    if (act === "add") return loadAgSettings([...rows, { name: "", url: "", username: "", has_password: false, verify_tls: false }]);
+    if (act === "add") return loadAgSettings([...rows, { kind: rows[rows.length - 1]?.kind || "adguard", name: "", url: "", username: "", has_password: false, verify_tls: false }]);
     if (act === "remove") return loadAgSettings(rows.filter((_, i) => i !== n));
     b.disabled = true;
     try {
       if (act === "test") {
         const out = b.parentElement.querySelector(".ag-msg");
         const r = await post("/api/adguard/test", rows[n]);
-        out.innerHTML = r.ok ? badge("ok", `${L("Inloggen gelukt", "Login succeeded")}${r.version ? ` · ${r.version}` : ""}${r.log ? "" : L(" · querylog is leeg of staat uit", " · query log is empty or off")}`, "check") : badge("critical", r.error, "octagon");
+        out.innerHTML = r.ok ? badge("ok", `${L("Inloggen gelukt", "Login succeeded")}${r.version ? ` · ${r.version}` : ""}${r.log ? "" : L(" · querylog is leeg of staat uit", " · query log is empty or off")}${r.note ? ` · ${r.note}` : ""}`, "check") : badge("critical", r.error, "octagon");
         hydrateIcons(out);
       } else if (act === "save") {
         await post("/api/adguard/settings", { instances: rows.filter((r) => r.url.trim()), personal: $("#ag-personal").checked });
@@ -3089,7 +3098,7 @@
     body += `<div class="card"><div class="card-head"><h3>${L("Patroon", "Pattern")}</h3><span class="muted">${L("afgelopen 7 dagen", "past 7 days")}</span></div><div id="dr-pattern"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
     body += `<div class="card"><div class="card-head"><h3>${L("Verbruik", "Usage")}</h3><span class="muted" id="dr-cu-sub"></span></div><div id="dr-cu"><div class="chart-empty">${L("Laden…", "Loading…")}</div></div></div>`;
     if (!c.wired) body += `<div class="card"><h3 style="margin-bottom:8px">${L("Roaming en verbindingen", "Roaming and connections")}</h3><div class="events" id="dr-events"></div></div>`;
-    body += `<div class="card" id="dr-dns-card" hidden><div class="card-head"><h3>DNS (AdGuard)</h3><span class="muted">${L("afgelopen 24 uur", "past 24 hours")}</span></div><div id="dr-dns"></div></div>`;
+    body += `<div class="card" id="dr-dns-card" hidden><div class="card-head"><h3 id="dr-dns-title">DNS</h3><span class="muted">${L("afgelopen 24 uur", "past 24 hours")}</span></div><div id="dr-dns"></div></div>`;
     $("#drawer-body").innerHTML = body;
     loadClientPattern(c); loadClientUsageChart(c); loadClientDns(c); loadClientIdentity(c);
     if (!c.wired) { bindRange("dr-range", () => loadClientHistory(c)); await loadClientHistory(c); }
@@ -3099,6 +3108,7 @@
     try { d = await api(`/api/adguard/client/${encodeURIComponent(c.mac)}`); } catch (e) { return; }
     const el = $("#dr-dns"); if (!el || !d.active || state.drawer?.id !== c.mac) return;
     el.closest(".card").hidden = false;
+    $("#dr-dns-title").textContent = d.product ? `DNS (${d.product})` : "DNS";
     const auto = { smart: L("slim apparaat", "smart device"), server: "server", personal: L("persoonlijk apparaat", "personal device") }[d.auto];
     const sel = d.override === true ? "on" : d.override === false ? "off" : "auto";
     const day = (ts) => new Date(ts * 1000).toLocaleDateString(LOC, { day: "numeric", month: "short" });

@@ -9,6 +9,7 @@ import zlib
 from datetime import datetime, timezone
 
 from .mock import FLOW_DEST, IOT_CLIENTS, WIRED, WIRELESS, _cip, _mac
+from .adguard import API as _API
 
 
 def reg_domain(name: str) -> str:
@@ -81,7 +82,8 @@ def _iso(t: float) -> str:
     return datetime.fromtimestamp(t, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class MockAPI:
+class MockAPI(_API):
+    """Dezelfde methodes als de echte AdGuard-client; alleen de antwoorden komen hiervandaan."""
     snap: dict = {}
 
     def __init__(self, inst: dict, n: int) -> None:

@@ -2,6 +2,23 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.12.0 – 2026-11-12
+
+### Added
+- **Pi-hole as DNS filter**, next to AdGuard Home. Under Settings → DNS filter you choose the type per server; you can also mix them. Pi-hole version 6 only (its new API), with the normal password or an app password, which you need if you use 2FA. Sonar logs in once and keeps the session alive instead of logging in every minute.
+  - Works with Pi-hole: what smart devices and servers look up, new-domain notifications, DNS server checks, blocking switched off, drift between two Pi-holes (local DNS records, lists, upstreams), malware and phishing blocked by a security list, and devices that skip the filter.
+  - Not with Pi-hole: names for connections UniFi can't name. Pi-hole's query log doesn't keep which address belonged to a domain; with an AdGuard Home next to it, that still works.
+  - If Pi-hole's privacy level hides domains or clients, Sonar says so instead of showing empty lists.
+- Texts and advice name the product you use (AdGuard or Pi-hole), with the right menu path for each.
+
+### Changed
+- The settings card is now called *DNS filter*. Existing AdGuard settings keep working unchanged.
+- Differences between servers are only compared between servers of the same type.
+
+### Fixed
+- A DNS server you removed in Settings kept showing up in checks until Sonar restarted.
+- The DNS card on the Security page didn't refresh after putting a device in quarantine.
+
 ## 1.11.0 – 2026-11-11
 
 ### Changed

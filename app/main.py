@@ -39,7 +39,7 @@ from . import auth as auth_mod  # noqa: E402
 from . import backups as backups_mod  # noqa: E402
 from . import i18n  # noqa: E402
 from . import notify as notify_mod  # noqa: E402
-from . import adguard, ha_mqtt, identify  # noqa: E402
+from . import adguard, ha_mqtt, identify, pihole  # noqa: E402
 from . import passkeys as passkey_mod  # noqa: E402
 from . import setup as setup_mod  # noqa: E402
 from .collector import Collector  # noqa: E402
@@ -1180,6 +1180,7 @@ def vulnscan_accept(req: VulnAccept):
 
 
 class AdGuardInstance(BaseModel):
+    kind: Literal["adguard", "pihole"] = "adguard"
     name: str = Field(default="", max_length=60)
     url: str = Field(max_length=300)
     username: str = Field(default="", max_length=120)
@@ -1204,9 +1205,14 @@ def _ag_instances(req_instances: list[AdGuardInstance]) -> list[dict]:
                                        f"'{url}' is not a valid address. Use for example http://192.168.1.10."))
         if "://" not in url:
             url = "http://" + url
+        if i.kind == "pihole":
+            url = pihole.base_url(url)          # zonder /admin erachter: de API zit op het adres zelf
         prev = old.get(url) or {}
-        out.append({"name": i.name.strip() or adguard.host_of(url), "url": url, "username": i.username.strip(),
-                    # een opgeslagen wachtwoord gaat nooit mee naar een ander adres
+        if adguard.kind_of(prev) != i.kind:
+            prev = {}
+        out.append({"kind": i.kind, "name": i.name.strip() or adguard.host_of(url), "url": url,
+                    "username": "" if i.kind == "pihole" else i.username.strip(),      # Pi-hole kent alleen een wachtwoord
+                    # een opgeslagen wachtwoord gaat nooit mee naar een ander adres of een ander soort server
                     "password": i.password if i.password else prev.get("password", ""), "verify_tls": i.verify_tls})
     return out
 
@@ -1241,7 +1247,7 @@ def adguard_settings(req: AdGuardSave):
 async def adguard_test(req: AdGuardInstance):
     inst = _ag_instances([req])
     if not inst:
-        raise HTTPException(400, L("Vul het adres van AdGuard Home in.", "Enter the address of AdGuard Home."))
+        raise HTTPException(400, L("Vul het adres van de beheerpagina in.", "Enter the address of the admin page."))
     return await adguard.test_instance(inst[0])
 
 

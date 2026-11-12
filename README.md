@@ -41,7 +41,7 @@ Sonar doesn't replace your controller; it sits next to it and does the thinking.
 - **DNS leaks:** devices that bypass your own DNS server (Pi-hole, AdGuard) with plain DNS, DNS-over-TLS or DNS-over-HTTPS, so your filters don't apply to them.
 - **Firewall audit:** rules that never match because an earlier rule catches everything, and allow rules that open your main network to IoT, guests or the internet.
 - **Ubiquiti security advisories** matched against the firmware of your APs, switches, gateway and Network app, with the version that fixes it.
-- **AdGuard Home** (optional, read-only): names for connections UniFi can't name, what your smart devices and servers look up (with a notification for new domains after a week of learning), whether your DNS servers answer and agree with each other, malware and phishing that AdGuard blocked per device (critical when the IPS stepped in too), and devices that never ask AdGuard anything.
+- **AdGuard Home or Pi-hole** (optional, read-only; Pi-hole version 6): what your smart devices and servers look up (with a notification for new domains after a week of learning), whether your DNS servers answer and agree with each other, malware and phishing that it blocked per device (critical when the IPS stepped in too), and devices that never ask it anything. With AdGuard Home also names for connections UniFi can't name; Pi-hole doesn't keep the answers needed for that.
 - **Vulnerability check**: flaws that are really being exploited (CISA KEV), optionally your public address via Shodan InternetDB (each open port matched against your port forwards, UPnP and VPN servers), and a slow port check you start yourself. It always shows what was and wasn't looked at; smart devices are never probed.
 - **Network segmentation:** your VLANs, their firewall zones and an interactive diagram of what may talk to what. Smart-home devices (Espressif, Tuya, Shelly, ESPHome…) on your main network are flagged.
 - **What's open to the internet:** UPnP, port forwards on commonly attacked ports, exposed SSH/RDP/databases, and **IPS blocks of your own devices** (attacks from outside are the IPS doing its job; your own device being blocked deserves a look).
@@ -61,7 +61,7 @@ A live map, flat or as a rotating 3D globe, of every connection through your gat
 **And also**
 - **Change log:** every settings change lands on the timeline, like "Wi-Fi 'Home': Fast Roaming off → on" or "AP Living room · 2.4 GHz channel: 11 → 6".
 - **Pause the internet** per device (30 minutes, 1 or 2 hours, until tomorrow) and **fixed pause times** for groups of devices ("Kids, school nights 21:00–07:00").
-- **Quarantine**: block a device until you release it, with the reason next to it. Offered next to malware that AdGuard blocked; schedules never let it go, and an issue reminds you while it lasts.
+- **Quarantine**: block a device until you release it, with the reason next to it. Offered next to malware that your DNS filter blocked; schedules never let it go, and an issue reminds you while it lasts.
 - **Devices without a name**: Sonar guesses what each one is from what it looks up, its vendor and its hostname ("Tuya plug, certain: looks up tuyaeu.com, vendor Tuya"), and you give it that name in UniFi with one click.
 - **Patterns:** each device's favourite AP and when it is home, per hour of the week.
 - **Notifications** to Home Assistant, ntfy, Discord, Slack or your own webhook, after a configurable delay, with an update when it gets worse and a message when it's resolved.
@@ -156,7 +156,7 @@ Installed before version 1.2? Run the install command once more (or `pct exec <c
 
 - **Everything stays on your machine.** Nothing goes to the internet except downloading the software when installing or updating, the notifications to services you set up yourself, and fetching two public lists: Ubiquiti's security advisories every 6 hours and CISA's list of exploited flaws once a day (nothing about your network is sent; you can switch both off on the Security page). Only if you turn it on, your public address is looked up at Shodan InternetDB once a day. During a speed test Sonar also briefly opens connections to `www.cloudflare.com` to measure the delay; no data is sent.
 - **Sonar doesn't change your UniFi settings.** The only actions are *Reconnect* for one Wi-Fi device, starting a speed test on the gateway, *Pause*, *Fixed pause times* and *Quarantine*, which block a device in UniFi until the chosen time is up or you release it, and *Set name*, which gives a device a name in UniFi. If you turn it on, Sonar also asks the controller to make a backup. Everything else is read-only.
-- **AdGuard's query log is in effect the browsing history of everyone at home.** Sonar therefore only keeps which domains smart devices and servers look up; for phones, laptops and tablets it only counts how much they look up, unless you change that. Blocked malware and phishing are kept for every device. Sonar only reads from AdGuard.
+- **The query log of AdGuard or Pi-hole is in effect the browsing history of everyone at home.** Sonar therefore only keeps which domains smart devices and servers look up; for phones, laptops and tablets it only counts how much they look up, unless you change that. Blocked malware and phishing are kept for every device. Sonar only reads from AdGuard.
 - The API key, webhook URLs and MQTT password live only in `/var/lib/unifi-sonar/config.json`, readable only by the service. The browser never gets the key back.
 - With certificate verification off, Sonar pins your controller's certificate on first connection and won't send its key if the certificate changes; confirm a real change under *Settings → Access*. Updates only install published releases, and Python packages are checked against fixed hashes.
 - **A login is required.** The first password needs a one-time code that is displayed after installing (or run `cat /var/lib/unifi-sonar/setup-code` on the machine). Only the demo works without a login. Under *Settings → Access* you can see logged-in devices and log them out. The password is only stored as a scrypt hash. Even with a login: **don't expose the dashboard to the internet.**
@@ -208,7 +208,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 | `app/rules.py`, `app/rules_extra.py` | All issues, grouping by cause and scores |
 | `app/advisories.py` | Ubiquiti security advisories and matching them to your firmware |
 | `app/vulnscan.py` | Vulnerability check: exploited flaws, outside view, port check and what was covered |
-| `app/adguard.py` | AdGuard Home: query log (with the privacy rules), names for connections, DNS checks and the five checks |
+| `app/adguard.py` | DNS filter (AdGuard Home or Pi-hole): query log (with the privacy rules), names for connections, DNS checks and the five checks |
+| `app/pihole.py` | Pi-hole version 6: session login and the same data in the same shape as AdGuard |
 | `app/mock_adguard.py` | Demo data for AdGuard |
 | `app/identify.py` | Recognising devices without a name (domains, vendor, hostname) |
 | `app/portprobe.py` | The port check itself, a separate process without Sonar's secrets |
