@@ -2,7 +2,7 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
-## Unreleased
+## 1.13.0 – 2026-11-15
 
 ### Changed
 - **Channel advice names the channel.** Issues that told you to pick another channel (a busy or disturbed radio, 2.4 GHz outside 1, 6 and 11, an unused 2.4 GHz channel, two APs in the same 5 GHz block) now say which AP should move to which channel, and why: how many neighbouring networks it hears there, how strong, and the interference Sonar measured there before.
