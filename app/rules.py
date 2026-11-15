@@ -245,13 +245,14 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
             where = L(f"{dn} · {r['radio']} GHz (kanaal {r['channel']})", f"{dn} · {r['radio']} GHz (channel {r['channel']})")
             if cu is not None and cu >= th.radio_cu_warn:
                 sev = "critical" if cu >= th.radio_cu_crit else "warning"
+                chan = None
                 if intf is not None and intf >= cu / 2:
-                    adv = (L(f"Het grootste deel ({intf:.0f}%) komt van andere netwerken in de buurt. ",
-                             f"Most of it ({intf:.0f}%) comes from other networks nearby. ")
-                           + (L("Probeer een ander kanaal (1, 6 of 11) en houd 20 MHz breedte aan.",
-                                "Try another channel (1, 6 or 11) and keep 20 MHz width.")
-                              if r["radio"] == "2.4" else L("Kies een rustiger kanaal of verklein de kanaalbreedte.",
-                                                            "Pick a quieter channel or reduce the channel width.")))
+                    chan = (L("Probeer een ander kanaal (1, 6 of 11) en houd 20 MHz breedte aan.",
+                              "Try another channel (1, 6 or 11) and keep 20 MHz width.")
+                            if r["radio"] == "2.4" else L("Kies een rustiger kanaal of verklein de kanaalbreedte.",
+                                                          "Pick a quieter channel or reduce the channel width."))
+                    adv = L(f"Het grootste deel ({intf:.0f}%) komt van andere netwerken in de buurt. ",
+                            f"Most of it ({intf:.0f}%) comes from other networks nearby. ") + chan
                 else:
                     adv = L("Vooral eigen verkeer: veel of drukke clients. Stuur apparaten naar 5/6 GHz of voeg een AP toe.",
                             "Mostly your own traffic: many or busy clients. Steer devices to 5/6 GHz or add an AP.")
@@ -259,13 +260,16 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                                   L(f"{dn}: {r['radio']} GHz-kanaal erg druk", f"{dn}: {r['radio']} GHz channel very busy"),
                                   L(f"Kanaalbezetting {cu:.0f}% op {where}.", f"Channel utilization {cu:.0f}% on {where}."),
                                   adv, "cu_total", cu, th.radio_cu_warn, mac))
+                if chan:
+                    out[-1]["_chan"] = ("busy", chan)     # rules_extra.channel_advice vult het beste kanaal in
             elif intf is not None and intf >= th.radio_interference_warn:
+                chan = L("Kies een rustiger kanaal.", "Pick a quieter channel.")
                 out.append(_issue(f"radio_intf:{rid}", "warning", "wifi", "radio", rid,
                                   L(f"{dn}: veel storing op {r['radio']} GHz", f"{dn}: heavy interference on {r['radio']} GHz"),
                                   L(f"{intf:.0f}% van de zendtijd bezet door andere netwerken op {where}.",
                                     f"{intf:.0f}% of airtime taken by other networks on {where}."),
-                                  L("Kies een rustiger kanaal.", "Pick a quieter channel."),
-                                  "interference", intf, th.radio_interference_warn, mac))
+                                  chan, "interference", intf, th.radio_interference_warn, mac))
+                out[-1]["_chan"] = ("busy", chan)
             # Op een radio die bijna niets doet (bezetting < RETRY_MIN_CU) kosten retries geen zendtijd: dan is het
             # ruis van een paar apparaten die snelheden uitproberen (zoals iPhones op 6 GHz), geen probleem.
             busy = cu is None or cu >= RETRY_MIN_CU
@@ -282,6 +286,7 @@ def evaluate(snap: dict, db, th: Thresholds, ts: int) -> list[dict]:
                                   L("Kanalen buiten 1, 6 en 11 overlappen met twee kanalen tegelijk.",
                                     "Channels other than 1, 6 and 11 overlap with two channels at once."),
                                   L("Zet deze radio op kanaal 1, 6 of 11.", "Set this radio to channel 1, 6 or 11."), device_mac=mac))
+                out[-1]["_chan"] = ("std24", L("Zet deze radio op kanaal 1, 6 of 11.", "Set this radio to channel 1, 6 or 11."))
 
         # ----------------------------------------------------------- ports
         for p in d["ports"]:
@@ -873,6 +878,9 @@ def _config_checks(out: list[dict], snap: dict, cfg: dict, name) -> None:
         key = "cfg_cochannel5:" + ",".join(x[0]["mac"] for x in g)
         chans = sorted(set().union(*(x[2] for x in g)))
         auto = all(x[1].get("channel_auto") for x in g)
+        chan = L("Geef elke AP een eigen kanaalblok (bijvoorbeeld 36, 52, 100 en 149), of kies 40 MHz breedte zodat "
+                 "er meer blokken zijn.", "Give each AP its own channel block (for example 36, 52, 100 and 149), or choose "
+                 "40 MHz width so there are more blocks.")
         out.append(_issue(key, "info", "config", "radio", key,
                           L(f"{_join([x[0]['name'] for x in g])} delen hetzelfde 5 GHz-kanaal",
                             f"{_join([x[0]['name'] for x in g])} share the same 5 GHz channel"),
@@ -880,13 +888,12 @@ def _config_checks(out: list[dict], snap: dict, cfg: dict, name) -> None:
                                     + f" ({int(x[1].get('width') or 20)} MHz)" for x in g)
                           + L(f". Samen bezetten ze kanaal {chans[0]}–{chans[-1]}, dus ze moeten op elkaar wachten.",
                               f". Together they occupy channels {chans[0]}–{chans[-1]}, so they have to wait for each other."),
-                          L("Geef elke AP een eigen kanaalblok (bijvoorbeeld 36, 52, 100 en 149), of kies 40 MHz breedte zodat "
-                            "er meer blokken zijn. Staan de AP's ver uit elkaar of in een ander gebouw, dan merk je hier weinig van.",
-                            "Give each AP its own channel block (for example 36, 52, 100 and 149), or choose 40 MHz width so "
-                            "there are more blocks. If the APs are far apart or in another building, you will notice little of this.")
+                          chan + L(" Staan de AP's ver uit elkaar of in een ander gebouw, dan merk je hier weinig van.",
+                                   " If the APs are far apart or in another building, you will notice little of this.")
                           + (L(" De kanalen staan nu op automatisch; zet ze handmatig of draai de kanaaloptimalisatie opnieuw.",
                                " The channels are set to automatic now; set them manually or run channel optimization again.") if auto else ""),
                           "aps", len(g), 1, g[0][0]["mac"]))
+        out[-1]["_chan"] = ("co5", chan)
 
     # 2.4 GHz: een vrij standaardkanaal terwijl een ander dubbel gebruikt wordt
     use: dict[int, list[str]] = {1: [], 6: [], 11: []}
@@ -897,14 +904,16 @@ def _config_checks(out: list[dict], snap: dict, cfg: dict, name) -> None:
     free = [c for c, n in use.items() if not n]
     busy = [c for c, n in use.items() if len(n) >= 2]
     if free and busy:
+        chan = L(f"Verdeel de AP's over de kanalen 1, 6 en 11: zet een van de AP's op kanaal {busy[0]} over naar "
+                 f"kanaal {free[0]}, bij voorkeur de AP die het dichtst bij een andere AP op kanaal {busy[0]} staat.",
+                 f"Spread the APs over channels 1, 6 and 11: move one of the APs on channel {busy[0]} to channel "
+                 f"{free[0]}, preferably the AP closest to another AP on channel {busy[0]}.")
         out.append(_issue("cfg_ch24", "info", "config", "site", "wifi24",
                           L(f"2.4 GHz: kanaal {_join([str(c) for c in free])} wordt niet gebruikt",
                             f"2.4 GHz: channel {_join([str(c) for c in free])} is not used"),
                           " · ".join(L(f"kanaal {c}: {_join(n)}", f"channel {c}: {_join(n)}") for c, n in use.items() if n) + ".",
-                          L(f"Verdeel de AP's over de kanalen 1, 6 en 11: zet een van de AP's op kanaal {busy[0]} over naar "
-                            f"kanaal {free[0]}, bij voorkeur de AP die het dichtst bij een andere AP op kanaal {busy[0]} staat.",
-                            f"Spread the APs over channels 1, 6 and 11: move one of the APs on channel {busy[0]} to channel "
-                            f"{free[0]}, preferably the AP closest to another AP on channel {busy[0]}.")))
+                          chan))
+        out[-1]["_chan"] = ("ch24", chan)
 
     if main and len(aps) >= 2:
         # band steering

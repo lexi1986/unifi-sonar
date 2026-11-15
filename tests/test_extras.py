@@ -458,3 +458,61 @@ def test_passkey_endpoints(demo, monkeypatch, tmp_path):
     assert anon.post("/api/auth/passkey/login", json={"id": r["id"], "credential": bad}, headers=https).status_code == 403
     assert anon.get("/api/snapshot").status_code == 401
     assert c.post("/api/auth/passkey/delete", json={"id": "AAAA"}).status_code == 200 and main.rt.settings.auth["passkeys"] == []
+
+
+# ---------------------------------------------------------------- beste kanaal in het advies
+def _ap(mac, *radios):
+    return {"mac": mac, "name": f"AP {mac.upper()}", "type": "ap", "state": "online",
+            "radios": [{"radio": b, "channel": ch, "width": w} for b, ch, w in radios]}
+
+
+def _nbr(ap, band, ch, sig, width=20):
+    return {"ap_mac": ap, "band": band, "channel": ch, "width": width, "signal": sig, "ssid": "buren"}
+
+
+def _advise(devs, nbrs, key, entity, kind, generic="ALGEMEEN"):
+    i = {"key": key, "entity_id": entity, "advice": f"Begin. {generic} Eind.", "_chan": (kind, generic)}
+    rules_extra.channel_advice([i], {"devices": devs}, {"neighbors": nbrs})
+    assert "_chan" not in i
+    return i
+
+
+def test_channel_advice_24_names_the_ap_to_move():
+    devs = [_ap("a", ("2.4", 1, 20)), _ap("b", ("2.4", 1, 20)), _ap("c", ("2.4", 6, 20))]
+    i = _advise(devs, [_nbr("a", "2.4", 11, -55), _nbr("b", "2.4", 1, -60)], "cfg_ch24", "wifi24", "ch24")
+    assert "Zet AP B van kanaal 1 naar kanaal 11" in i["advice"] and "AP A de volgende keus" in i["advice"]
+    assert i["advice"].startswith("Begin.") and i["advice"].endswith("Eind.") and i["best_channel"] == 11
+
+
+def test_channel_advice_5ghz_block_per_ap():
+    devs = [_ap("a", ("5", 52, 80)), _ap("b", ("5", 60, 80)), _ap("c", ("5", 36, 80))]
+    nbrs = [_nbr("a", "5", 56, -50, 80), _nbr("a", "5", 116, -60, 80)]      # a zit het drukst en moet verhuizen
+    i = _advise(devs, nbrs, "cfg_cochannel5:a,b", "cfg_cochannel5:a,b", "co5")
+    assert "Zet AP A op kanaal 100 (80 MHz)" in i["advice"] and "AP B blijft op kanaal 60" in i["advice"]
+    assert "ALGEMEEN" not in i["advice"]
+
+
+def test_channel_advice_busy_radio():
+    devs = [_ap("a", ("2.4", 6, 20)), _ap("b", ("2.4", 11, 20))]
+    i = _advise(devs, [_nbr("a", "2.4", 6, -50), _nbr("a", "2.4", 6, -60)], "radio_cu:a@2.4", "a@2.4", "busy")
+    assert "Het beste kanaal voor AP A is 1, 20 MHz breed" in i["advice"] and i["best_channel"] == 1   # 11 heeft al een eigen AP
+    j = _advise(devs, [_nbr("a", "2.4", 1, -50), _nbr("a", "2.4", 11, -50), _nbr("a", "2.4", 6, -85)], "radio_intf:a@2.4", "a@2.4", "busy")
+    assert "Een ander kanaal helpt waarschijnlijk niet" in j["advice"] and "best_channel" not in j
+    # zonder burenlijst blijft het algemene advies staan
+    k = {"key": "radio_intf:a@2.4", "entity_id": "a@2.4", "advice": "ALGEMEEN", "_chan": ("busy", "ALGEMEEN")}
+    rules_extra.channel_advice([k], {"devices": devs}, {})
+    assert k == {"key": "radio_intf:a@2.4", "entity_id": "a@2.4", "advice": "ALGEMEEN"}
+
+
+def test_pick_channel_skips_measured_interference():
+    rows = [{"channel": 36, "load": 500, "own": [], "interference": None, "current": True},
+            {"channel": 100, "load": 0, "own": [], "interference": 85, "current": False},
+            {"channel": 149, "load": 10, "own": [], "interference": None, "current": False}]
+    assert rules_extra.pick_channel(rows, "5", 80)["channel"] == 149
+    assert rules_extra.pick_channel(rows, "5", 80, avoid={149, 153, 157, 161})["channel"] == 36
+
+
+def test_channel_advice_5ghz_falls_back_to_dfs():
+    devs = [_ap("a", ("5", 36, 80)), _ap("b", ("5", 44, 80)), _ap("c", ("5", 149, 80))]   # geen vrij blok zonder DFS
+    i = _advise(devs, [_nbr("b", "5", 40, -55, 80)], "cfg_cochannel5:a,b", "x", "co5")
+    assert "Zet AP B op kanaal 52 (80 MHz)" in i["advice"] and "DFS-kanaal" in i["advice"] and "AP A blijft op kanaal 36" in i["advice"]

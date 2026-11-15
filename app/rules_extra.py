@@ -291,20 +291,21 @@ def channel_history(db, mac: str, band: str, since: int) -> dict[int, float]:
         return {}
 
 
-def channel_table(ap: dict, band: str, ins: dict, devices: list[dict], hist: dict[int, float] | None = None) -> list[dict]:
+def channel_table(ap: dict, band: str, ins: dict, devices: list[dict], hist: dict[int, float] | None = None,
+                  width: int | None = None, dfs: bool | None = None) -> list[dict]:
     """Per kandidaat-kanaal hoe druk het is voor deze AP: buren (gewogen naar sterkte), je eigen AP's en eerder
-    gemeten storing op dat kanaal."""
+    gemeten storing op dat kanaal. 'width' en 'dfs' rekenen een andere breedte of DFS-kanalen door dan de AP nu heeft."""
     radio = next((r for r in ap.get("radios") or [] if r["radio"] == band), None)
     if not radio or not radio.get("channel"):
         return []
-    width = int(radio.get("width") or (20 if band == "2.4" else 80))
+    width = int(width or radio.get("width") or (20 if band == "2.4" else 80))
     nb = [n for n in ins.get("neighbors") or [] if n["ap_mac"] == ap["mac"] and n["band"] == band]
     own = [(d["name"], r) for d in devices if d["type"] == "ap" and d["mac"] != ap["mac"] and d.get("state") == "online"
            for r in d.get("radios") or [] if r["radio"] == band and r.get("channel")]
     if band == "2.4":
         cands = [1, 6, 11]
     elif band == "5":
-        dfs = radio["channel"] in DFS_5
+        dfs = radio["channel"] in DFS_5 if dfs is None else dfs
         step = max(1, width // 20)
         pool = NON_DFS_5 + (DFS_5 if dfs else [])
         cands = sorted({c for c in pool if (c - (149 if c >= 149 else 100 if c >= 100 else 36)) % (4 * step) == 0
@@ -328,6 +329,175 @@ def channel_table(ap: dict, band: str, ins: dict, devices: list[dict], hist: dic
     return rows
 
 
+def _rows(snap: dict, ins: dict, db, ts: int, ap: dict, band: str, cache: dict | None = None) -> list[dict]:
+    key = (ap["mac"], band)
+    if cache is not None and key in cache:
+        return cache[key]
+    hist = channel_history(db, ap["mac"], band, ts - 30 * DAY) if db is not None else {}
+    rows = channel_table(ap, band, ins, snap["devices"], hist)
+    if cache is not None:
+        cache[key] = rows
+    return rows
+
+
+def pick_channel(rows: list[dict], band: str = "5", width: int = 20, avoid: set[int] | None = None) -> dict | None:
+    """Het beste kanaal uit een kanaaltabel: geen storing gemeten, geen eigen AP erop, dan zo min mogelijk (en zo zwak
+    mogelijk) buren. Bij gelijke drukte het huidige kanaal, zodat Sonar niet om niets een wissel aanraadt.
+    Met 'avoid' (20 MHz-kanalen die al vergeven zijn) is er geen uitwijkmogelijkheid: liever niets dan een botsing."""
+    ok = [r for r in rows if (r["interference"] or 0) < BAD_INTERFERENCE or r["current"]]
+    if avoid is not None:
+        free = [r for r in ok if (r["interference"] or 0) < BAD_INTERFERENCE and not (_occupies(band, r["channel"], width) & avoid)]
+    else:
+        free = [r for r in ok if not r["own"]] or ok   # liefst geen kanaal waar al een eigen AP zit
+    return min(free, key=lambda r: (r["load"], not r["current"], r["channel"])) if free else None
+
+
+def _nb(r: dict) -> str:
+    n = r["neighbors"]
+    s = L(f"{n} netwerk{'en' if n != 1 else ''} van buren", f"{n} neighbouring network{'s' if n != 1 else ''}") if n else \
+        L("geen netwerken van buren", "no neighbouring networks")
+    if n and r["strongest"] is not None:
+        s += L(f", sterkste {r['strongest']} dBm", f", strongest {r['strongest']} dBm")
+    if r.get("interference") is not None:
+        s += L(f", eerder gemeten storing {r['interference']}%", f", interference measured before {r['interference']}%")
+    return s
+
+
+def _where(name: str) -> str:
+    return L(f"UniFi: Apparaten → {name} → Radio's", f"UniFi: Devices → {name} → Radios")
+
+
+def _width(ap: dict, band: str) -> int:
+    r = next((r for r in ap.get("radios") or [] if r["radio"] == band), {})
+    return int(r.get("width") or (20 if band == "2.4" else 80))
+
+
+def channel_advice(out: list[dict], snap: dict, ins: dict, db=None, ts: int = 0) -> None:
+    """Meldingen die een ander kanaal aanraden ('kies een rustiger kanaal', '1, 6 of 11', 'geef elke AP een eigen
+    blok') krijgen het kanaal dat Sonar voor die AP het beste vindt, met waarom. Zonder burenlijst blijft het
+    algemene advies staan."""
+    aps = {d["mac"]: d for d in snap["devices"] if d["type"] == "ap" and d.get("state") == "online"}
+    cache: dict = {}
+    for i in out:
+        hint = i.pop("_chan", None)
+        if not hint or not ins.get("neighbors"):
+            continue
+        kind, generic = hint
+        try:
+            txt = _advice_for(i, kind, aps, snap, ins, db, ts, cache)
+        except (KeyError, TypeError, ValueError):
+            txt = None
+        if txt:
+            i["advice"] = i["advice"].replace(generic, txt) if generic in i["advice"] else f"{txt} {i['advice']}"
+
+
+def _advice_for(i: dict, kind: str, aps: dict, snap: dict, ins: dict, db, ts: int, cache: dict) -> str | None:
+    rows_of = lambda ap, band: _rows(snap, ins, db, ts, ap, band, cache)  # noqa: E731
+    if kind in ("busy", "std24"):
+        mac, _, band = i["entity_id"].partition("@")
+        ap = aps.get(mac)
+        rows = rows_of(ap, band) if ap else []
+        cur = next((r for r in rows if r["current"]), None)
+        best = pick_channel(rows, band)
+        if not best or not cur:
+            return None
+        i["best_channel"] = best["channel"]
+        if kind == "std24":
+            return L(f"Zet deze radio op kanaal {best['channel']}: van 1, 6 en 11 hoort {ap['name']} daar het minst ({_nb(best)})"
+                     + (f", al zit je eigen {', '.join(best['own'])} er ook op" if best["own"] else "") + f". {_where(ap['name'])}.",
+                     f"Set this radio to channel {best['channel']}: of 1, 6 and 11 it is the quietest for {ap['name']} ({_nb(best)})"
+                     + (f", although your own {', '.join(best['own'])} is on it too" if best["own"] else "") + f". {_where(ap['name'])}.")
+        if best["channel"] != cur["channel"] and best["load"] < cur["load"]:
+            wide = L(", 20 MHz breed", ", 20 MHz wide") if band == "2.4" else ""
+            return L(f"Het beste kanaal voor {ap['name']} is {best['channel']}{wide} ({_nb(best)}); op kanaal {cur['channel']} nu {_nb(cur)}. {_where(ap['name'])}.",
+                     f"The best channel for {ap['name']} is {best['channel']}{wide} ({_nb(best)}); on channel {cur['channel']} now {_nb(cur)}. {_where(ap['name'])}.")
+        i.pop("best_channel", None)
+        return L(f"Een ander kanaal helpt waarschijnlijk niet: op kanaal {cur['channel']} hoort {ap['name']} al het minst ({_nb(cur)}). "
+                 "Komt de storing niet van wifi (magnetron, babyfoon, draadloze camera), zoek dan de bron of zet de AP er verder vandaan"
+                 + ("; een smallere kanaalbreedte helpt ook." if band == "5" else "."),
+                 f"Another channel probably won't help: on channel {cur['channel']} {ap['name']} already hears the least ({_nb(cur)}). "
+                 "If the interference isn't wifi (microwave, baby monitor, wireless camera), find the source or move the AP away from it"
+                 + ("; a narrower channel width helps too." if band == "5" else "."))
+    if kind == "ch24":
+        use: dict[int, list[dict]] = {1: [], 6: [], 11: []}
+        for ap in aps.values():
+            r = next((r for r in ap.get("radios") or [] if r["radio"] == "2.4"), None)
+            if r and r.get("channel") in use:
+                use[r["channel"]].append(ap)
+        free = [c for c, n in use.items() if not n]
+        opts = []
+        for c, members in use.items():
+            if len(members) < 2:
+                continue
+            for ap in members:
+                rows = {r["channel"]: r for r in rows_of(ap, "2.4")}
+                for f in free:
+                    rf, rc = rows.get(f), rows.get(c)
+                    if rf and rc and (rf["interference"] or 0) < BAD_INTERFERENCE:
+                        opts.append((rf["load"] - rc["load"], rf["load"], ap["name"], c, f, rf, rc))
+        if not opts:
+            return None
+        opts.sort(key=lambda o: o[:3])   # wie er het meest op vooruitgaat (dezelfde AP als bij 'rustiger kanaal')
+        _, _, name, c, f, rf, rc = opts[0]
+        i["best_channel"] = f
+        nxt = next((o for o in opts[1:] if o[2] != name), None)
+        return (L(f"Zet {name} van kanaal {c} naar kanaal {f}: daar hoort hij {_nb(rf)}; op {c} nu {_nb(rc)}. {_where(name)}.",
+                  f"Move {name} from channel {c} to channel {f}: there it hears {_nb(rf)}; on {c} now {_nb(rc)}. {_where(name)}.")
+                + (L(f" Kan {name} kanaal {nxt[4]} niet aan, dan is {nxt[2]} de volgende keus ({_nb(nxt[5])} op kanaal {nxt[4]}).",
+                     f" If {name} can't use channel {nxt[4]}, {nxt[2]} is the next choice ({_nb(nxt[5])} on channel {nxt[4]}).") if nxt else ""))
+    if kind == "co5":
+        group = [aps[m] for m in i["key"].split(":", 1)[1].split(",") if m in aps]
+        if len(group) < 2:
+            return None
+        members = {ap["mac"] for ap in group}
+        taken: set[int] = set()
+        for ap in aps.values():
+            if ap["mac"] in members:
+                continue
+            for r in ap.get("radios") or []:
+                if r["radio"] == "5" and r.get("channel"):
+                    taken |= _occupies("5", r["channel"], int(r.get("width") or 80))
+        cur = {ap["mac"]: next((r for r in rows_of(ap, "5") if r["current"]), None) for ap in group}
+        if any(v is None for v in cur.values()):
+            return None
+        keep = min(group, key=lambda ap: cur[ap["mac"]]["load"])   # wie het rustigst zit, blijft
+        kr = next(r for r in keep["radios"] if r["radio"] == "5")
+        taken |= _occupies("5", kr["channel"], _width(keep, "5"))
+        hist = lambda ap: channel_history(db, ap["mac"], "5", ts - 30 * DAY) if db is not None else {}  # noqa: E731
+        parts, stuck = [], []
+        for ap in sorted((a for a in group if a["mac"] != keep["mac"]), key=lambda a: -cur[a["mac"]]["load"]):
+            w0 = _width(ap, "5")
+            on_dfs = next(r for r in ap["radios"] if r["radio"] == "5")["channel"] in DFS_5
+            # eerst zoals de AP nu staat; past dat nergens, dan met DFS-kanalen erbij, dan 40 MHz breed
+            tries = [(w0, None)] + ([(w0, True)] if not on_dfs else []) + ([(40, None)] + ([(40, True)] if not on_dfs else []) if w0 > 40 else [])
+            for w, dfs in tries:
+                rows = rows_of(ap, "5") if (w, dfs) == (w0, None) else channel_table(ap, "5", ins, snap["devices"], hist(ap), w, dfs)
+                best = pick_channel(rows, "5", w, avoid=taken)
+                if best:
+                    break
+            if not best:
+                stuck.append(ap["name"])
+                continue
+            taken |= _occupies("5", best["channel"], w)
+            extra = []
+            if w != w0:
+                extra.append(L(f"Dat kan alleen met {w} MHz in plaats van {w0} MHz; breder is er geen blok meer vrij.",
+                               f"That only works at {w} MHz instead of {w0} MHz; wider, no block is free."))
+            if best["channel"] in DFS_5 and not on_dfs:
+                extra.append(L("Dat is een DFS-kanaal: bij radar in de buurt wijkt de AP even uit naar een ander kanaal.",
+                               "That is a DFS channel: with radar nearby the AP briefly moves to another channel."))
+            parts.append(" ".join([L(f"Zet {ap['name']} op kanaal {best['channel']} ({w} MHz): daar zit geen eigen AP en hoort hij {_nb(best)}.",
+                                     f"Move {ap['name']} to channel {best['channel']} ({w} MHz): no AP of yours is there and it hears {_nb(best)}.")] + extra))
+        if not parts:
+            return None
+        txt = " ".join(parts) + L(f" {keep['name']} blijft op kanaal {kr['channel']}.", f" {keep['name']} stays on channel {kr['channel']}.")
+        if stuck:
+            txt += L(f" Voor {', '.join(stuck)} is ook met 40 MHz geen blok meer vrij zonder eigen AP.",
+                     f" For {', '.join(stuck)} no block without an AP of yours is free, even at 40 MHz.")
+        return txt
+    return None
+
+
 def quieter_channel(out: list[dict], snap: dict, ins: dict, issue, db=None, ts: int = 0) -> None:
     if not ins.get("neighbors"):
         return
@@ -335,14 +505,11 @@ def quieter_channel(out: list[dict], snap: dict, ins: dict, issue, db=None, ts: 
         if ap["type"] != "ap" or ap.get("state") != "online":
             continue
         for band in ("2.4", "5"):
-            hist = channel_history(db, ap["mac"], band, ts - 30 * DAY) if db is not None else {}
-            rows = channel_table(ap, band, ins, snap["devices"], hist)
+            rows = _rows(snap, ins, db, ts, ap, band)
             cur = next((r for r in rows if r["current"]), None)
             if not cur or cur["load"] < 100:   # minder dan één buur op −70 dBm: niets aan de hand
                 continue
-            ok = [r for r in rows if (r["interference"] or 0) < BAD_INTERFERENCE or r["current"]]
-            free = [r for r in ok if not r["own"]] or ok   # liefst geen kanaal waar al een eigen AP zit
-            best = min(free, key=lambda r: r["load"])
+            best = pick_channel(rows, band)
             if best["channel"] == cur["channel"] or best["load"] * 4 > cur["load"]:
                 continue
             strong = f", {L('sterkste', 'strongest')} {cur['strongest']} dBm" if cur["strongest"] is not None else ""
@@ -473,6 +640,7 @@ def run_all(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     connect_failures(out, ins, issue)
     anomalies(out, snap, ins, ts, issue)
     quieter_channel(out, snap, ins, issue, db, ts)
+    channel_advice(out, snap, ins, db, ts)
     advisory_issues(out, ins, issue)
     vuln_issue(out, ins, issue)
     public_ip(out, snap, issue, gw)

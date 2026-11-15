@@ -2,6 +2,14 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### Changed
+- **Channel advice names the channel.** Issues that told you to pick another channel (a busy or disturbed radio, 2.4 GHz outside 1, 6 and 11, an unused 2.4 GHz channel, two APs in the same 5 GHz block) now say which AP should move to which channel, and why: how many neighbouring networks it hears there, how strong, and the interference Sonar measured there before.
+  - Sonar skips channels with interference it measured before, prefers channels without an AP of yours, and recommends staying put when no channel is quieter.
+  - For an unused 2.4 GHz channel it picks the AP that gains the most, with a second choice in case that AP can't use the channel.
+  - For a shared 5 GHz block the quietest AP stays and the other gets a free block. If none is free, Sonar looks at DFS channels and then at 40 MHz, and says so.
+
 ## 1.12.0 – 2026-11-12
 
 ### Added
