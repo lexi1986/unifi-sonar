@@ -144,3 +144,12 @@ def test_api_plan_apply_lock(tmp_path, monkeypatch):
     assert _radio(client.get("/api/channels").json(), "2.4", AP_WK)["locked"]
     r = client.post("/api/channels/apply", json={"items": [{"mac": AP_WK, "band": "5", "channel": 100, "width": 80}]})
     assert r.status_code == 200 and r.json()["job"]["running"]
+
+
+def test_plan_without_channels_says_so():
+    """Beperkte officiële API: AP's online, maar geen kanalen. Dan geen 'alles goed' en geen 'geen AP's'."""
+    devs = [_ap("a", ("2.4", None, None), ("5", None, None)), _ap("b", ("2.4", None, None))]
+    p = channels.plan({"devices": devs}, {"neighbors": []}, KV())
+    assert p["no_channels"] and p["changes"] == 0
+    devs[0]["radios"][0]["channel"] = 6
+    assert not channels.plan({"devices": devs}, {"neighbors": []}, KV())["no_channels"]

@@ -2877,9 +2877,13 @@
     if (b.load_now > 0 && b.load_plan < b.load_now * 0.9) parts.push(L(`Drukte van buren op je kanalen: ${Math.round(100 * (1 - b.load_plan / b.load_now))}% minder.`, `Neighbour load on your channels: ${Math.round(100 * (1 - b.load_plan / b.load_now))}% less.`));
     return parts.join(" ");
   }
+  const chanNoData = () => `<div class="banner" style="margin:0">${icon("info")}<div>${L(
+    `UniFi geeft Sonar nu geen kanalen door. Sonar gebruikt op dit moment ${state.status?.source === "integration" ? "de beperkte officiële API" : "een bron"} zonder radio-instellingen; dat gebeurt als de uitgebreide API even niet bereikbaar was. Sonar probeert die elke 5 minuten opnieuw, en dan verschijnt het advies hier vanzelf. Blijft dit zo, kijk dan onder Instellingen → Koppeling.`,
+    `UniFi isn't passing channels to Sonar right now. Sonar is currently using ${state.status?.source === "integration" ? "the limited official API" : "a source"} without radio settings; that happens when the extended API was briefly unreachable. Sonar retries it every 5 minutes, and the advice then shows up here by itself. If it stays like this, check Settings → Connection.`)}</div></div>`;
   function chanSumHTML(d) {
     const job = d.job, moves = chanMoves(d), running = !!job?.running;
     let h = `<div class="card-head"><h2 style="margin:0">${L("Advies voor al je AP's samen", "Advice for all your APs together")}</h2>${d.demo ? badge("info", "demo") : ""}</div>`;
+    if (d.no_channels) return h + chanNoData();
     if (!d.available) return h + `<p class="help">${L("Sonar ziet de netwerken van de buren alleen via de uitgebreide UniFi-API (API-key of lokale beheerder). Zonder die lijst kan Sonar geen kanalen aanraden; de uitleg hieronder geldt wel.", "Sonar only sees neighbouring networks via the extended UniFi API (API key or local admin). Without that list Sonar can't recommend channels; the explanation below still applies.")}</p>`;
     if (job && (running || chan.hideJob !== job.started) && Date.now() / 1000 - (job.finished || Date.now() / 1000) < 1800) {
       const ST = { waiting: ["info", L("wacht", "waiting")], busy: ["info", L("instellen…", "setting…")], provisioning: ["info", L("AP herstart…", "AP restarting…")],
@@ -2926,6 +2930,7 @@
   function chanBandHTML(d, band) {
     const b = d.bands[band], running = !!d.job?.running;
     const head = `<div class="card-head"><h2 style="margin:0">${band} GHz</h2></div>`;
+    if (d.no_channels) return head + `<p class="muted">${L("Geen kanaalgegevens: zie hierboven.", "No channel data: see above.")}</p>`;
     if (!b || !b.radios.length) return head + `<p class="muted">${L(`Geen AP's met ${band} GHz online.`, `No APs with ${band} GHz online.`)}</p>`;
     return head + `<p class="help" style="margin-top:0">${chanVerdict(d, band)}</p><div class="ch-rows">${b.radios.map((r) => {
       const c = r.current, t = r.target, id = `${r.mac}|${band}`;

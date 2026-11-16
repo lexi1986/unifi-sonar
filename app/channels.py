@@ -120,7 +120,9 @@ def plan(snap: dict, ins: dict, db, ts: int | None = None) -> dict:
     aps = sorted((d for d in devices if d["type"] == "ap" and d.get("state") == "online"), key=lambda d: d["name"].lower())
     refused, locked = _kv(db, KV_REFUSED), _kv(db, KV_LOCKED)
     out: dict = {"available": "neighbors" in ins, "bands": {}, "aps": [{"mac": a["mac"], "name": a["name"]} for a in aps],
-                 "skipped": sorted(d["name"] for d in devices if d["type"] == "ap" and d.get("state") != "online")}
+                 "skipped": sorted(d["name"] for d in devices if d["type"] == "ap" and d.get("state") != "online"),
+                 # AP's online, maar geen enkel kanaal bekend: de beperkte officiële API geeft die niet door
+                 "no_channels": bool(aps) and not any(_radio(a, b) for a in aps for b in ("2.4", "5"))}
     for band in ("2.4", "5"):
         radios = [(ap, _radio(ap, band)) for ap in aps if _radio(ap, band)]
         options = []

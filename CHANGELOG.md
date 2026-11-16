@@ -2,6 +2,11 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.14.1 – 2026-11-16
+
+### Fixed
+- The Wi-Fi channels page said "No APs online" and "Your channels are fine" while Sonar was temporarily on the limited official UniFi API, which doesn't pass on channels. It now says that channel data is missing and why.
+
 ## 1.14.0 – 2026-11-16
 
 ### Added
