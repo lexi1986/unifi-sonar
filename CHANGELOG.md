@@ -2,6 +2,11 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.15.0 – 2026-11-16
+
+### Added
+- **Choose whether going around your DNS filter is an issue.** Under Settings → DNS filter you can switch off the issues about devices that use their own DNS server, DNS-over-TLS or DNS-over-HTTPS, or never ask your AdGuard or Pi-hole anything. Many Chromecasts, Android devices and cars do this by default, and not everyone minds. It's on by default, as before. When it's off these devices no longer become issues or notifications; with AdGuard or Pi-hole connected you still see them on the Security page under DNS.
+
 ## 1.14.2 – 2026-11-16
 
 ### Fixed

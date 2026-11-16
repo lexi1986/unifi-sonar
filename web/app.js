@@ -1667,7 +1667,9 @@
     $("#sec-checks-sub").textContent = list.length ? L(`${open.length} bevinding${open.length === 1 ? "" : "en"}${list.length > open.length ? `, ${list.length - open.length} genegeerd` : ""}`,
       `${open.length} finding${open.length === 1 ? "" : "s"}${list.length > open.length ? `, ${list.length - open.length} ignored` : ""}`) : "";
     el.innerHTML = open.length ? open.map((i) => issueHTML(i, state.issues, false)).join("")
-      : `<div class="empty">${icon("check")}<div>${L("Geen regels die niets doen of je netwerk openzetten, en geen apparaten die om je DNS-server heen gaan.", "No rules that do nothing or open your network, and no devices bypassing your DNS server.")}</div></div>`;
+      : `<div class="empty">${icon("check")}<div>${state.snap?.adguard?.bypass_issues === false
+        ? L("Geen regels die niets doen of je netwerk openzetten. Meldingen over apparaten die om je DNS-filter heen gaan, staan uit (Instellingen → DNS-filter).", "No rules that do nothing or open your network. Issues about devices going around your DNS filter are off (Settings → DNS filter).")
+        : L("Geen regels die niets doen of je netwerk openzetten, en geen apparaten die om je DNS-server heen gaan.", "No rules that do nothing or open your network, and no devices bypassing your DNS server.")}</div></div>`;
   }
   async function loadAdvisories() {
     let d;
@@ -2501,6 +2503,9 @@
       <hr class="sep"><label class="check"><input type="checkbox" id="ag-personal" ${agData?.settings.personal ? "checked" : ""}> ${L("Ook domeinen van telefoons, laptops en tablets bewaren", "Also keep domains of phones, laptops and tablets")}</label>
       <p class="help">${L("Standaard bewaart Sonar alleen welke domeinen slimme apparaten en servers opzoeken. Van de andere apparaten telt het alleen hoeveel ze opzoeken, want hun querylog is in feite de browsegeschiedenis van wie ze gebruikt. Per apparaat kun je dit aanpassen in de details van dat apparaat.",
         "By default Sonar only keeps which domains smart devices and servers look up. For other devices it only counts how much they look up, because their query log is in effect the browsing history of whoever uses them. You can change this per device in that device's details.")}</p>
+      <hr class="sep"><label class="check"><input type="checkbox" id="ag-bypass" ${agData?.settings.bypass_issues === false ? "" : "checked"}> ${L("Melding als een apparaat om je DNS-filter heen gaat", "Issue when a device goes around your DNS filter")}</label>
+      <p class="help">${L("Bijvoorbeeld een apparaat met een eigen DNS-server, DNS-over-TLS of DNS-over-HTTPS, of dat je DNS-filter nooit iets vraagt. Veel Chromecasts, Android-apparaten en auto's doen dat standaard. Vind je dat geen probleem, zet dit dan uit: dan worden het geen meldingen (en dus ook geen notificaties). Met een gekoppelde AdGuard of Pi-hole zie je de apparaten nog wel op de pagina Beveiliging, onder DNS. Wil je het alleen voor één apparaat niet, kies dan bij die melding Negeren → Altijd.",
+        "For example a device with its own DNS server, DNS-over-TLS or DNS-over-HTTPS, or one that never asks your DNS filter anything. Many Chromecasts, Android devices and cars do this by default. If you don't mind, turn this off: they no longer become issues (and so no notifications). With AdGuard or Pi-hole connected you still see the devices on the Security page, under DNS. To skip it for one device only, choose Ignore → Always on that issue.")}</p>
       <div class="wiz-actions" style="margin-top:8px;align-items:center"><button class="btn primary" data-ag="save">${L("Opslaan", "Save")}</button><span id="ag-msg"></span></div>
       <p class="help">${L("Het adres is dat van de beheerpagina, met de poort als die niet 80 of 443 is. Sonar doet alleen leesverzoeken en het wachtwoord blijft op deze machine. AdGuard Home en Pi-hole kennen geen gebruikers die alleen mogen lezen.",
         "The address is that of the admin page, with the port if it isn't 80 or 443. Sonar only makes read requests and the password stays on this machine. AdGuard Home and Pi-hole have no read-only users.")}</p>
@@ -2520,7 +2525,7 @@
         out.innerHTML = r.ok ? badge("ok", `${L("Inloggen gelukt", "Login succeeded")}${r.version ? ` · ${r.version}` : ""}${r.log ? "" : L(" · querylog is leeg of staat uit", " · query log is empty or off")}${r.note ? ` · ${r.note}` : ""}`, "check") : badge("critical", r.error, "octagon");
         hydrateIcons(out);
       } else if (act === "save") {
-        await post("/api/adguard/settings", { instances: rows.filter((r) => r.url.trim()), personal: $("#ag-personal").checked });
+        await post("/api/adguard/settings", { instances: rows.filter((r) => r.url.trim()), personal: $("#ag-personal").checked, bypass_issues: $("#ag-bypass").checked });
         $("#ag-msg").innerHTML = badge("ok", L("Opgeslagen", "Saved"), "check"); hydrateIcons($("#ag-msg"));
         setTimeout(() => loadAgSettings(), 4000);
       }

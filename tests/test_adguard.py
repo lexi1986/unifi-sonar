@@ -238,3 +238,32 @@ def test_gateway_lan_address_other_networks_and_own_dns(tmp_path):
         w.db.conn.execute("DELETE FROM dns_hourly WHERE mac='unknown'")   # anders houdt de 10%-drempel de controle tegen
     rows, why = ag.bypass(sn, w.db, now, {"since": now - 2 * DAY})
     assert why is None and [r["mac"] for r in rows] == [PHONE["mac"]]   # NAS en stekker vangt je netwerk al op
+
+
+def test_bypass_issues_can_be_switched_off(tmp_path):
+    """Niet iedereen vindt een apparaat dat om het DNS-filter heen gaat een probleem: per installatie uit te zetten."""
+    from app import rules_extra
+    assert watcher(tmp_path).for_rules()["bypass_issues"] is True                       # standaard aan, zoals het was
+    assert watcher(tmp_path, bypass_issues=False).for_rules()["bypass_issues"] is False
+    assert main.AdGuardSave().bypass_issues is True
+    w = watcher(tmp_path)
+    now = int(time.time())
+    base = {"ts": now, "dir": "out", "action": "allowed", "cc": "US", "domain": None, "proto": "UDP", "client_name": "Telefoon",
+            "net": "Default", "up": 1, "down": 1, "risk": "low"}
+    w.db.store_flows([{**base, "id": f"web-{i}", "ts": now - i * 60, "remote_ip": "203.0.113.5", "port": 443, "service": "HTTPS",
+                       "client_mac": PHONE["mac"], "client_ip": PHONE["ip"]} for i in range(25)]
+                     + [{**base, "id": f"dns-{i}", "ts": now - i * 60, "remote_ip": "8.8.8.8", "port": 53, "service": "DNS",
+                         "client_mac": NAS["mac"], "client_ip": NAS["ip"]} for i in range(3)])   # eigen DNS: dns_leak
+    w.ingest([item(NAS["ip"], "synology.com", now - 60)], snap(), "u", now)
+    issue = lambda key, sev, *a, **kw: {"key": key, "severity": sev}   # noqa: E731
+
+    def found(on):
+        sn = snap(adguard={"active": True, "since": now - 2 * DAY, "servers": [], "apis": [], "bypass_issues": on})
+        out = []
+        ag.issues(out, sn, w.db, now, issue)
+        rules_extra.dns_leaks(out, sn, w.db, now, issue)
+        return {i["key"] for i in out if i["key"].startswith(("dns_bypass:", "dns_leak:"))}
+
+    assert found(True) == {f"dns_bypass:{PHONE['mac']}", f"dns_leak:{NAS['mac']}"}   # telefoon vraagt AdGuard nooit iets
+    assert found(False) == set()
+    assert ag.bypass(snap(), w.db, now, {"since": now - 2 * DAY})[0]   # de lijst op de pagina Beveiliging blijft

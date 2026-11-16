@@ -1268,6 +1268,7 @@ class AdGuardInstance(BaseModel):
 class AdGuardSave(BaseModel):
     instances: list[AdGuardInstance] = Field(default_factory=list, max_length=adguard.MAX_INSTANCES)
     personal: bool = False
+    bypass_issues: bool = True
 
 
 def _ag_instances(req_instances: list[AdGuardInstance]) -> list[dict]:
@@ -1299,7 +1300,7 @@ def adguard_view():
     collector, db = _need()
     cfg = collector.adguard.cfg
     return {**adguard.view(collector.adguard, collector.latest or {}, db, int(time.time())),
-            "settings": {"personal": cfg["personal"], "instances": [{k: v for k, v in i.items() if k != "password"} | {"has_password": bool(i.get("password"))}
+            "settings": {"personal": cfg["personal"], "bypass_issues": cfg.get("bypass_issues", True) is not False, "instances": [{k: v for k, v in i.items() if k != "password"} | {"has_password": bool(i.get("password"))}
                                                                      for i in cfg["instances"]]}}
 
 
@@ -1308,7 +1309,7 @@ def adguard_settings(req: AdGuardSave):
     collector, _ = _need()
     s = Settings.load(DATA_DIR)
     old = {"instances": [], "personal": False, "watch": {}, **(s.adguard or {})}
-    s.adguard = {**old, "instances": _ag_instances(req.instances), "personal": req.personal}
+    s.adguard = {**old, "instances": _ag_instances(req.instances), "personal": req.personal, "bypass_issues": req.bypass_issues}
     s.save()
     rt.settings.adguard = s.adguard
     if old["personal"] and not req.personal:   # telefoons en laptops niet meer volgen: hun domeinen weg

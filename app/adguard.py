@@ -322,7 +322,7 @@ class AdGuard:
     # instellingen
     @property
     def cfg(self) -> dict:
-        return {"instances": [], "personal": False, "watch": {}, **(self.s.adguard or {})}
+        return {"instances": [], "personal": False, "watch": {}, "bypass_issues": True, **(self.s.adguard or {})}
 
     def instances(self) -> list[dict]:
         inst = [i for i in self.cfg["instances"] if i.get("url")][:MAX_INSTANCES]
@@ -547,7 +547,8 @@ class AdGuard:
         return {"active": self.active, "since": self.since, "servers": self.servers(), "drift": self.drift(),
                 "kinds": kinds, "product": product(kinds),
                 "apis": [{k: v for k, v in s.items() if k != "stats"} for s in self.status.values()], "servfail": servfail,
-                "watch": self.cfg["watch"], "personal": self.cfg["personal"]}
+                "watch": self.cfg["watch"], "personal": self.cfg["personal"],
+                "bypass_issues": self.cfg.get("bypass_issues", True) is not False}
 
 
 # ------------------------------------------------------------------ controles
@@ -656,6 +657,13 @@ def own_dns(snap: dict, db, ts: int, ag: dict) -> dict[str, dict]:
         o["servers"].add(r["remote_ip"])
         o["last"] = max(o["last"], r["last"])
     return out
+
+
+def bypass_issues(snap: dict) -> bool:
+    """Meldingen over apparaten die om je DNS-filter heen gaan (eigen DNS, DoT, DoH, of het filter nooit vragen).
+    Staat standaard aan; per installatie uit te zetten onder Instellingen → DNS-filter. De apparaten blijven dan
+    wel zichtbaar op de pagina Beveiliging."""
+    return (snap.get("adguard") or {}).get("bypass_issues", True) is not False
 
 
 def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
@@ -782,8 +790,8 @@ def issues(out: list[dict], snap: dict, db, ts: int, issue) -> None:
                            "Once is usually a bad link or ad. If it keeps coming back, or the IPS steps in too, check the device for malware "
                            "and see which app or extension makes these requests."), client_mac=mac, last_ts=t["last"]))
 
-    # 5. apparaten die AdGuard overslaan
-    rows, _ = bypass(snap, db, ts, ag)
+    # 5. apparaten die AdGuard overslaan (uit te zetten: niet iedereen vindt dat een probleem)
+    rows, _ = bypass(snap, db, ts, ag) if bypass_issues(snap) else ([], None)
     for b in rows:
         out.append(issue(f"dns_bypass:{b['mac']}", "info", "security", "client", b["mac"],
                          L(f"{b['name']} vraagt {P} nooit iets", f"{b['name']} never asks {P} anything"),

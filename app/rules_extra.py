@@ -40,6 +40,9 @@ def _public(ip: str | None) -> bool:
 
 
 def dns_leaks(out: list[dict], snap: dict, db, ts: int, issue) -> None:
+    from .adguard import bypass_issues
+    if not bypass_issues(snap):
+        return
     cfg = snap.get("config") or {}
     servers = cfg.get("dns_servers")
     if servers is None:
