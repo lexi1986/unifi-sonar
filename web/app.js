@@ -289,9 +289,9 @@
   }
 
   // ------------------------------------------------------------------ router
-  const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, clients: mountClients, internet: mountInternet, wereld: mountWorld, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings, kiosk: mountKiosk };
+  const routes = { overzicht: mountOverview, issues: mountIssues, apparaten: mountDevices, kanalen: mountChannels, clients: mountClients, internet: mountInternet, wereld: mountWorld, beveiliging: mountSecurity, tijdlijn: mountTimeline, instellingen: mountSettings, kiosk: mountKiosk };
   let current = null;
-  const MORE_ROUTES = ["apparaten", "internet", "wereld", "tijdlijn", "instellingen"];
+  const MORE_ROUTES = ["apparaten", "kanalen", "internet", "wereld", "tijdlijn", "instellingen"];
   function closeMore() { $("#more-sheet").hidden = true; $("#tab-more").setAttribute("aria-expanded", "false"); }
   function route() {
     const [name, id] = location.hash.replace(/^#\/?/, "").split("/");
@@ -477,7 +477,7 @@
     [/^(pf_|upnp_|vpn_open)/, "beveiliging", "#sec-expo", () => L("Bekijk wat open staat", "View what's open")],
     [/^(wan_|speed_low|bufferbloat)/, "internet", null, () => L("Bekijk internet", "View internet")],
     [/^backup_stale/, "instellingen", "#h-backups", () => L("Bekijk backups", "View backups")],
-    [/^cfg_(quieter|ch24)/, "apparaten", null, () => L("Bekijk apparaten", "View devices")],
+    [/^cfg_(quieter|ch24|cochannel5)/, "kanalen", null, () => L("Bekijk kanaalplan", "View channel plan")],
     [/^mac_rotate/, "clients", null, () => L("Bekijk clients", "View clients")],
   ];
   // ---- springknoppen op lange pagina's: plakken onder de kopbalk en volgen waar je bent
@@ -2827,6 +2827,172 @@
     return out || `<div class="empty">${L("Geen gebeurtenissen in deze periode", "No events in this period")}</div>`;
   }
   let tlEvents = [];
+  // ------------------------------------------------------------------ wifi-kanalen: plan, uitleg en toepassen
+  const chan = { data: null, confirm: null, err: null, hideJob: null, timer: null, wasRunning: false };
+  function mountChannels() {
+    mount("kanalen", `
+      <div class="page-head"><div><h1>${L("Wifi-kanalen", "Wi-Fi channels")}</h1><p class="subtitle">${L("Welk kanaal elke access point gebruikt, wat Sonar aanraadt voor al je AP's samen, en hoe je dat in één keer goed zet.", "Which channel each access point uses, what Sonar recommends for all your APs together, and how to set it right in one go.")}</p></div></div>
+      ${jumpBar("kanalen", [["#ch-sum", L("Advies", "Advice")], ["#ch-b24", "2.4 GHz"], ["#ch-b5", "5 GHz"], ["#ch-how", L("Zo zet je het op", "How to set it up")]])}
+      <div class="grid" id="ch-page">
+        <section class="card" id="ch-sum"><div class="skeleton" style="height:60px;border:0"></div></section>
+        <section class="card" id="ch-b24"></section>
+        <section class="card" id="ch-b5"></section>
+        <section class="card" id="ch-how">${chanHowHTML()}</section>
+      </div>`);
+    $("#ch-page").addEventListener("click", chanClick);
+  }
+  UPDATERS.kanalen = () => loadChannels();
+  async function loadChannels() {
+    clearTimeout(chan.timer);
+    try { chan.data = await api("/api/channels"); chan.err = null; } catch (e) { if (e.auth) return; chan.err = e.message; }
+    if (current !== "kanalen" || !$("#ch-page")) return;
+    renderChannels();
+    const running = !!chan.data?.job?.running;
+    if (chan.wasRunning && !running) refresh();   // klaar: de rest van Sonar ook bijwerken
+    chan.wasRunning = running;
+    if (running) chan.timer = setTimeout(loadChannels, 2000);
+  }
+  const chanNb = (x) => [x.neighbors ? L(`${x.neighbors} netwerk${x.neighbors === 1 ? "" : "en"} van buren`, `${x.neighbors} neighbouring network${x.neighbors === 1 ? "" : "s"}`) + (x.strongest != null ? `, ${L("sterkste", "strongest")} ${x.strongest} dBm` : "") : L("geen buren", "no neighbours"),
+    x.interference != null ? L(`eerder gemeten storing ${x.interference}%`, `interference measured before ${x.interference}%`) : ""].filter(Boolean).join(" · ");
+  function chanMoves(d) {
+    return ["2.4", "5"].flatMap((b) => (d.bands[b]?.radios || []).filter((r) => r.change).map((r) => ({ mac: r.mac, name: r.name, band: b, channel: r.target.channel, width: r.target.width, from: r.current.channel, fromW: r.current.width, clients: r.clients, notes: r.notes })));
+  }
+  const chanMoveTxt = (m) => `${esc(m.name)} · ${m.band} GHz: ${L("kanaal", "channel")} ${m.from}${m.band === "5" && m.width !== m.fromW ? ` (${m.fromW} MHz)` : ""} → <b>${m.channel}</b>${m.band === "5" ? ` (${m.width} MHz)` : ""}${m.notes.includes("dfs") ? ` · ${L("DFS", "DFS")}` : ""}`;
+  function renderChannels() {
+    const d = chan.data;
+    if (!d) { $("#ch-sum").innerHTML = `<div class="banner err">${icon("octagon")}${esc(chan.err || L("Geen gegevens", "No data"))}</div>`; hydrateIcons($("#ch-sum")); return; }
+    $("#ch-sum").innerHTML = chanSumHTML(d);
+    $("#ch-b24").innerHTML = chanBandHTML(d, "2.4");
+    $("#ch-b5").innerHTML = chanBandHTML(d, "5");
+    ["#ch-sum", "#ch-b24", "#ch-b5"].forEach((s) => hydrateIcons($(s)));
+  }
+  function chanVerdict(d, band) {
+    const b = d.bands[band]; if (!b || !b.radios.length) return "";
+    const n = b.radios.length, parts = [];
+    const pairs = (k) => L(`${k} ${k === 1 ? "paar" : "paren"} AP's`, `${k} pair${k === 1 ? "" : "s"} of APs`);
+    if (b.own_now !== b.own_plan) parts.push(L(`Nu zitten ${pairs(b.own_now)} op hetzelfde kanaal; met het advies ${b.own_plan ? `nog ${b.own_plan}` : "geen meer"}.`, `Now ${pairs(b.own_now)} share a channel; with the advice ${b.own_plan ? `still ${b.own_plan}` : "none"}.`));
+    else if (b.own_now) parts.push(L(`${pairs(b.own_now)} ${b.own_now === 1 ? "zit" : "zitten"} op hetzelfde kanaal.`, `${pairs(b.own_now)} share a channel.`));
+    else parts.push(L("Elke AP heeft een eigen kanaal.", "Every AP has its own channel."));
+    if (b.own_plan && band === "2.4" && n > 3) parts.push(L(`Met ${n} AP's en 3 kanalen kan het niet anders; Sonar kiest de verdeling met de minste buren.`, `With ${n} APs and 3 channels that can't be avoided; Sonar picks the split with the fewest neighbours.`));
+    if (b.load_now > 0 && b.load_plan < b.load_now * 0.9) parts.push(L(`Drukte van buren op je kanalen: ${Math.round(100 * (1 - b.load_plan / b.load_now))}% minder.`, `Neighbour load on your channels: ${Math.round(100 * (1 - b.load_plan / b.load_now))}% less.`));
+    return parts.join(" ");
+  }
+  function chanSumHTML(d) {
+    const job = d.job, moves = chanMoves(d), running = !!job?.running;
+    let h = `<div class="card-head"><h2 style="margin:0">${L("Advies voor al je AP's samen", "Advice for all your APs together")}</h2>${d.demo ? badge("info", "demo") : ""}</div>`;
+    if (!d.available) return h + `<p class="help">${L("Sonar ziet de netwerken van de buren alleen via de uitgebreide UniFi-API (API-key of lokale beheerder). Zonder die lijst kan Sonar geen kanalen aanraden; de uitleg hieronder geldt wel.", "Sonar only sees neighbouring networks via the extended UniFi API (API key or local admin). Without that list Sonar can't recommend channels; the explanation below still applies.")}</p>`;
+    if (job && (running || chan.hideJob !== job.started) && Date.now() / 1000 - (job.finished || Date.now() / 1000) < 1800) {
+      const ST = { waiting: ["info", L("wacht", "waiting")], busy: ["info", L("instellen…", "setting…")], provisioning: ["info", L("AP herstart…", "AP restarting…")],
+        ok: ["ok", L("gelukt", "done"), "check"], refused: ["warning", L("geweigerd", "refused"), "alert"], timeout: ["warning", L("geen bevestiging", "not confirmed"), "alert"], error: ["critical", L("mislukt", "failed"), "octagon"] };
+      h += `<p class="help" style="margin-top:0">${running ? L("Sonar past de AP's één voor één aan en controleert na elke AP of het kanaal is aangenomen.", "Sonar changes the APs one by one and checks after each AP whether the channel was taken.") : job.undo ? L("Terugzetten is klaar.", "Undo is finished.") : L("Klaar.", "Finished.")}</p>
+        <ul class="ch-job">${job.steps.map((s) => {
+          const [sev, lab, ic] = ST[s.status] || ["info", s.status];
+          const what = Object.entries(s.changes).map(([b, c]) => `${b} GHz → ${c.channel === "auto" ? "auto" : c.channel}`).join(", ");
+          const extra = s.status === "refused" ? L(`De AP bleef op ${Object.entries(s.result).map(([b, v]) => `${b} GHz kanaal ${v ?? "?"}`).join(", ")}. Sonar onthoudt dat en kiest voortaan een ander kanaal voor deze AP.`, `The AP stayed on ${Object.entries(s.result).map(([b, v]) => `${b} GHz channel ${v ?? "?"}`).join(", ")}. Sonar remembers this and picks another channel for this AP from now on.`)
+            : s.status === "timeout" ? L("Binnen 4 minuten niet bevestigd; kijk in UniFi of de AP online is.", "Not confirmed within 4 minutes; check in UniFi whether the AP is online.")
+            : s.status === "error" ? esc(s.error || "") : "";
+          return `<li><div><b>${esc(s.name)}</b> <span class="cell-sub">${esc(what)}</span>${extra ? `<div class="cell-sub">${extra}</div>` : ""}</div>${badge(sev, lab, ic)}</li>`;
+        }).join("")}</ul>
+        ${running ? "" : `<div class="wiz-actions" style="margin-top:12px"><button class="btn" data-ch-close>${L("Sluiten", "Close")}</button></div>`}`;
+      return h;
+    }
+    if (chan.confirm) {
+      const c = chan.confirm, list = c.undo ? (d.undo?.aps || []).map(esc) : c.moves.map(chanMoveTxt);
+      const aps = c.undo ? d.undo.aps.length : new Set(c.moves.map((m) => m.mac)).size;
+      const clients = c.undo ? null : c.moves.reduce((s, m) => s + (m.clients || 0), 0);
+      return h + `<div class="ch-confirm">
+        <h3 style="margin:0 0 8px">${c.undo ? L("Terugzetten naar hoe het was?", "Undo to how it was?") : L(`${aps} AP${aps === 1 ? "" : "'s"} aanpassen?`, `Change ${aps} AP${aps === 1 ? "" : "s"}?`)}</h3>
+        <ul class="ch-list">${list.map((x) => `<li>${x}</li>`).join("")}</ul>
+        <p class="help">${icon("alert")} ${L(`Elke AP hierboven start zijn radio's opnieuw.${clients ? ` De ${clients} apparaten die er nu op zitten` : " Apparaten op die AP"} vallen 10 tot 60 seconden weg en verbinden daarna vanzelf opnieuw. Sonar doet de AP's één voor één, wacht tot elke AP weer online is en controleert of hij het kanaal echt gebruikt (ongeveer 1 à 2 minuten per AP).`,
+          `Every AP above restarts its radios.${clients ? ` The ${clients} devices on them now` : " Devices on those APs"} drop off for 10 to 60 seconds and then reconnect by themselves. Sonar does the APs one by one, waits until each AP is back online and checks that it really uses the channel (about 1 to 2 minutes per AP).`)}</p>
+        <div class="wiz-actions" style="margin-top:12px"><button class="btn primary" data-ch-go>${c.undo ? L("Ja, terugzetten", "Yes, undo") : L("Ja, toepassen", "Yes, apply")}</button><button class="btn" data-ch-cancel>${L("Annuleren", "Cancel")}</button></div>
+        ${chan.err ? `<div class="banner err" style="margin:12px 0 0">${icon("octagon")}${esc(chan.err)}</div>` : ""}</div>`;
+    }
+    if (moves.length) {
+      const aps = new Set(moves.map((m) => m.mac)).size;
+      h += `<p style="margin:0 0 8px">${L(`Sonar raadt <b>${moves.length} wissel${moves.length === 1 ? "" : "s"}</b> aan, op ${aps} AP${aps === 1 ? "" : "'s"}:`, `Sonar recommends <b>${moves.length} change${moves.length === 1 ? "" : "s"}</b>, on ${aps} AP${aps === 1 ? "" : "s"}:`)}</p>
+        <ul class="ch-list">${moves.map((m) => `<li>${chanMoveTxt(m)}</li>`).join("")}</ul>
+        <p class="help">${["2.4", "5"].map((b) => chanVerdict(d, b) && `<b>${b} GHz:</b> ${chanVerdict(d, b)}`).filter(Boolean).join("<br>")}</p>`;
+      h += d.can_write ? `<div class="wiz-actions" style="margin-top:12px"><button class="btn primary" data-ch-all>${icon("wifi")}${L("Advies toepassen", "Apply advice")}</button></div>`
+        : `<p class="help">${L("Zelf instellen: UniFi → Apparaten → kies de AP → Radio's. Met de uitgebreide UniFi-API (API-key of lokale beheerder) kan Sonar het voor je doen.", "Set it yourself: UniFi → Devices → pick the AP → Radios. With the extended UniFi API (API key or local admin) Sonar can do it for you.")}</p>`;
+    } else {
+      h += `<p style="margin:0">${badge("ok", L("in orde", "fine"), "check")} ${L("Je kanalen staan goed: geen enkele wissel levert genoeg op om je wifi er even voor te onderbreken.", "Your channels are fine: no change gains enough to briefly interrupt your Wi-Fi for it.")}</p>
+        <p class="help">${["2.4", "5"].map((b) => chanVerdict(d, b) && `<b>${b} GHz:</b> ${chanVerdict(d, b)}`).filter(Boolean).join("<br>")}</p>`;
+    }
+    if (d.skipped?.length) h += `<p class="help" style="margin:12px 0 0">${L(`Niet meegenomen, want niet online: ${esc(d.skipped.join(", "))}. Komt een AP terug, dan rekent Sonar het advies opnieuw uit.`, `Not included because not online: ${esc(d.skipped.join(", "))}. When an AP comes back, Sonar recalculates the advice.`)}</p>`;
+    if (d.undo && d.can_write) h += `<p class="help" style="margin:12px 0 0">${L(`Sonar paste ${ago(d.undo.ts)} geleden de kanalen aan van ${esc(d.undo.aps.join(", "))}.`, `Sonar changed the channels of ${esc(d.undo.aps.join(", "))} ${ago(d.undo.ts)} ago.`)} <button class="linkbtn" data-ch-undo>${L("Terugzetten naar hoe het was", "Undo to how it was")}</button></p>`;
+    return h;
+  }
+  function chanBandHTML(d, band) {
+    const b = d.bands[band], running = !!d.job?.running;
+    const head = `<div class="card-head"><h2 style="margin:0">${band} GHz</h2></div>`;
+    if (!b || !b.radios.length) return head + `<p class="muted">${L(`Geen AP's met ${band} GHz online.`, `No APs with ${band} GHz online.`)}</p>`;
+    return head + `<p class="help" style="margin-top:0">${chanVerdict(d, band)}</p><div class="ch-rows">${b.radios.map((r) => {
+      const c = r.current, t = r.target, id = `${r.mac}|${band}`;
+      const share = (x) => x.shares.length ? `<div class="cell-sub t-warning">${L("deelt met", "shared with")} ${esc(x.shares.join(", "))}</div>` : "";
+      const notes = [r.notes.includes("dfs") ? L("DFS-kanaal: bij radar wijkt de AP even uit", "DFS channel: with radar nearby the AP moves away for a while") : "",
+        r.notes.includes("narrower") ? L(`smaller (${t.width} MHz): breder is er geen blok vrij`, `narrower (${t.width} MHz): no wider block is free`) : ""].filter(Boolean);
+      return `<div class="ch-row${r.change ? " change" : ""}">
+        <div class="ch-ap"><b>${esc(r.name)}</b><div class="cell-sub">${L(`${r.clients} apparaten`, `${r.clients} devices`)}${r.auto ? ` · ${L("kanaal op auto", "channel on auto")}` : ""}</div></div>
+        <div><div class="ch-lbl">${L("Nu", "Now")}</div><span class="num ch-big">${c.channel}</span> <span class="cell-sub">${c.width} MHz</span><div class="cell-sub">${chanNb(c)}</div>${share(c)}</div>
+        <div class="ch-arrow" aria-hidden="true">→</div>
+        <div><div class="ch-lbl">${L("Advies", "Advice")}</div>${r.change ? `<span class="num ch-big">${t.channel}</span> <span class="cell-sub">${t.width} MHz</span><div class="cell-sub">${chanNb(t)}</div>${share(t)}${notes.map((n) => `<div class="cell-sub">${n}</div>`).join("")}`
+          : r.locked ? badge("info", L("vastgezet", "locked"), "lock") : badge("ok", L("blijft", "stays"), "check")}</div>
+        <div class="ch-act">${r.change && d.can_write && !running ? `<button class="btn" data-ch-one="${id}">${L("Toepassen", "Apply")}</button>` : ""}
+          <button class="btn ghost" data-ch-lock="${id}|${r.locked ? 0 : 1}" title="${r.locked ? L("Sonar mag deze radio weer meenemen in het advies", "Let Sonar include this radio in the advice again") : L("Sonar laat deze radio voortaan met rust, bijvoorbeeld vanwege Zigbee of een apparaat dat alleen dit kanaal kan", "Sonar leaves this radio alone, for example because of Zigbee or a device that only works on this channel")}">${r.locked ? L("Losmaken", "Unlock") : L("Vastzetten", "Lock")}</button></div>
+        ${r.refused.length ? `<div class="ch-ref cell-sub">${L(`Weigerde eerder kanaal ${r.refused.join(", ")}; Sonar slaat dat over.`, `Refused channel ${r.refused.join(", ")} before; Sonar skips it.`)} <button class="linkbtn" data-ch-clear="${id}">${L("Opnieuw laten meedoen", "Allow again")}</button></div>` : ""}
+      </div>`;
+    }).join("")}</div>`;
+  }
+  function chanHowHTML() {
+    return `<div class="card-head"><h2 style="margin:0">${L("Zo zet je je kanalen op", "How to set up your channels")}</h2></div>
+      <div class="grid cols-2 ch-how">
+        <div><h3>2.4 GHz</h3><ul>
+          <li>${L("Gebruik alleen <b>1, 6 of 11</b>, altijd <b>20 MHz</b> breed. Alle andere kanalen overlappen met twee van deze drie, en storen dus meer.", "Only use <b>1, 6 or 11</b>, always <b>20 MHz</b> wide. Every other channel overlaps two of these three, so it disturbs more.")}</li>
+          <li>${L("AP's die elkaar horen, krijgen elk een ander kanaal. Heb je meer dan drie AP's, laat dan de AP's die het verst van elkaar staan een kanaal delen.", "APs that hear each other each get a different channel. With more than three APs, let the ones furthest apart share a channel.")}</li>
+          <li>${L("Zendvermogen op <i>laag</i> of <i>middel</i> helpt: dan horen je AP's elkaar minder en roamen apparaten eerder naar de dichtstbijzijnde AP.", "Transmit power on <i>low</i> or <i>medium</i> helps: your APs hear each other less and devices roam to the nearest AP sooner.")}</li>
+          <li>${L("Gebruik je Zigbee (Hue, Home Assistant, IKEA)? Zet de Zigbee-radio op kanaal 15, 20 of 25: die liggen tussen wifi 1, 6 en 11 in. Kan dat niet, zet de AP die er het dichtst bij staat dan hier <b>vast</b>.", "Using Zigbee (Hue, Home Assistant, IKEA)? Put the Zigbee radio on channel 15, 20 or 25: those sit between Wi-Fi 1, 6 and 11. If you can't, <b>lock</b> the AP closest to it here.")}</li>
+        </ul></div>
+        <div><h3>5 GHz</h3><ul>
+          <li>${L("Geef elke AP een <b>eigen blok</b>. Bij 80 MHz zijn dat 36–48 en 149–161, met DFS erbij ook 52–64, 100–112, 116–128 en 132–144.", "Give every AP its <b>own block</b>. At 80 MHz those are 36–48 and 149–161, plus 52–64, 100–112, 116–128 and 132–144 with DFS.")}</li>
+          <li>${L("<b>80 MHz</b> is snel, maar met veel AP's of buren is <b>40 MHz</b> vaak beter: twee keer zoveel blokken, en minder kans op storing.", "<b>80 MHz</b> is fast, but with many APs or neighbours <b>40 MHz</b> is often better: twice as many blocks, and less chance of interference.")}</li>
+          <li>${L("<b>DFS-kanalen</b> (52–144) zijn vaak rustig, want weinig buren gebruiken ze. Hoort een AP er radar, dan moet hij uitwijken en blijft hij minstens 30 minuten op een ander kanaal.", "<b>DFS channels</b> (52–144) are often quiet because few neighbours use them. If an AP hears radar there, it has to move away and stays on another channel for at least 30 minutes.")}</li>
+          <li>${L("Staat in UniFi de automatische kanaaloptimalisatie aan (Channel AI of nachtelijke optimalisatie), dan kan UniFi je kanalen later weer veranderen. Kies één van de twee.", "If UniFi's automatic channel optimisation is on (Channel AI or nightly optimisation), UniFi may change your channels again later. Pick one of the two.")}</li>
+        </ul></div>
+      </div>
+      <h3 style="margin:16px 0 6px">${L("Hoe Sonar het advies maakt", "How Sonar makes the advice")}</h3>
+      <p class="help" style="margin:0">${L("Sonar kijkt per AP welke netwerken van buren hij hoort en hoe sterk, en welke storing hij de afgelopen 30 dagen zelf mat op elk kanaal (ook storing die niet van wifi komt, zoals een magnetron). Daarna zoekt Sonar de verdeling voor al je AP's samen: zo min mogelijk AP's op hetzelfde kanaal, zo min mogelijk buren, en alleen een wissel als die echt iets oplevert, want elke wissel onderbreekt de wifi op die AP even. Kanalen met veel gemeten storing, kanalen die een AP eerder weigerde en radio's die je vastzette, slaat Sonar over.", "For each AP Sonar looks at which neighbouring networks it hears and how strongly, and what interference it measured itself on each channel over the past 30 days (including non-Wi-Fi interference, such as a microwave). Then Sonar looks for the split across all your APs together: as few APs on the same channel as possible, as few neighbours as possible, and a change only when it really gains something, because every change briefly interrupts Wi-Fi on that AP. Sonar skips channels with a lot of measured interference, channels an AP refused before, and radios you locked.")}</p>
+      <p class="help" style="margin:8px 0 0">${L("Per AP zie je alle kanalen naast elkaar onder Apparaten → de AP → Wifi in de buurt.", "For each AP you can see all channels side by side under Devices → the AP → Nearby Wi-Fi.")}</p>`;
+  }
+  async function chanClick(e) {
+    const t = e.target.closest("button"); if (!t) return;
+    const d = chan.data; if (!d) return;
+    const ds = t.dataset;
+    if ("chAll" in ds) { chan.confirm = { moves: chanMoves(d) }; chan.err = null; }
+    else if ("chOne" in ds) { const [mac, band] = ds.chOne.split("|"); chan.confirm = { moves: chanMoves(d).filter((m) => m.mac === mac && m.band === band) }; chan.err = null; $("#ch-sum").scrollIntoView({ block: "start" }); window.scrollBy(0, -stickyTop() - 12); }
+    else if ("chUndo" in ds) { chan.confirm = { undo: true }; chan.err = null; }
+    else if ("chCancel" in ds) { chan.confirm = null; chan.err = null; }
+    else if ("chClose" in ds) { chan.hideJob = d.job?.started; }
+    else if ("chGo" in ds) {
+      t.disabled = true; t.textContent = L("Bezig…", "Working…");
+      try {
+        const r = chan.confirm.undo ? await post("/api/channels/undo", {})
+          : await post("/api/channels/apply", { items: chan.confirm.moves.map((m) => ({ mac: m.mac, band: m.band, channel: m.channel, width: m.width })) });
+        chan.confirm = null; d.job = r.job; chan.hideJob = null;
+        return loadChannels();
+      } catch (err) { chan.err = err.message; }
+    } else if ("chLock" in ds) {
+      const [mac, band, on] = ds.chLock.split("|");
+      try { await post("/api/channels/lock", { mac, band, locked: on === "1" }); } catch (err) { chan.err = err.message; }
+      return loadChannels();
+    } else if ("chClear" in ds) {
+      const [mac, band] = ds.chClear.split("|");
+      try { await post("/api/channels/refused/clear", { mac, band }); } catch (err) { chan.err = err.message; }
+      return loadChannels();
+    } else return;
+    renderChannels();
+  }
+
   function mountTimeline() {
     mount("tijdlijn", `
       <div class="page-head"><div><h1>${L("Tijdlijn", "Timeline")}</h1><p class="subtitle">${L("Wat er in je netwerk gebeurde: herstarts, links die wegvallen, roaming en clients die komen en gaan.", "What happened in your network: restarts, links dropping, roaming and clients coming and going.")}</p></div>${rangeSeg("tl-range")}</div>

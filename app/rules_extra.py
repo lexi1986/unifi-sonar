@@ -523,10 +523,10 @@ def quieter_channel(out: list[dict], snap: dict, ins: dict, issue, db=None, ts: 
                                + f". On channel {best['channel']}: {best['neighbors']}" + (f" (plus {', '.join(best['own'])})" if best["own"] else "") + "."),
                              L(f"Overweeg kanaal {best['channel']} (UniFi: Apparaten → {ap['name']} → Radio's). Heb je bewust een "
                                "kanaalplan, bijvoorbeeld omdat een apparaat een kanaal niet ondersteunt of vanwege storing die niet "
-                               "van wifi komt, kies dan Negeren. In de AP-details zie je alle kanalen naast elkaar.",
+                               "van wifi komt, kies dan Negeren of zet de AP vast onder Wifi-kanalen. Daar zie je ook het plan voor al je AP's samen, en zet Sonar het met één knop goed.",
                                f"Consider channel {best['channel']} (UniFi: Devices → {ap['name']} → Radios). If you have a deliberate "
                                "channel plan, for example because a device doesn't support a channel or because of non-wifi "
-                               "interference, choose Ignore. The AP details show all channels side by side."),
+                               "interference, choose Ignore or lock the AP under Wi-Fi channels. There you also see the plan for all your APs together, and Sonar sets it with one button."),
                              "neighbor_load", cur["load"], best["load"], ap["mac"]))
 
 

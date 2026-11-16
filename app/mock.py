@@ -171,6 +171,11 @@ class MockNetwork:
         self.sonos_ap = AP_WK
         self.blocked: set[str] = set()   # gepauzeerde apparaten: verschijnen niet meer als client
         self.names: dict[str, str] = {}   # namen die je in Sonar gaf (in het echt: in UniFi)
+        self.ch = {(ap, "ng"): CH24[ap] for ap in CH24} | {(ap, "na"): CH5[ap] for ap in CH5}   # kanalen, aan te passen
+        self.ht: dict[tuple[str, str], int] = {}
+        self.ch_cfg: dict[tuple[str, str], object] = {}   # wat je instelde (in het echt: radio_table in UniFi)
+        self.prov_until: dict[str, float] = {}             # AP's die na een kanaalwissel even herstarten
+        self.prov_s = 6.0
 
     # ----------------------------------------------------------------- helpers
     def _cnt(self, key: str, field: str, inc: float) -> float:
@@ -230,7 +235,8 @@ class MockNetwork:
 
     def _radio_stats(self, ap: str, dt: float, clients: list[dict]) -> tuple[list, list]:
         table, stats = [], []
-        for name, radio, ch, ht in (("wifi0", "ng", CH24[ap], 20), ("wifi1", "na", CH5[ap], 80)):
+        for name, radio in (("wifi0", "ng"), ("wifi1", "na")):
+            ch, ht = self.ch[(ap, radio)], self.ht.get((ap, radio), 20 if radio == "ng" else 80)
             on = [c for c in clients if c.get("ap_mac") == ap and c.get("radio") == radio]
             cu_self = 5 + 1.5 * len(on) + R.uniform(-2, 2)
             other = R.uniform(8, 18)
@@ -241,7 +247,7 @@ class MockNetwork:
             retry = 0.04 + (0.10 if (ap == AP_WK and radio == "ng") else 0) + (0.12 if ap == AP_SC and radio == "ng" else 0)
             pkts = R.uniform(300, 900) * dt * max(1, len(on))
             key = f"{ap}:{radio}"
-            table.append({"name": name, "radio": radio, "channel": ch if radio == "ng" else "auto", "ht": ht,
+            table.append({"name": name, "radio": radio, "channel": self.ch_cfg.get((ap, radio), ch if radio == "ng" else "auto"), "ht": ht,
                           "tx_power_mode": "auto", "min_rssi_enabled": False})
             stats.append({
                 "name": name, "radio": radio, "channel": ch, "num_sta": len(on), "satisfaction": round(sat),
@@ -281,7 +287,7 @@ class MockNetwork:
                 "mac": mac, "name": name, "hostname": name.lower().replace(" ", "-"), "oui": vendor,
                 "ip": _cip(name, i, False), "is_wired": False, "network": "IoT" if name in IOT_CLIENTS else "Default",
                 "essid": "Thuis-IoT" if name in IOT_CLIENTS and radio == "ng" else "Thuis",
-                "ap_mac": ap, "radio": radio, "channel": CH24[ap] if radio == "ng" else CH5[ap],
+                "ap_mac": ap, "radio": radio, "channel": self.ch[(ap, radio)],
                 "radio_proto": "ax" if radio == "na" else "n", "signal": round(s), "noise": -95,
                 "satisfaction": round(sat), "tx_rate": round(rate), "rx_rate": round(rate * 0.8),
                 "tx_packets": self._cnt(mac, "pk", pkts), "tx_retries": self._cnt(mac, "rt", pkts * rpct / 100),
@@ -343,7 +349,7 @@ class MockNetwork:
             on = [c for c in sta if c.get("ap_mac") == mac]
             devs.append({
                 "mac": mac, "name": info["name"], "model": info["model"], "model_name": info["model_name"], "type": "uap",
-                "state": 1, "version": "6.6.77" if mac != AP_KT else "6.5.62",
+                "state": 5 if time.time() < self.prov_until.get(mac, 0) else 1, "version": "6.6.77" if mac != AP_KT else "6.5.62",
                 "upgradable": mac == AP_KT, "upgrade_to_firmware": "6.6.77" if mac == AP_KT else "",
                 "uptime": (self.t - REBOOT_T + 5) if (mac == AP_BV and self.t >= REBOOT_T) else uptime_base - 7200 * list(APS).index(mac),
                 "ip": f"192.168.1.{20 + list(APS).index(mac)}",
@@ -732,6 +738,31 @@ class MockNetwork:
         cats = {"TV Woonkamer": {4: 8.1e9, 13: 0.4e9}, "PS5": {8: 5.2e9, 4: 0.9e9, 14: 0.3e9}, "MacBook Pro": {13: 1.1e9, 5: 0.8e9, 4: 0.6e9, 14: 0.4e9},
                 "iPhone": {24: 0.5e9, 4: 0.4e9, 0: 0.1e9, 13: 0.2e9}, "Apple TV Boven": {4: 3.6e9}}
         return [{"mac": idx[n], "by_cat": [{"cat": c, "rx_bytes": b, "tx_bytes": b * 0.04} for c, b in v.items()]} for n, v in cats.items()]
+
+    # ------------------------------------------------------------ wifi-kanalen instellen
+    REFUSES = {(AP_SC, "ng"): {11}}   # zoals in het echt: een AP die een kanaal niet aanneemt
+
+    def set_radios(self, mac: str, changes: dict[str, dict]) -> dict[str, dict]:
+        radio_of = {"2.4": "ng", "5": "na"}
+        if mac not in APS:
+            raise RuntimeError("UniFi kent deze AP niet")
+        before = {}
+        for band, c in changes.items():
+            key = (mac, radio_of[band])
+            before[band] = {"channel": self.ch_cfg.get(key, self.ch[key] if band == "2.4" else "auto"),
+                            "ht": self.ht.get(key, 20 if band == "2.4" else 80)}
+            self.ch_cfg[key], self.ht[key] = c["channel"], int(c["ht"])
+            if c["channel"] != "auto" and int(c["channel"]) not in self.REFUSES.get(key, set()):
+                self.ch[key] = int(c["channel"])
+            elif c["channel"] == "auto":
+                self.ch[key] = CH24[mac] if band == "2.4" else CH5[mac]
+        self.prov_until[mac] = time.time() + self.prov_s
+        return before
+
+    def radio_state(self, mac: str) -> dict:
+        return {"state": "provisioning" if time.time() < self.prov_until.get(mac, 0) else "online",
+                "channels": {"2.4": self.ch[(mac, "ng")], "5": self.ch[(mac, "na")]},
+                "widths": {"2.4": self.ht.get((mac, "ng"), 20), "5": self.ht.get((mac, "na"), 80)}}
 
     def snapshot(self, dt: float) -> tuple[list, list, list]:
         self.advance(dt)

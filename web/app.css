@@ -484,7 +484,7 @@ pre.debug { background: var(--me-bg); border: 1px solid var(--me-border); border
   .status-pill { flex: none; max-width: 140px; }
 }
 @media (max-width: 1120px) { .topbar .nav { gap: 0; } .nav a { padding: 8px 6px; gap: 5px; } .nav .count { padding: 0 6px; } }
-@media (max-width: 1000px) and (min-width: 821px) {   /* smal venster: iconen, met de naam bij de actieve pagina */
+@media (max-width: 1180px) and (min-width: 821px) {   /* smal venster: iconen, met de naam bij de actieve pagina */
   .nav a .lbl { display: none; }
   .nav a[aria-current="page"] .lbl { display: inline; }
   .nav a { padding: 8px 10px; }
@@ -930,3 +930,31 @@ body.kiosk .jumpbar { display: none; }
 .event.sub { padding-left: 16px; border-top-style: dashed; opacity: 0.85; }
 .issue .toggle + .advice { margin-top: 8px; }
 .field[hidden], .form-grid > [hidden] { display: none; }
+
+/* ---------------------------------------------------------------- wifi-kanalen */
+.ch-list { margin: 0 0 8px; padding-left: 20px; line-height: 1.7; }
+.ch-rows { display: flex; flex-direction: column; }
+.ch-row { display: grid; grid-template-columns: minmax(120px, 1.1fr) minmax(0, 1.5fr) 18px minmax(0, 1.5fr) auto; gap: 12px; align-items: start;
+  padding: 12px 0; border-top: 1px solid var(--me-border); }
+.ch-row:first-child { border-top: 0; padding-top: 4px; }
+.ch-lbl { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--me-text-muted); margin-bottom: 2px; }
+.ch-big { font-size: 20px; font-weight: 600; }
+.ch-row.change > div:nth-child(4) .ch-big { color: var(--me-primary); }
+.ch-arrow { color: var(--me-text-muted); padding-top: 20px; }
+.ch-act { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ch-ref { grid-column: 1 / -1; margin-top: -4px; }
+.ch-confirm { border: 1px solid rgba(255, 190, 92, 0.45); background: var(--me-warning-tint); border-radius: var(--me-radius-md); padding: 14px 16px; }
+.ch-confirm .help .icon { color: var(--me-warning); vertical-align: -3px; }
+.ch-job { list-style: none; margin: 0; padding: 0; }
+.ch-job li { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--me-border); }
+.ch-job li:first-child { border-top: 0; }
+.ch-how h3 { font-size: 15px; margin: 0 0 6px; }
+.ch-how ul { margin: 0; padding-left: 18px; color: var(--me-text-secondary); font-size: 13px; line-height: 1.55; }
+.ch-how li + li { margin-top: 6px; }
+@media (max-width: 820px) {
+  .ch-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .ch-ap, .ch-act { grid-column: 1 / -1; }
+  .ch-arrow { display: none; }
+  .ch-act { justify-content: flex-start; }
+  .ch-how { grid-template-columns: 1fr !important; }
+}

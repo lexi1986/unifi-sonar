@@ -2,6 +2,20 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### Added
+- **Wi-Fi channels page.** One place for your channel setup: which channel every access point uses now, what Sonar recommends for all your APs together, and how to set up channels well (2.4 GHz, 5 GHz, DFS, Zigbee).
+  - The advice looks at all APs at once: as few APs on the same channel as possible, as few neighbouring networks as possible, and a change only when it gains enough to be worth a short Wi-Fi interruption.
+  - **Apply with one button**, for all APs or one at a time. Sonar changes the APs one by one, waits until each is back online and checks that it really uses the new channel. Devices on an AP that changes drop off for 10 to 60 seconds.
+  - An AP that doesn't take a channel is remembered, and Sonar picks another channel for it from then on. **Undo** puts back the channels from before Sonar's first change, including *auto*.
+  - **Lock** a radio to keep it out of the advice, for example because of Zigbee or a device that only works on one channel.
+  - Applying needs the extended UniFi API (an API key or a local admin), like pausing and naming devices.
+
+### Changed
+- Channel issues link to the new page instead of the device list.
+- On windows narrower than 1180 pixels the top menu shows icons, with the name of the current page, so the extra page fits.
+
 ## 1.13.0 – 2026-11-15
 
 ### Changed

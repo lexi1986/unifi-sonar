@@ -983,6 +983,83 @@ def neighbors(mac: str):
             "neighbors": [{k: n[k] for k in ("ssid", "band", "channel", "width", "signal")} for n in heard[:40]], "total": len(heard)}
 
 
+# ----------------------------------------------------------------------- wifi-kanalen: plan en toepassen
+def _chan_can_write(collector: Collector) -> bool:
+    return bool(collector.mock) or getattr(collector.client, "source", None) in ("legacy-key", "legacy-login")
+
+
+@app.get("/api/channels")
+def channels_plan():
+    """Het kanaalplan voor al je AP's samen, en de voortgang als Sonar het aan het toepassen is."""
+    collector, _db = _need()
+    return {**collector.channel_plan(), "job": collector.chan_job, "can_write": _chan_can_write(collector), "demo": bool(collector.mock)}
+
+
+class ChannelItem(BaseModel):
+    mac: str = Field(min_length=11, max_length=17)
+    band: Literal["2.4", "5"]
+    channel: int = Field(ge=1, le=196)
+    width: int = Field(ge=20, le=160)
+
+
+class ChannelApply(BaseModel):
+    items: list[ChannelItem] = Field(min_length=1, max_length=40)
+
+
+@app.post("/api/channels/apply")
+async def channels_apply(req: ChannelApply):
+    """Kanalen instellen in UniFi, AP voor AP. Elke AP start daarbij zijn radio's opnieuw."""
+    from . import channels
+    collector, _db = _need()
+    if not _chan_can_write(collector):
+        raise HTTPException(400, L("Kanalen instellen kan alleen via de uitgebreide UniFi-API", "Setting channels only works via the extended UniFi API"))
+    try:
+        todo = channels.validate([i.model_dump() for i in req.items], collector.latest or {})
+        return {"ok": True, "job": collector.apply_channels(todo)}
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/channels/undo")
+async def channels_undo():
+    """Terug naar de kanalen van vóór Sonars eerste wissel (ook 'auto' als dat er stond)."""
+    from . import channels
+    collector, db = _need()
+    saved = db.get_kv(channels.KV_UNDO) or {}
+    online = {d["mac"] for d in (collector.latest or {}).get("devices", []) if d.get("state") == "online"}
+    todo = {mac: {b: (v["channel"], v["ht"]) for b, v in ap["radios"].items()} for mac, ap in (saved.get("aps") or {}).items() if mac in online}
+    if not todo:
+        raise HTTPException(400, L("Er is niets om terug te zetten", "There is nothing to undo"))
+    try:
+        return {"ok": True, "job": collector.apply_channels(todo, undo=True)}
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+class ChannelRadio(BaseModel):
+    mac: str = Field(min_length=11, max_length=17)
+    band: Literal["2.4", "5"]
+    locked: bool | None = None
+
+
+@app.post("/api/channels/lock")
+def channels_lock(req: ChannelRadio):
+    """Een radio buiten het plan houden: Sonar stelt er nooit een ander kanaal voor voor."""
+    from . import channels
+    _collector, db = _need()
+    channels.set_locked(db, req.mac.lower(), req.band, bool(req.locked))
+    return {"ok": True}
+
+
+@app.post("/api/channels/refused/clear")
+def channels_refused_clear(req: ChannelRadio):
+    """Kanalen die een AP eerder weigerde weer laten meedoen (bijvoorbeeld na een firmware-update)."""
+    from . import channels
+    _collector, db = _need()
+    channels.forget_refused(db, req.mac.lower(), req.band)
+    return {"ok": True}
+
+
 @app.get("/api/wifi/connectivity")
 def wifi_connectivity():
     collector, _ = _need()

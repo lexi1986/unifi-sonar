@@ -43,6 +43,18 @@ def _num(v: Any, default: float | None = None) -> float | None:
         return default
 
 
+def _same_type(old: Any, new: Any) -> Any:
+    """UniFi bewaart kanaal en breedte soms als tekst ("36", "80"), soms als getal: houd vast wat er stond."""
+    if new == "auto" or old is None:
+        return new
+    if isinstance(old, str):
+        return str(new)
+    try:
+        return int(new)
+    except (TypeError, ValueError):
+        return new
+
+
 def _sat(v: Any) -> float | None:
     """UniFi gebruikt -1 voor 'geen score' (bv. radio zonder clients)."""
     n = _num(v)
@@ -939,6 +951,43 @@ class UnifiClient:
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         if r.status_code != 200 or (body.get("meta") or {}).get("rc") not in (None, "ok"):
             raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")
+
+    async def _device_raw(self, mac: str) -> dict:
+        r = await self.http.get(f"/proxy/network/api/s/{self.s.site}/stat/device/{mac.lower()}", headers=self._write_headers())
+        rows = r.json().get("data", []) if r.status_code == 200 else []
+        if not rows or not rows[0].get("_id"):
+            raise RuntimeError(L("UniFi kent deze AP niet", "UniFi doesn't know this AP"))
+        return rows[0]
+
+    async def set_radios(self, mac: str, changes: dict[str, dict]) -> dict[str, dict]:
+        """Kanaal en breedte van een AP zetten: {band: {"channel": .., "ht": ..}}, ook "auto". Geeft de vorige
+        instellingen terug, zodat Sonar ze kan terugzetten. UniFi start daarna de radio's van deze AP opnieuw."""
+        if self.source not in ("legacy-key", "legacy-login"):
+            raise RuntimeError(L("Kanalen instellen kan alleen via de uitgebreide API", "Setting channels only works via the extended API"))
+        d = await self._device_raw(mac)
+        table = [dict(r) for r in d.get("radio_table") or []]
+        before: dict[str, dict] = {}
+        for r in table:
+            band = BAND.get(r.get("radio"))
+            if band in changes and band not in before:
+                before[band] = {"channel": r.get("channel"), "ht": r.get("ht")}
+                r["channel"] = _same_type(r.get("channel"), changes[band]["channel"])
+                r["ht"] = _same_type(r.get("ht"), changes[band]["ht"])
+        if set(changes) - set(before):
+            raise RuntimeError(L("Deze AP heeft die band niet", "This AP doesn't have that band"))
+        r = await self.http.put(f"/proxy/network/api/s/{self.s.site}/rest/device/{d['_id']}", headers=self._write_headers(),
+                                json={"radio_table": table})
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code != 200 or (body.get("meta") or {}).get("rc") not in (None, "ok"):
+            raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")
+        return before
+
+    async def radio_state(self, mac: str) -> dict:
+        """Staat de AP weer online, en op welk kanaal zenden de radio's echt?"""
+        d = await self._device_raw(mac)
+        return {"state": DEVICE_STATE.get(d.get("state"), "unknown"),
+                "channels": {BAND.get(r.get("radio"), "?"): _num(r.get("channel")) for r in d.get("radio_table_stats") or []},
+                "widths": {BAND.get(r.get("radio"), "?"): _num(r.get("ht")) for r in d.get("radio_table") or []}}
 
     async def fetch(self) -> dict:
         """Kies automatisch de rijkste bron die werkt en onthoud die. Staan we op de beperkte officiële API, dan

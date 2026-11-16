@@ -14,7 +14,7 @@ from .config import Settings
 from .db import DB
 from .mock import MockNetwork
 from .notify import Notifier
-from . import changes, i18n
+from . import changes, channels, i18n
 from .i18n import L
 from .ha_mqtt import HAMqtt
 from .unifi_client import (UnifiClient, config_from_raw, normalize_config, normalize_flow, normalize_ips, normalize_legacy, normalize_usage, normalize_speedtest_state,
@@ -58,6 +58,9 @@ class Collector:
         self.last_ok: int | None = None
         self.ips_available: bool | None = True if self.mock else None
         self._ips_checked = 0
+        self.chan_job: dict | None = None   # kanalen toepassen: voortgang per AP
+        self._chan_task: asyncio.Task | None = None
+        self.chan_timing = (1.5, 60, 4) if self.mock else (5, 240, 30)   # peilen elke .. s, opgeven na .., 'geweigerd' na .. s online
         self.config: dict | None = None          # wifi-instellingen, UPnP, port forwards
         self._cfg_checked = 0
         self.sysinfo: dict = {"network_version": "demo", "hardware": "UOSSERVER"} if self.mock else {}
@@ -365,6 +368,95 @@ class Collector:
             (self.mock.blocked.add if blocked else self.mock.blocked.discard)(mac)
             return
         await self.client.block(mac, blocked)
+
+    # ------------------------------------------------------------ wifi-kanalen
+    def channel_plan(self) -> dict:
+        return channels.plan(self.latest or {}, self.insights or {}, self.db)
+
+    def apply_channels(self, todo: dict[str, dict[str, tuple]], undo: bool = False) -> dict:
+        """Kanalen toepassen, AP voor AP op de achtergrond. 'todo' = {mac: {band: (kanaal, breedte)}}; bij 'undo'
+        komen de waarden letterlijk uit wat Sonar eerder bewaarde (ook "auto")."""
+        if self.chan_job and self.chan_job["running"]:
+            raise RuntimeError(L("Sonar is al kanalen aan het aanpassen", "Sonar is already changing channels"))
+        names = {d["mac"]: d["name"] for d in (self.latest or {}).get("devices", [])}
+        job = {"running": True, "undo": undo, "started": int(time.time()), "finished": None, "steps": [
+            {"mac": mac, "name": names.get(mac, mac), "status": "waiting", "error": None,
+             "changes": {b: {"channel": v[0], "width": v[1]} for b, v in bands.items()}, "result": {}}
+            for mac, bands in todo.items()]}
+        self._chan_task = asyncio.get_running_loop().create_task(self._run_channels(job))   # pas daarna 'bezig'
+        self.chan_job = job
+        return job
+
+    async def _set_radios(self, mac: str, raw: dict) -> dict:
+        return self.mock.set_radios(mac, raw) if self.mock else await self.client.set_radios(mac, raw)
+
+    async def _radio_state(self, mac: str) -> dict:
+        return self.mock.radio_state(mac) if self.mock else await self.client.radio_state(mac)
+
+    def _note_radios(self, mac: str, rs: dict) -> None:
+        """Meteen zichtbaar maken wat de AP nu doet, niet pas na de volgende ronde."""
+        for d in (self.latest or {}).get("devices", []):
+            if d["mac"] == mac:
+                d["state"] = rs.get("state") or d.get("state")
+                for r in d.get("radios") or []:
+                    if rs["channels"].get(r["radio"]) is not None:
+                        r["channel"] = int(rs["channels"][r["radio"]])
+                    if (rs.get("widths") or {}).get(r["radio"]):
+                        r["width"] = float(rs["widths"][r["radio"]])
+
+    async def _run_channels(self, job: dict) -> None:
+        step_s, limit, settle = self.chan_timing
+        try:
+            for st in job["steps"]:
+                st["status"] = "busy"
+                raw = {b: {"channel": c["channel"], "ht": c["width"]} for b, c in st["changes"].items()}
+                try:
+                    before = await self._set_radios(st["mac"], raw)
+                    if not job["undo"]:   # de stand van vóór de eerste wissel bewaren, ook over meerdere keren heen
+                        saved = self.db.get_kv(channels.KV_UNDO) or {}
+                        if not saved.get("aps"):
+                            saved = {"ts": int(time.time()), "aps": {}}
+                        prev = saved["aps"].setdefault(st["mac"], {"name": st["name"], "radios": {}})
+                        for b, v in before.items():
+                            prev["radios"].setdefault(b, v)
+                        self.db.set_kv(channels.KV_UNDO, saved)
+                    st["status"] = "provisioning"
+                    t0, online_since = time.time(), None
+                    await asyncio.sleep(step_s * 2)
+                    while True:
+                        try:
+                            rs = await self._radio_state(st["mac"])
+                        except Exception:  # noqa: BLE001 – AP even weg tijdens het herstarten
+                            rs = {"state": "offline", "channels": {}}
+                        want = {b: c["channel"] for b, c in st["changes"].items() if c["channel"] != "auto"}
+                        got = {b: rs["channels"].get(b) for b in want}
+                        st["result"] = {b: int(v) if v is not None else None for b, v in got.items()}
+                        if rs["state"] == "online":
+                            online_since = online_since or time.time()
+                            if all(got[b] is not None and int(got[b]) == int(want[b]) for b in want):
+                                st["status"] = "ok"
+                                self._note_radios(st["mac"], rs)
+                                break
+                            if time.time() - online_since >= settle:   # online, maar op een ander kanaal: geweigerd
+                                st["status"] = "refused"
+                                if not job["undo"]:
+                                    for b in want:
+                                        if got[b] is None or int(got[b]) != int(want[b]):
+                                            channels.remember_refused(self.db, st["mac"], b, want[b])
+                                break
+                        if time.time() - t0 > limit:
+                            st["status"] = "timeout"
+                            break
+                        await asyncio.sleep(step_s)
+                except Exception as e:  # noqa: BLE001
+                    st["status"], st["error"] = "error", str(e)
+                    log.warning("Kanaal instellen voor %s: %s", st["name"], e)
+            if job["undo"] and all(s["status"] == "ok" for s in job["steps"]):
+                self.db.set_kv(channels.KV_UNDO, {})
+        finally:
+            job["running"], job["finished"] = False, int(time.time())
+            log.info("Kanalen %s: %s", "terugzetten" if job["undo"] else "toepassen",
+                     ", ".join(f"{s['name']} {s['status']}" for s in job["steps"]))
 
     async def rename(self, mac: str, name: str) -> None:
         if self.mock:
