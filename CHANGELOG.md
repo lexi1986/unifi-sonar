@@ -2,7 +2,7 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
-## Unreleased
+## 1.14.0 – 2026-11-16
 
 ### Added
 - **Wi-Fi channels page.** One place for your channel setup: which channel every access point uses now, what Sonar recommends for all your APs together, and how to set up channels well (2.4 GHz, 5 GHz, DFS, Zigbee).
