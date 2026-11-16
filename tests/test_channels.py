@@ -153,3 +153,56 @@ def test_plan_without_channels_says_so():
     assert p["no_channels"] and p["changes"] == 0
     devs[0]["radios"][0]["channel"] = 6
     assert not channels.plan({"devices": devs}, {"neighbors": []}, KV())["no_channels"]
+
+
+NL = {"country": "NL", "2.4": {20: list(range(1, 14)), 40: list(range(1, 14))},
+      "5": {20: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140],
+            40: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136],
+            80: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128], 160: []}}
+
+
+def test_plan_only_uses_channels_unifi_allows():
+    """In Nederland staat UniFi 149–165 niet toe (api.err.InvalidChannel): nooit aanraden."""
+    devs = [_ap("a", ("5", 36, 80)), _ap("b", ("5", 36, 80)), _ap("c", ("5", 52, 80))]
+    nbrs = [_nbr(m, "5", ch, -70, 80) for m in "abc" for ch in (100, 116)]   # zonder lijst zou 149 het rustigst zijn
+    free = channels.plan({"devices": devs}, {"neighbors": nbrs}, KV())
+    assert any(r["target"]["channel"] == 149 for r in free["bands"]["5"]["radios"])
+    p = channels.plan({"devices": devs}, {"neighbors": nbrs}, KV(), allowed=NL)
+    targets = {r["target"]["channel"] for r in p["bands"]["5"]["radios"]}
+    assert not targets & {149, 153, 157, 161, 165} and p["bands"]["5"]["own_plan"] == 0
+    assert p["allowed"]["country"] == "NL" and 149 not in p["allowed"]["5"]["80"]
+    snap = {"devices": [_ap("aa:bb:cc:dd:ee:01", ("5", 36, 80))]}
+    with pytest.raises(ValueError, match="niet toe|doesn't allow"):
+        channels.validate([{"mac": "aa:bb:cc:dd:ee:01", "band": "5", "channel": 149, "width": 80}], snap, NL)
+    assert channels.validate([{"mac": "aa:bb:cc:dd:ee:01", "band": "5", "channel": 100, "width": 80}], snap, NL)
+
+
+def test_allowed_from_unifi_and_back_from_storage():
+    from app.unifi_client import normalize_allowed
+    a = normalize_allowed({"key": "NL", "channels_ng": [1, 6, 11], "channels_na": [36, 40, 44, 48], "channels_na_40": [36, 40, 44, 48],
+                           "channels_na_80": [36, 40, 44, 48], "channels_na_160": []})
+    assert a["country"] == "NL" and a["5"][80] == [36, 40, 44, 48] and a["2.4"][40] == [1, 6, 11]
+    db = KV()
+    db.set_kv(channels.KV_ALLOWED, {"country": "NL", "2.4": {"20": [1]}, "5": {"80": [36]}})   # zo komt het uit JSON terug
+    back = channels.load_allowed(db)
+    assert back["5"][80] == [36] and channels.allowed_ok(back, "5", 36, 80) and not channels.allowed_ok(back, "5", 149, 80)
+    assert channels.allowed_ok(None, "5", 149, 80)   # zonder lijst geen beperking
+
+
+def test_unifi_refuses_channel_right_away(tmp_path):
+    from app.mock import AP_KT
+    os.environ["NO_DOTENV"] = "1"
+    st = Settings(mode="mock", db_path=str(tmp_path / "s.db"), mock_seed_hours=0, data_dir=str(tmp_path))
+    col = Collector(st, DB(st.db_path))
+    col.chan_timing = (0.05, 5, 0.2)
+
+    async def run():
+        await col.tick()
+        assert col.allowed_ch and 149 in col.allowed_ch["5"][80]   # de demo doet alsof 149 mag
+        job = col.apply_channels({AP_KT: {"5": (165, 20)}})
+        await col._chan_task
+        return job
+
+    step = asyncio.run(run())["steps"][0]
+    assert step["status"] == "refused" and "niet toe" in step["error"]
+    assert channels._kv(col.db, channels.KV_REFUSED) == {f"{AP_KT}@5": [165]}

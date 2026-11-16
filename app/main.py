@@ -1014,7 +1014,7 @@ async def channels_apply(req: ChannelApply):
     if not _chan_can_write(collector):
         raise HTTPException(400, L("Kanalen instellen kan alleen via de uitgebreide UniFi-API", "Setting channels only works via the extended UniFi API"))
     try:
-        todo = channels.validate([i.model_dump() for i in req.items], collector.latest or {})
+        todo = channels.validate([i.model_dump() for i in req.items], collector.latest or {}, collector.allowed_ch)
         return {"ok": True, "job": collector.apply_channels(todo)}
     except (ValueError, RuntimeError) as e:
         raise HTTPException(400, str(e)) from e

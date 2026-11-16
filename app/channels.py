@@ -23,6 +23,7 @@ EXACT_LIMIT = 60000    # tot zoveel combinaties alles doorrekenen, daarboven sta
 
 KV_REFUSED = "channels_refused"   # {"mac@band": [kanaal, ...]}: kanalen die die AP niet aannam
 KV_LOCKED = "channels_locked"     # {"mac@band": true}: niet aanpassen (bijvoorbeeld vanwege Zigbee)
+KV_ALLOWED = "channels_allowed"   # wat UniFi in dit land toestaat (stat/current-channel)
 KV_UNDO = "channels_undo"         # {"ts": .., "aps": {mac: {"name": .., "radios": {band: {"channel": raw, "ht": raw}}}}}
 
 VALID = {"2.4": set(range(1, 14)), "5": {36, 40, 44, 48, 149, 153, 157, 161, 165, *DFS_5}}
@@ -36,11 +37,27 @@ def _kv(db, key: str) -> dict:
         return {}
 
 
+def load_allowed(db) -> dict | None:
+    """Bewaard als JSON: de breedtes komen terug als tekst."""
+    a = _kv(db, KV_ALLOWED)
+    if not a:
+        return None
+    return {"country": a.get("country"), **{b: {int(w): v for w, v in (a.get(b) or {}).items()} for b in ("2.4", "5")}}
+
+
+def allowed_ok(allowed: dict | None, band: str, ch: int, width: int) -> bool:
+    """Mag dit kanaal met deze breedte volgens UniFi? Zonder lijst (oude controller, beperkte API) is alles goed."""
+    if not allowed or not (allowed.get(band) or {}).get(width if band == "5" else 20):
+        return True
+    return int(ch) in allowed[band][width if band == "5" else 20]
+
+
 def _radio(ap: dict, band: str) -> dict | None:
     return next((r for r in ap.get("radios") or [] if r["radio"] == band and r.get("channel")), None)
 
 
-def _options(ap: dict, band: str, ins: dict, devices: list[dict], hist: dict, refused: set[int]) -> list[dict]:
+def _options(ap: dict, band: str, ins: dict, devices: list[dict], hist: dict, refused: set[int],
+             allowed: dict | None = None) -> list[dict]:
     """Alle kanalen die deze radio zou kunnen krijgen, met wat ze kosten. De huidige stand zit er altijd bij."""
     r = _radio(ap, band)
     cur_ch, w0 = int(r["channel"]), int(r.get("width") or (20 if band == "2.4" else 80))
@@ -53,7 +70,8 @@ def _options(ap: dict, band: str, ins: dict, devices: list[dict], hist: dict, re
         rows = channel_table(ap, band, ins, devices, hist, w if band == "5" else None, dfs)
         for row in rows:
             ch = row["channel"]
-            if (ch, w) in opts or ch in refused or (row["interference"] or 0) >= BAD_INTERFERENCE:
+            if (ch, w) in opts or ch in refused or (row["interference"] or 0) >= BAD_INTERFERENCE \
+                    or not allowed_ok(allowed, band, ch, w):
                 continue
             extra = 0
             if band == "5" and ch in DFS_5 and not on_dfs:
@@ -113,7 +131,7 @@ def _nb(row: dict) -> dict:
     return {k: row.get(k) for k in ("neighbors", "strongest", "interference", "load")}
 
 
-def plan(snap: dict, ins: dict, db, ts: int | None = None) -> dict:
+def plan(snap: dict, ins: dict, db, ts: int | None = None, allowed: dict | None = None) -> dict:
     """Het kanaalplan voor alle AP's die nu online zijn, per band."""
     ts = int(ts or time.time())
     devices = snap.get("devices") or []
@@ -122,14 +140,15 @@ def plan(snap: dict, ins: dict, db, ts: int | None = None) -> dict:
     out: dict = {"available": "neighbors" in ins, "bands": {}, "aps": [{"mac": a["mac"], "name": a["name"]} for a in aps],
                  "skipped": sorted(d["name"] for d in devices if d["type"] == "ap" and d.get("state") != "online"),
                  # AP's online, maar geen enkel kanaal bekend: de beperkte officiële API geeft die niet door
-                 "no_channels": bool(aps) and not any(_radio(a, b) for a in aps for b in ("2.4", "5"))}
+                 "no_channels": bool(aps) and not any(_radio(a, b) for a in aps for b in ("2.4", "5")),
+                 "allowed": {"country": allowed.get("country"), "5": {str(w): v for w, v in (allowed.get("5") or {}).items()}} if allowed else None}
     for band in ("2.4", "5"):
         radios = [(ap, _radio(ap, band)) for ap in aps if _radio(ap, band)]
         options = []
         for ap, r in radios:
             key = f"{ap['mac']}@{band}"
             hist = channel_history(db, ap["mac"], band, ts - 30 * DAY) if db is not None else {}
-            opts = _options(ap, band, ins, devices, hist, {int(c) for c in refused.get(key, [])})
+            opts = _options(ap, band, ins, devices, hist, {int(c) for c in refused.get(key, [])}, allowed)
             if locked.get(key):
                 opts = [o for o in opts if o["stay"]]
             options.append(opts)
@@ -163,7 +182,7 @@ def plan(snap: dict, ins: dict, db, ts: int | None = None) -> dict:
     return out
 
 
-def validate(items: list[dict], snap: dict) -> dict[str, dict[str, tuple[int, int]]]:
+def validate(items: list[dict], snap: dict, allowed: dict | None = None) -> dict[str, dict[str, tuple[int, int]]]:
     """Wat er toegepast mag worden, gegroepeerd per AP: {mac: {band: (kanaal, breedte)}}. Alleen AP's die online zijn,
     alleen geldige kanalen en breedtes."""
     aps = {d["mac"]: d for d in snap.get("devices") or [] if d["type"] == "ap" and d.get("state") == "online"}
@@ -176,6 +195,9 @@ def validate(items: list[dict], snap: dict) -> dict[str, dict[str, tuple[int, in
         if band not in VALID or ch not in VALID[band] or w not in WIDTHS[band]:
             raise ValueError(L(f"{aps[mac]['name']}: kanaal {ch} ({w} MHz) kan niet op {band} GHz",
                                f"{aps[mac]['name']}: channel {ch} ({w} MHz) isn't valid on {band} GHz"))
+        if not allowed_ok(allowed, band, ch, w):
+            raise ValueError(L(f"{aps[mac]['name']}: UniFi staat kanaal {ch} ({w} MHz) niet toe in dit land",
+                               f"{aps[mac]['name']}: UniFi doesn't allow channel {ch} ({w} MHz) in this country"))
         if not _radio(aps[mac], band):
             raise ValueError(L(f"{aps[mac]['name']} heeft geen {band} GHz-radio", f"{aps[mac]['name']} has no {band} GHz radio"))
         out.setdefault(mac, {})[band] = (ch, w)

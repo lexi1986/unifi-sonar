@@ -2,6 +2,12 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.14.2 – 2026-11-16
+
+### Fixed
+- **Channel advice only uses channels UniFi allows in your country.** Sonar recommended 5 GHz channel 149–165, which UniFi doesn't allow in the Netherlands and most of Europe, so applying failed with `api.err.InvalidChannel`. Sonar now asks UniFi which channels are allowed per channel width and only picks from those; the how-to section shows the allowed 80 MHz blocks for your country.
+- If UniFi still refuses a channel, the progress says so in plain words, and Sonar remembers it and picks another channel for that AP.
+
 ## 1.14.1 – 2026-11-16
 
 ### Fixed

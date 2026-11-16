@@ -2865,6 +2865,12 @@
     $("#ch-b24").innerHTML = chanBandHTML(d, "2.4");
     $("#ch-b5").innerHTML = chanBandHTML(d, "5");
     ["#ch-sum", "#ch-b24", "#ch-b5"].forEach((s) => hydrateIcons($(s)));
+    const a = d.allowed?.["5"]?.["80"], el = $("#ch-allowed");
+    if (el) {
+      const starts = (a || []).filter((c) => (c - (c >= 149 ? 149 : c >= 100 ? 100 : 36)) % 16 === 0 && a.includes(c + 12));
+      el.textContent = starts.length ? L(`Jouw UniFi${d.allowed.country ? ` (land: ${d.allowed.country})` : ""} staat bij 80 MHz deze blokken toe: ${starts.map((c) => `${c}–${c + 12}`).join(", ")}. Sonar kiest alleen daaruit.`,
+        `Your UniFi${d.allowed.country ? ` (country: ${d.allowed.country})` : ""} allows these blocks at 80 MHz: ${starts.map((c) => `${c}–${c + 12}`).join(", ")}. Sonar only picks from those.`) : "";
+    }
   }
   function chanVerdict(d, band) {
     const b = d.bands[band]; if (!b || !b.radios.length) return "";
@@ -2892,7 +2898,8 @@
         <ul class="ch-job">${job.steps.map((s) => {
           const [sev, lab, ic] = ST[s.status] || ["info", s.status];
           const what = Object.entries(s.changes).map(([b, c]) => `${b} GHz → ${c.channel === "auto" ? "auto" : c.channel}`).join(", ");
-          const extra = s.status === "refused" ? L(`De AP bleef op ${Object.entries(s.result).map(([b, v]) => `${b} GHz kanaal ${v ?? "?"}`).join(", ")}. Sonar onthoudt dat en kiest voortaan een ander kanaal voor deze AP.`, `The AP stayed on ${Object.entries(s.result).map(([b, v]) => `${b} GHz channel ${v ?? "?"}`).join(", ")}. Sonar remembers this and picks another channel for this AP from now on.`)
+          const extra = s.status === "refused" && s.error ? esc(s.error) + " " + L("Sonar onthoudt dat en kiest voortaan een ander kanaal voor deze AP.", "Sonar remembers this and picks another channel for this AP from now on.")
+            : s.status === "refused" ? L(`De AP bleef op ${Object.entries(s.result).map(([b, v]) => `${b} GHz kanaal ${v ?? "?"}`).join(", ")}. Sonar onthoudt dat en kiest voortaan een ander kanaal voor deze AP.`, `The AP stayed on ${Object.entries(s.result).map(([b, v]) => `${b} GHz channel ${v ?? "?"}`).join(", ")}. Sonar remembers this and picks another channel for this AP from now on.`)
             : s.status === "timeout" ? L("Binnen 4 minuten niet bevestigd; kijk in UniFi of de AP online is.", "Not confirmed within 4 minutes; check in UniFi whether the AP is online.")
             : s.status === "error" ? esc(s.error || "") : "";
           return `<li><div><b>${esc(s.name)}</b> <span class="cell-sub">${esc(what)}</span>${extra ? `<div class="cell-sub">${extra}</div>` : ""}</div>${badge(sev, lab, ic)}</li>`;
@@ -2959,7 +2966,7 @@
           <li>${L("Gebruik je Zigbee (Hue, Home Assistant, IKEA)? Zet de Zigbee-radio op kanaal 15, 20 of 25: die liggen tussen wifi 1, 6 en 11 in. Kan dat niet, zet de AP die er het dichtst bij staat dan hier <b>vast</b>.", "Using Zigbee (Hue, Home Assistant, IKEA)? Put the Zigbee radio on channel 15, 20 or 25: those sit between Wi-Fi 1, 6 and 11. If you can't, <b>lock</b> the AP closest to it here.")}</li>
         </ul></div>
         <div><h3>5 GHz</h3><ul>
-          <li>${L("Geef elke AP een <b>eigen blok</b>. Bij 80 MHz zijn dat 36–48 en 149–161, met DFS erbij ook 52–64, 100–112, 116–128 en 132–144.", "Give every AP its <b>own block</b>. At 80 MHz those are 36–48 and 149–161, plus 52–64, 100–112, 116–128 and 132–144 with DFS.")}</li>
+          <li>${L("Geef elke AP een <b>eigen blok</b>. Welke blokken mogen, hangt af van je land: in Nederland en het grootste deel van Europa 36–64 en 100–140, in de VS ook 149–165.", "Give every AP its <b>own block</b>. Which blocks are allowed depends on your country: in the Netherlands and most of Europe 36–64 and 100–140, in the US also 149–165.")} <span id="ch-allowed"></span></li>
           <li>${L("<b>80 MHz</b> is snel, maar met veel AP's of buren is <b>40 MHz</b> vaak beter: twee keer zoveel blokken, en minder kans op storing.", "<b>80 MHz</b> is fast, but with many APs or neighbours <b>40 MHz</b> is often better: twice as many blocks, and less chance of interference.")}</li>
           <li>${L("<b>DFS-kanalen</b> (52–144) zijn vaak rustig, want weinig buren gebruiken ze. Hoort een AP er radar, dan moet hij uitwijken en blijft hij minstens 30 minuten op een ander kanaal.", "<b>DFS channels</b> (52–144) are often quiet because few neighbours use them. If an AP hears radar there, it has to move away and stays on another channel for at least 30 minutes.")}</li>
           <li>${L("Staat in UniFi de automatische kanaaloptimalisatie aan (Channel AI of nachtelijke optimalisatie), dan kan UniFi je kanalen later weer veranderen. Kies één van de twee.", "If UniFi's automatic channel optimisation is on (Channel AI or nightly optimisation), UniFi may change your channels again later. Pick one of the two.")}</li>

@@ -55,6 +55,16 @@ def _same_type(old: Any, new: Any) -> Any:
         return new
 
 
+def normalize_allowed(row: dict) -> dict:
+    """stat/current-channel → {"country": "NL", "2.4": {20: [..], 40: [..]}, "5": {20: [..], 40: [..], 80: [..], 160: [..]}}.
+    Bij 40/80/160 MHz noemt UniFi alle 20 MHz-kanalen binnen de toegestane blokken."""
+    ng, na = row.get("channels_ng") or [], row.get("channels_na") or []
+    return {"country": row.get("key") or row.get("name"),
+            "2.4": {20: [int(c) for c in ng], 40: [int(c) for c in row.get("channels_ng_40") or ng]},
+            "5": {20: [int(c) for c in na], 40: [int(c) for c in row.get("channels_na_40") or []],
+                  80: [int(c) for c in row.get("channels_na_80") or []], 160: [int(c) for c in row.get("channels_na_160") or []]}}
+
+
 def _sat(v: Any) -> float | None:
     """UniFi gebruikt -1 voor 'geen score' (bv. radio zonder clients)."""
     n = _num(v)
@@ -981,6 +991,13 @@ class UnifiClient:
         if r.status_code != 200 or (body.get("meta") or {}).get("rc") not in (None, "ok"):
             raise RuntimeError((body.get("meta") or {}).get("msg") or f"HTTP {r.status_code}")
         return before
+
+    async def allowed_channels(self) -> dict | None:
+        """Welke kanalen UniFi toestaat (land en regelgeving), per band en breedte. None = niet beschikbaar."""
+        if self.source not in ("legacy-key", "legacy-login"):
+            return None
+        rows = await self._legacy("stat/current-channel", self.source == "legacy-key")
+        return normalize_allowed(rows[0]) if rows else None
 
     async def radio_state(self, mac: str) -> dict:
         """Staat de AP weer online, en op welk kanaal zenden de radio's echt?"""

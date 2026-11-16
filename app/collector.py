@@ -60,6 +60,7 @@ class Collector:
         self._ips_checked = 0
         self.chan_job: dict | None = None   # kanalen toepassen: voortgang per AP
         self._chan_task: asyncio.Task | None = None
+        self.allowed_ch: dict | None = channels.load_allowed(db)   # per band en breedte, van UniFi
         self.chan_timing = (1.5, 60, 4) if self.mock else (5, 240, 30)   # peilen elke .. s, opgeven na .., 'geweigerd' na .. s online
         self.config: dict | None = None          # wifi-instellingen, UPnP, port forwards
         self._cfg_checked = 0
@@ -222,6 +223,7 @@ class Collector:
             raw = self.mock.config_raw()
             self.config = config_from_raw(raw)
             self._track("fp_config", changes.config_fingerprint(raw, self._salt()), ts)
+            self.allowed_ch = self.mock.allowed_channels()
             return
         if ts - self._cfg_checked < 900:
             return
@@ -235,6 +237,13 @@ class Collector:
         except Exception as e:  # noqa: BLE001 – optioneel
             log.warning("Instellingen ophalen: %s", e)
             self.optional["config"] = str(e)
+        try:   # welke kanalen UniFi in dit land toestaat: het kanaalplan kiest alleen daaruit
+            allowed = await self.client.allowed_channels()
+            if allowed:
+                self.allowed_ch = allowed
+                self.db.set_kv(channels.KV_ALLOWED, allowed)
+        except Exception as e:  # noqa: BLE001 – optioneel
+            log.warning("Toegestane kanalen ophalen: %s", e)
         if ts - self._sys_checked >= 3600:
             self._sys_checked = ts
             try:
@@ -371,7 +380,7 @@ class Collector:
 
     # ------------------------------------------------------------ wifi-kanalen
     def channel_plan(self) -> dict:
-        return channels.plan(self.latest or {}, self.insights or {}, self.db)
+        return channels.plan(self.latest or {}, self.insights or {}, self.db, allowed=self.allowed_ch)
 
     def apply_channels(self, todo: dict[str, dict[str, tuple]], undo: bool = False) -> dict:
         """Kanalen toepassen, AP voor AP op de achtergrond. 'todo' = {mac: {band: (kanaal, breedte)}}; bij 'undo'
@@ -449,7 +458,15 @@ class Collector:
                             break
                         await asyncio.sleep(step_s)
                 except Exception as e:  # noqa: BLE001
-                    st["status"], st["error"] = "error", str(e)
+                    if "invalidchannel" in str(e).lower():
+                        st["status"] = "refused"
+                        st["error"] = L("UniFi staat dit kanaal niet toe voor deze AP (land, model of kanaalbreedte).",
+                                        "UniFi doesn't allow this channel for this AP (country, model or channel width).")
+                        bands = [b for b, c in st["changes"].items() if c["channel"] != "auto"]
+                        if not job["undo"] and len(bands) == 1:   # bij twee banden weten we niet welke het was
+                            channels.remember_refused(self.db, st["mac"], bands[0], st["changes"][bands[0]]["channel"])
+                    else:
+                        st["status"], st["error"] = "error", str(e)
                     log.warning("Kanaal instellen voor %s: %s", st["name"], e)
             if job["undo"] and all(s["status"] == "ok" for s in job["steps"]):
                 self.db.set_kv(channels.KV_UNDO, {})

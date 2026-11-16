@@ -742,10 +742,15 @@ class MockNetwork:
     # ------------------------------------------------------------ wifi-kanalen instellen
     REFUSES = {(AP_SC, "ng"): {11}}   # zoals in het echt: een AP die een kanaal niet aanneemt
 
+    INVALID = {(AP_KT, "na"): {165}}   # zoals in het echt: UniFi weigert het kanaal meteen (api.err.InvalidChannel)
+
     def set_radios(self, mac: str, changes: dict[str, dict]) -> dict[str, dict]:
         radio_of = {"2.4": "ng", "5": "na"}
         if mac not in APS:
             raise RuntimeError("UniFi kent deze AP niet")
+        for band, c in changes.items():
+            if c["channel"] != "auto" and int(c["channel"]) in self.INVALID.get((mac, radio_of[band]), set()):
+                raise RuntimeError("api.err.InvalidChannel")
         before = {}
         for band, c in changes.items():
             key = (mac, radio_of[band])
@@ -758,6 +763,12 @@ class MockNetwork:
                 self.ch[key] = CH24[mac] if band == "2.4" else CH5[mac]
         self.prov_until[mac] = time.time() + self.prov_s
         return before
+
+    def allowed_channels(self) -> dict:
+        na = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165]
+        return {"country": "demo", "2.4": {20: list(range(1, 14)), 40: list(range(1, 14))},
+                "5": {20: na, 40: [c for c in na if c not in (140, 165)], 80: [c for c in na if c not in (132, 136, 140, 165)],
+                      160: [c for c in na if c <= 128]}}
 
     def radio_state(self, mac: str) -> dict:
         return {"state": "provisioning" if time.time() < self.prov_until.get(mac, 0) else "online",
