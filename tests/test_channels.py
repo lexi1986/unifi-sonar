@@ -97,8 +97,8 @@ def test_apply_refuse_and_undo_in_demo(tmp_path):
     os.environ["NO_DOTENV"] = "1"
     st = Settings(mode="mock", db_path=str(tmp_path / "s.db"), mock_seed_hours=0, data_dir=str(tmp_path))
     col = Collector(st, DB(st.db_path))
-    col.chan_timing = (0.05, 5, 0.2)
-    col.mock.prov_s = 0.2
+    col.chan_timing = {"step": 0.05, "settle": 0.4, "dfs": 0.3, "weather": 0.6, "grace": 5}
+    col.mock.prov_s, col.mock.radar_s = 0.2, 0.2
 
     async def run():
         await col.tick()
@@ -194,7 +194,7 @@ def test_unifi_refuses_channel_right_away(tmp_path):
     os.environ["NO_DOTENV"] = "1"
     st = Settings(mode="mock", db_path=str(tmp_path / "s.db"), mock_seed_hours=0, data_dir=str(tmp_path))
     col = Collector(st, DB(st.db_path))
-    col.chan_timing = (0.05, 5, 0.2)
+    col.chan_timing = {"step": 0.05, "settle": 0.2, "dfs": 0.2, "weather": 0.4, "grace": 5}
 
     async def run():
         await col.tick()
@@ -206,3 +206,47 @@ def test_unifi_refuses_channel_right_away(tmp_path):
     step = asyncio.run(run())["steps"][0]
     assert step["status"] == "refused" and "niet toe" in step["error"]
     assert channels._kv(col.db, channels.KV_REFUSED) == {f"{AP_KT}@5": [165]}
+
+
+def test_radar_wait_per_channel():
+    """Op DFS-kanalen luistert een AP eerst naar radar: 1 minuut, op de weerradarkanalen 120–128 zelfs 10 minuten."""
+    assert channels.radar_wait("2.4", 1, 20) is None and channels.radar_wait("5", 36, 80) is None
+    assert channels.radar_wait("5", 100, 80) == "dfs" and channels.radar_wait("5", 52, 80) == "dfs"
+    assert channels.radar_wait("5", 116, 80) == "weather"      # het blok 116–128 bevat de weerradar
+    assert channels.radar_wait("5", 112, 20) == "dfs" and channels.radar_wait("5", 100, 160) == "weather"
+    assert channels.radar_wait("5", "auto", 80) is None
+
+
+def test_late_switch_on_dfs_is_not_refused(tmp_path):
+    """Een AP blijft tijdens een kanaalwissel 'online' en zendt op een DFS-kanaal pas na het luisteren naar radar.
+    Tot 1.15.2 heette dat al na een halve minuut 'geweigerd'."""
+    os.environ["NO_DOTENV"] = "1"
+    st = Settings(mode="mock", db_path=str(tmp_path / "s.db"), mock_seed_hours=0, data_dir=str(tmp_path))
+    col = Collector(st, DB(st.db_path))
+    col.chan_timing = {"step": 0.05, "settle": 0.2, "dfs": 1.0, "weather": 2.0, "grace": 5}
+    col.mock.prov_s, col.mock.radar_s = 0.1, 0.6           # pas na 0,7 s op het nieuwe kanaal: later dan 'settle'
+
+    async def run():
+        await col.tick()
+        job = col.apply_channels({AP_WK: {"5": (100, 80)}})
+        await col._chan_task
+        return job
+
+    job = asyncio.run(run())
+    s0 = job["steps"][0]
+    assert s0["status"] == "ok" and s0["radar"] == "dfs" and col.mock.ch[(AP_WK, "na")] == 100
+    assert channels._kv(col.db, channels.KV_REFUSED) == {}
+
+
+def test_refused_channel_heals_when_ap_uses_it():
+    """Onthield Sonar een kanaal als geweigerd en staat de AP er later toch op, dan telt het weer mee."""
+    db = KV()
+    channels.remember_refused(db, "a", "5", 100)
+    channels.remember_refused(db, "a", "5", 116)
+    channels.remember_refused(db, "b", "2.4", 11)
+    snap = {"devices": [_ap("a", ("5", 100, 80)), {**_ap("b", ("2.4", 11, 20)), "state": "offline"}]}
+    assert channels.heal_refused(db, snap) == ["a@5"]
+    assert channels._kv(db, channels.KV_REFUSED) == {"a@5": [116], "b@2.4": [11]}   # 116 viel echt terug; b is offline
+    snap["devices"][0]["radios"][0]["channel"] = 116
+    channels.heal_refused(db, snap)
+    assert "a@5" not in channels._kv(db, channels.KV_REFUSED)

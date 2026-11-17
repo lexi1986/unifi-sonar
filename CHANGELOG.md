@@ -2,6 +2,13 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.15.2 – 2026-11-17
+
+### Fixed
+- **Channels are no longer marked as refused too early.** An AP stays online in UniFi while it changes channel, and on a DFS channel (52–144) it first listens for radar for a minute before it may transmit, on 120–128 (weather radar) even 10 minutes. Sonar gave up after about 40 seconds, so channels that the AP took a minute later were remembered as refused and left out of the advice. Sonar now waits about 2 minutes, plus the radar listening time on DFS channels, and the progress explains the wait.
+- **A refused channel counts again once the AP uses it.** If an AP ends up on a channel Sonar remembered as refused, Sonar drops it from that list by itself. Existing false refusals heal on the next round.
+- If an AP falls back from a DFS channel, the progress says it probably heard radar, instead of suggesting UniFi refused the channel.
+
 ## 1.15.1 – 2026-11-17
 
 ### Fixed

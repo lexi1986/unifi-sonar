@@ -26,6 +26,8 @@ KV_LOCKED = "channels_locked"     # {"mac@band": true}: niet aanpassen (bijvoorb
 KV_ALLOWED = "channels_allowed"   # wat UniFi in dit land toestaat (stat/current-channel)
 KV_UNDO = "channels_undo"         # {"ts": .., "aps": {mac: {"name": .., "radios": {band: {"channel": raw, "ht": raw}}}}}
 
+WEATHER_5 = {120, 124, 128}   # weerradar: in Europa luistert een AP hier 10 minuten voordat hij mag zenden
+
 VALID = {"2.4": set(range(1, 14)), "5": {36, 40, 44, 48, 149, 153, 157, 161, 165, *DFS_5}}
 WIDTHS = {"2.4": {20, 40}, "5": {20, 40, 80, 160}}
 
@@ -204,6 +206,37 @@ def validate(items: list[dict], snap: dict, allowed: dict | None = None) -> dict
     if not out:
         raise ValueError(L("Niets om toe te passen", "Nothing to apply"))
     return out
+
+
+def radar_wait(band: str, channel, width) -> str | None:
+    """Moet de AP eerst naar radar luisteren (DFS)? 'weather' voor de weerradarkanalen (10 minuten), 'dfs' voor de
+    rest (1 minuut), None als hij meteen mag zenden."""
+    if band != "5" or channel == "auto":
+        return None
+    occ = _occupies("5", int(channel), int(float(width or 20)))
+    return "weather" if occ & WEATHER_5 else "dfs" if occ & set(DFS_5) else None
+
+
+def heal_refused(db, snap: dict) -> list[str]:
+    """Staat een AP inmiddels toch op een kanaal dat Sonar als geweigerd onthield (de wissel kwam later dan Sonar
+    wachtte), dan telt dat kanaal weer mee. Geeft de 'mac@band'-sleutels terug die bijgewerkt zijn."""
+    data = _kv(db, KV_REFUSED)
+    if not data:
+        return []
+    changed = []
+    for d in snap.get("devices") or []:
+        if d.get("state") not in (None, "online"):
+            continue
+        for r in d.get("radios") or []:
+            key = f"{d.get('mac')}@{r.get('radio')}"
+            if key in data and r.get("channel") is not None and int(r["channel"]) in data[key]:
+                data[key] = [c for c in data[key] if c != int(r["channel"])]
+                if not data[key]:
+                    del data[key]
+                changed.append(key)
+    if changed:
+        db.set_kv(KV_REFUSED, data)
+    return changed
 
 
 def remember_refused(db, mac: str, band: str, channel: int) -> None:

@@ -61,7 +61,9 @@ class Collector:
         self.chan_job: dict | None = None   # kanalen toepassen: voortgang per AP
         self._chan_task: asyncio.Task | None = None
         self.allowed_ch: dict | None = channels.load_allowed(db)   # per band en breedte, van UniFi
-        self.chan_timing = (1.5, 60, 4) if self.mock else (5, 240, 30)   # peilen elke .. s, opgeven na .., 'geweigerd' na .. s online
+        # peilen elke .. s; 'geweigerd' pas na .. s (plus de radar-luistertijd bij DFS); zonder AP online opgeven .. s later
+        self.chan_timing = ({"step": 1.5, "settle": 8, "dfs": 3, "weather": 6, "grace": 30} if self.mock else
+                            {"step": 5, "settle": 120, "dfs": 90, "weather": 660, "grace": 120})
         self.config: dict | None = None          # wifi-instellingen, UPnP, port forwards
         self._cfg_checked = 0
         self.sysinfo: dict = {"network_version": "demo", "hardware": "UOSSERVER"} if self.mock else {}
@@ -414,7 +416,8 @@ class Collector:
                         r["width"] = float(rs["widths"][r["radio"]])
 
     async def _run_channels(self, job: dict) -> None:
-        step_s, limit, settle = self.chan_timing
+        tm = self.chan_timing
+        step_s = tm["step"]
         try:
             for st in job["steps"]:
                 st["status"] = "busy"
@@ -429,8 +432,13 @@ class Collector:
                         for b, v in before.items():
                             prev["radios"].setdefault(b, v)
                         self.db.set_kv(channels.KV_UNDO, saved)
+                    radar = {b: channels.radar_wait(b, c["channel"], c["width"]) for b, c in st["changes"].items()}
+                    st["radar"] = "weather" if "weather" in radar.values() else "dfs" if "dfs" in radar.values() else None
+                    settle = tm["settle"] + (tm[st["radar"]] if st["radar"] else 0)   # pas daarna 'geweigerd'
+                    limit = settle + tm["grace"]
+                    st["wait_s"] = int(limit)
                     st["status"] = "provisioning"
-                    t0, online_since = time.time(), None
+                    t0 = time.time()
                     await asyncio.sleep(step_s * 2)
                     while True:
                         try:
@@ -441,12 +449,13 @@ class Collector:
                         got = {b: rs["channels"].get(b) for b in want}
                         st["result"] = {b: int(v) if v is not None else None for b, v in got.items()}
                         if rs["state"] == "online":
-                            online_since = online_since or time.time()
                             if all(got[b] is not None and int(got[b]) == int(want[b]) for b in want):
                                 st["status"] = "ok"
                                 self._note_radios(st["mac"], rs)
                                 break
-                            if time.time() - online_since >= settle:   # online, maar op een ander kanaal: geweigerd
+                            # online, maar nog op een ander kanaal. Een wissel duurt even (de AP blijft daarbij in UniFi
+                            # 'online'), en op een DFS-kanaal luistert hij eerst naar radar: pas daarna is het geweigerd.
+                            if time.time() - t0 >= settle:
                                 st["status"] = "refused"
                                 if not job["undo"]:
                                     for b in want:
@@ -755,6 +764,9 @@ class Collector:
         self.db.sync_issues(issues, ts)
         snap["issues"] = issues
         self.apply_mutes(snap, ts)
+        healed = channels.heal_refused(self.db, snap)
+        if healed:
+            log.info("Kanalen: %s staat toch op het eerder geweigerde kanaal; telt weer mee", ", ".join(healed))
         self.prev = snap
         self.latest = snap
         self.last_ok = ts

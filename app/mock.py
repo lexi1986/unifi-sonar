@@ -176,6 +176,8 @@ class MockNetwork:
         self.ch_cfg: dict[tuple[str, str], object] = {}   # wat je instelde (in het echt: radio_table in UniFi)
         self.prov_until: dict[str, float] = {}             # AP's die na een kanaalwissel even herstarten
         self.prov_s = 6.0
+        self.radar_s = 4.0                                   # DFS: na het herstarten nog even naar radar luisteren
+        self.pending: dict[tuple, tuple[int, float]] = {}    # (mac, radio) → (kanaal, vanaf wanneer het echt zendt)
 
     # ----------------------------------------------------------------- helpers
     def _cnt(self, key: str, field: str, inc: float) -> float:
@@ -758,7 +760,11 @@ class MockNetwork:
                             "ht": self.ht.get(key, 20 if band == "2.4" else 80)}
             self.ch_cfg[key], self.ht[key] = c["channel"], int(c["ht"])
             if c["channel"] != "auto" and int(c["channel"]) not in self.REFUSES.get(key, set()):
-                self.ch[key] = int(c["channel"])
+                ch = int(c["channel"])
+                if band == "5" and ch >= 52 and ch <= 144:   # zoals in het echt: de AP blijft online en wisselt pas later
+                    self.pending[key] = (ch, time.time() + self.prov_s + self.radar_s)
+                else:
+                    self.ch[key] = ch
             elif c["channel"] == "auto":
                 self.ch[key] = CH24[mac] if band == "2.4" else CH5[mac]
         self.prov_until[mac] = time.time() + self.prov_s
@@ -770,12 +776,20 @@ class MockNetwork:
                 "5": {20: na, 40: [c for c in na if c not in (140, 165)], 80: [c for c in na if c not in (132, 136, 140, 165)],
                       160: [c for c in na if c <= 128]}}
 
+    def _settle_pending(self) -> None:
+        for key, (ch, at) in list(self.pending.items()):
+            if time.time() >= at:
+                self.ch[key] = ch
+                del self.pending[key]
+
     def radio_state(self, mac: str) -> dict:
+        self._settle_pending()
         return {"state": "provisioning" if time.time() < self.prov_until.get(mac, 0) else "online",
                 "channels": {"2.4": self.ch[(mac, "ng")], "5": self.ch[(mac, "na")]},
                 "widths": {"2.4": self.ht.get((mac, "ng"), 20), "5": self.ht.get((mac, "na"), 80)}}
 
     def snapshot(self, dt: float) -> tuple[list, list, list]:
+        self._settle_pending()
         self.advance(dt)
         sta = self.stat_sta(dt)
         devs = self.stat_device(dt, sta)
