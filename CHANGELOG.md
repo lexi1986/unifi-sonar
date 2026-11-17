@@ -2,6 +2,12 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.15.1 – 2026-11-17
+
+### Fixed
+- **No false "never asks your DNS filter anything" after switching DNS server.** Sonar remembered when it started following your DNS filter, but not per server, so after replacing one AdGuard or Pi-hole with another it judged a few minutes of new query log as a full day. Devices that rarely look something up, such as speakers and smart plugs, then showed up as going around your filter. Sonar now keeps the start per server and waits a full day after you add or replace one.
+- **Your DNS filter itself is no longer a DNS leak.** When DHCP hands out another address (a load balancer, for example), the DNS filter's own upstream traffic over DNS or DNS-over-TLS was reported as going around your DNS server.
+
 ## 1.15.0 – 2026-11-16
 
 ### Added

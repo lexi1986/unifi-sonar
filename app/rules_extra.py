@@ -48,7 +48,8 @@ def dns_leaks(out: list[dict], snap: dict, db, ts: int, issue) -> None:
     if servers is None:
         return
     gw = {d.get("ip") for d in snap["devices"] if d["type"] == "gateway"}
-    resolvers = set(servers) | gw   # je DNS-server zelf mag wel naar buiten (upstream)
+    filters = {x["host"] for x in (snap.get("adguard") or {}).get("servers") or []}   # ook als DHCP een loadbalancer uitdeelt
+    resolvers = set(servers) | gw | filters   # je DNS-server zelf mag wel naar buiten (upstream)
     rows = db.q("SELECT client_mac, client_name, client_ip, remote_ip, port, service, domain, ts FROM flows "
                 "WHERE ts>=? AND dir='out' AND (port IN (53, 853) OR service IN ('DNS', 'DNS_OVER_TLS') OR port=443)",
                 (ts - DAY,))

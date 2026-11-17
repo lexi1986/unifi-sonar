@@ -311,7 +311,8 @@ class AdGuard:
             self._seed_demo()
         st = db.get_kv("adguard") or {}
         self.cursor: dict[str, float] = st.get("cursor") or {}
-        self.since: int | None = st.get("since")            # vanaf wanneer Sonar het querylog bijhoudt
+        # per server: vanaf wanneer Sonar zijn querylog bijhoudt (een nieuwe server begint opnieuw te tellen)
+        self.started: dict[str, int] = st.get("started") or self._migrate_started(st)
         self.status: dict[str, dict] = {}                     # per AdGuard: bereikbaar, versie, bescherming, statistiek
         self.config: dict[str, dict] = {}                     # per AdGuard: rewrites, lijsten, upstreams
         self.lists: dict[str, dict[int, str]] = {}
@@ -346,14 +347,30 @@ class AdGuard:
             return bool(o)
         return self.cfg["personal"] or device_class(c, segs) != "personal"
 
+    def _migrate_started(self, st: dict) -> dict[str, int]:
+        """Tot 1.15.1 was er één begintijd voor alle servers. Die geldt alleen nog als er sindsdien geen server is
+        weggehaald; anders is niet te zeggen welke server nieuw is, en begint elke server opnieuw te tellen."""
+        urls = {a.url for a in self.apis()}
+        if st.get("since") and not set(st.get("cursor") or {}) - urls:
+            return {u: st["since"] for u in urls}
+        return {}
+
+    @property
+    def since(self) -> int | None:
+        """Vanaf wanneer Sonar álle huidige servers volgt: de laatst toegevoegde bepaalt het."""
+        urls = [a.url for a in self.apis()]
+        if not urls or any(u not in self.started for u in urls):
+            return None
+        return max(self.started[u] for u in urls)
+
     def _save(self) -> None:
-        self.db.set_kv("adguard", {"cursor": self.cursor, "since": self.since})
+        self.db.set_kv("adguard", {"cursor": self.cursor, "started": self.started})
 
     # de ronde
     async def tick(self, snap: dict, ts: int) -> None:
         apis = self.apis()
         urls = {a.url for a in apis}
-        for d in (self.status, self.config, self.lists, self.servfail):     # een server die je weghaalde telt niet meer mee
+        for d in (self.status, self.config, self.lists, self.servfail, self.started):     # een server die je weghaalde telt niet meer mee
             for u in [u for u in d if u not in urls]:
                 del d[u]
         if not self.active or ts < time.time() - 120:     # demo: niet tijdens het vullen met historie
@@ -397,8 +414,7 @@ class AdGuard:
                 self.cursor[api.url] = max(parse_time(i.get("time")) for i in items)
             elif first:
                 self.cursor[api.url] = since
-            if self.since is None:
-                self.since = ts
+            self.started.setdefault(api.url, ts)
             self.ingest(items, snap, api.url, ts)
         except Exception as e:  # noqa: BLE001 – een AdGuard die niet antwoordt mag de rest niet ophouden
             log.info("%s %s: %s", api.label, api.name, e)

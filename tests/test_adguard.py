@@ -267,3 +267,46 @@ def test_bypass_issues_can_be_switched_off(tmp_path):
     assert found(True) == {f"dns_bypass:{PHONE['mac']}", f"dns_leak:{NAS['mac']}"}   # telefoon vraagt AdGuard nooit iets
     assert found(False) == set()
     assert ag.bypass(snap(), w.db, now, {"since": now - 2 * DAY})[0]   # de lijst op de pagina Beveiliging blijft
+
+
+def test_switching_dns_server_restarts_the_day(tmp_path):
+    """Een nieuwe DNS-server heeft nog geen etmaal querylog: 'nooit iets gevraagd' mag dan nog niet gemeld worden."""
+    now = int(time.time())
+    old, new = "http://192.168.1.10", "http://192.168.1.11"
+    db = DB(str(tmp_path / "t.db"))
+    db.set_kv("adguard", {"cursor": {old: now - 60}, "since": now - 3 * DAY})     # zoals het tot 1.15.1 bewaard werd
+    s = Settings(mode="live", data_dir=str(tmp_path))
+    s.adguard = {"instances": [{"name": "AG", "url": old}]}
+    w = ag.AdGuard(s, db, None)
+    assert w.since == now - 3 * DAY                                     # dezelfde server: de oude begintijd blijft
+    s.adguard = {"instances": [{"name": "Nieuw", "url": new}]}
+    assert w.since is None and w.for_rules()["since"] is None          # gewisseld: Sonar begint opnieuw te tellen
+    w.started.setdefault(new, now)
+    assert w.since == now
+    w._save()
+    assert ag.AdGuard(s, db, None).since == now                         # bewaard per server
+    s.adguard = {"instances": [{"name": "AG", "url": old}, {"name": "Nieuw", "url": new}]}
+    w.started[old] = now - 3 * DAY
+    assert w.since == now                                               # de laatst toegevoegde server bepaalt het
+    db.set_kv("adguard", {"cursor": {old: now - 60}, "since": now - 3 * DAY})
+    s.adguard = {"instances": [{"name": "Nieuw", "url": new}]}
+    assert ag.AdGuard(s, db, None).since is None                        # oude opslag, server weggehaald: niet te vertrouwen
+
+
+def test_dns_filter_servers_are_no_leak(tmp_path):
+    """Je DNS-filter zelf mag naar buiten (upstream), ook als DHCP een ander adres uitdeelt, zoals een loadbalancer."""
+    from app import rules_extra
+    w = watcher(tmp_path)
+    now = int(time.time())
+    base = {"ts": now, "dir": "out", "action": "allowed", "cc": "US", "domain": None, "proto": "TCP", "client_name": "NAS",
+            "net": "Default", "up": 1, "down": 1, "risk": "low", "client_mac": NAS["mac"], "client_ip": NAS["ip"]}
+    w.db.store_flows([{**base, "id": f"dot-{i}", "ts": now - i * 60, "remote_ip": "9.9.9.9", "port": 853, "service": "DNS_OVER_TLS"}
+                      for i in range(3)])
+    issue = lambda key, sev, *a, **kw: {"key": key, "severity": sev}   # noqa: E731
+
+    def leaks(servers):
+        out = []
+        rules_extra.dns_leaks(out, snap(adguard={"servers": servers, "bypass_issues": True}), w.db, now, issue)
+        return {i["key"] for i in out}
+    assert leaks([]) == {f"dns_leak:{NAS['mac']}"}
+    assert leaks([{"host": NAS["ip"]}]) == set()
