@@ -2,6 +2,12 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.16.1 – 2026-11-24
+
+### Fixed
+- **Polling no longer fails with `invalid literal for int() with base 10: 'auto'`.** Some radios report `auto` instead of the channel they transmit on. Since 1.15.2, an AP that had refused a channel before made every poll fail on that. A channel that isn't a number now counts as unknown, also on the channel page and in the stored channel history.
+- **A new API key no longer needs the old one if UniFi rejects it.** To change the connection, Sonar asks for the current API key, so not everyone on your network can repoint it. But UniFi shows a key only once, so after it was deleted or regenerated in UniFi you were stuck. If the controller clearly rejects the stored key (401/403 from every source), a new key for the same controller is now accepted without the old one. Another controller address, switching to demo data, or an unreachable controller still require the current key.
+
 ## 1.16.0 – 2026-11-24
 
 ### Added

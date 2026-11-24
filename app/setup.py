@@ -114,6 +114,31 @@ async def test_connection(address: str, api_key: str, username: str, password: s
             "gateway": f"{gw['name']} ({gw['model']})" if gw else None, "warnings": warnings}
 
 
+async def credentials_rejected(cur: Settings) -> bool:
+    """Weigert de controller de opgeslagen sleutel of het opgeslagen account aantoonbaar (401/403 bij elke bron)?
+    Alleen dan is 'vul de huidige sleutel in' zinloos: wie die sleutel kent, kan er toch niets meer mee. Een time-out,
+    serverfout of certificaatfout telt niet; dan blijft de bevestiging nodig."""
+    if not cur.controller_url or not (cur.api_key or (cur.username and cur.password)):
+        return False
+    s = Settings(mode="live", controller_url=cur.controller_url, site=cur.site or "default", api_key=cur.api_key,
+                 username=cur.username, password=cur.password, verify_tls=cur.verify_tls, tls_pin=cur.tls_pin)
+    client = UnifiClient(s)
+    try:
+        await client.fetch()
+        return False
+    except Exception:  # noqa: BLE001
+        errs = list(client.errors.values())
+        return bool(errs) and all(isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403) for e in errs)
+    finally:
+        await client.close()
+
+
+def same_controller(address: str, controller_url: str) -> bool:
+    """Wijst het ingevulde adres naar de controller waaraan Sonar nu gekoppeld is?"""
+    want = controller_url.rstrip("/").lower()
+    return any(u.rstrip("/").lower() == want for u in candidate_urls(address))
+
+
 def _classify(errors: dict[str, Exception]) -> dict:
     codes = {getattr(getattr(e, "response", None), "status_code", None) for e in errors.values()}
     text = " ".join(str(e) for e in errors.values())

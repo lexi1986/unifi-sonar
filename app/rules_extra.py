@@ -290,8 +290,9 @@ def channel_history(db, mac: str, band: str, since: int) -> dict[int, float]:
     try:
         rows = db.q("SELECT channel, AVG(interference) intf, COUNT(*) n FROM radio_samples WHERE mac=? AND radio=? AND ts>=? "
                     "AND channel IS NOT NULL GROUP BY channel", (mac, band, since))
-        return {int(r["channel"]): r["intf"] for r in rows if r["n"] >= 6 and r["intf"] is not None}
-    except (KeyError, IndexError, TypeError):
+        return {int(r["channel"]): r["intf"] for r in rows
+                if r["n"] >= 6 and r["intf"] is not None and str(r["channel"]).isdigit()}   # niet 'auto'
+    except (KeyError, IndexError, TypeError, ValueError):
         return {}
 
 

@@ -54,15 +54,23 @@ def allowed_ok(allowed: dict | None, band: str, ch: int, width: int) -> bool:
     return int(ch) in allowed[band][width if band == "5" else 20]
 
 
+def chnum(v) -> int | None:
+    """Een kanaalnummer, of None. UniFi geeft soms 'auto' of niets door (radio uit, of nog geen meting)."""
+    try:
+        return int(float(v)) or None
+    except (TypeError, ValueError):
+        return None
+
+
 def _radio(ap: dict, band: str) -> dict | None:
-    return next((r for r in ap.get("radios") or [] if r["radio"] == band and r.get("channel")), None)
+    return next((r for r in ap.get("radios") or [] if r["radio"] == band and chnum(r.get("channel"))), None)
 
 
 def _options(ap: dict, band: str, ins: dict, devices: list[dict], hist: dict, refused: set[int],
              allowed: dict | None = None) -> list[dict]:
     """Alle kanalen die deze radio zou kunnen krijgen, met wat ze kosten. De huidige stand zit er altijd bij."""
     r = _radio(ap, band)
-    cur_ch, w0 = int(r["channel"]), int(r.get("width") or (20 if band == "2.4" else 80))
+    cur_ch, w0 = chnum(r["channel"]), int(r.get("width") or (20 if band == "2.4" else 80))
     on_dfs = cur_ch in DFS_5
     tiers = [(w0, None)]
     if band == "5":
@@ -229,8 +237,9 @@ def heal_refused(db, snap: dict) -> list[str]:
             continue
         for r in d.get("radios") or []:
             key = f"{d.get('mac')}@{r.get('radio')}"
-            if key in data and r.get("channel") is not None and int(r["channel"]) in data[key]:
-                data[key] = [c for c in data[key] if c != int(r["channel"])]
+            ch = chnum(r.get("channel"))
+            if key in data and ch is not None and ch in data[key]:
+                data[key] = [c for c in data[key] if c != ch]
                 if not data[key]:
                     del data[key]
                 changed.append(key)

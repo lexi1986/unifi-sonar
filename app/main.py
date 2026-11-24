@@ -242,17 +242,25 @@ class SetupRequest(BaseModel):
     current_api_key: str = Field(default="", max_length=200)   # bevestiging bij opnieuw instellen
 
 
-async def _authorized(req: SetupRequest) -> None:
-    """Is er al een live koppeling, dan mag alleen wie de huidige sleutel kent die wijzigen."""
+async def _authorized(req: SetupRequest, dead_key_ok: bool = True) -> None:
+    """Is er al een live koppeling, dan mag alleen wie de huidige sleutel kent die wijzigen. Uitzondering: weigert
+    de controller de opgeslagen sleutel aantoonbaar (UniFi trok hem in, of hij is opnieuw aangemaakt), dan mag een
+    nieuwe sleutel voor dezelfde controller ook zonder; die oude sleutel heb je meestal niet meer, UniFi toont hem
+    maar één keer. Naar een andere controller of naar demodata blijft de bevestiging nodig."""
     s = rt.settings
     if not s.configured or s.mode != "live":
         return
     secrets = {x for x in (s.api_key, s.password) if x}
     if {req.api_key, req.current_api_key, req.password} & secrets:
         return
+    if dead_key_ok and setup_mod.same_controller(req.address, s.controller_url) and await setup_mod.credentials_rejected(s):
+        log.info("Koppeling: de controller weigert de opgeslagen sleutel; nieuwe sleutel zonder bevestiging toegestaan")
+        return
     await asyncio.sleep(1.5)   # raden ontmoedigen
-    raise HTTPException(403, L("Vul ter bevestiging de huidige API-key (of het huidige wachtwoord) in.",
-                               "To confirm, enter the current API key (or the current password)."))
+    raise HTTPException(403, L("Vul ter bevestiging de huidige API-key (of het huidige wachtwoord) in. Weigert UniFi de huidige "
+                               "sleutel, dan is dat niet nodig voor een nieuwe sleutel bij dezelfde controller.",
+                               "To confirm, enter the current API key (or the current password). If UniFi rejects the current "
+                               "key, this isn't needed for a new key on the same controller."))
 
 
 @app.get("/api/setup")
@@ -288,7 +296,7 @@ async def setup_save(req: SetupRequest):
 
 @app.post("/api/setup/demo")
 async def setup_demo(req: SetupRequest):
-    await _authorized(req)
+    await _authorized(req, dead_key_ok=False)
     s = Settings.load(DATA_DIR)
     s.mode = "mock"
     s.save()

@@ -95,7 +95,7 @@ def normalize_legacy(devices: list[dict], clients: list[dict], health: list[dict
             ch_cfg = base.get("channel")
             radios.append({
                 "radio": BAND.get(rs.get("radio") or base.get("radio"), "?"),
-                "channel": rs.get("channel") or base.get("channel"),
+                "channel": _chan(rs.get("channel")) or _chan(base.get("channel")),   # 'auto' is geen kanaal: onbekend
                 "channel_auto": ch_cfg in (None, "auto", 0, "0"),
                 "width": _num(base.get("ht")),
                 "tx_power_mode": base.get("tx_power_mode"),
@@ -489,6 +489,14 @@ def normalize_usage(rows: list[dict]) -> list[dict]:
         tx = (_num(r.get("wan-tx_bytes"), 0) or 0) + (_num(r.get("wan2-tx_bytes"), 0) or 0)
         out.append({"ts": int(r["time"] / 1000), "rx": round(rx), "tx": round(tx)})
     return out
+
+
+def _chan(v) -> int | None:
+    """Kanaalnummer als int, of None (UniFi zet soms 'auto' in plaats van het kanaal waarop de radio zendt)."""
+    try:
+        return int(float(v)) or None
+    except (TypeError, ValueError):
+        return None
 
 
 def _midnight(ts: int) -> int:

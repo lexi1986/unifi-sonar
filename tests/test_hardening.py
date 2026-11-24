@@ -211,3 +211,53 @@ def test_expired_pin_is_not_enforced(tmp_path):
     pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     assert uc.cert_expired(pem) and uc.controller_verify(Settings(tls_pin=pem)) is False
     assert uc.controller_verify(Settings(verify_tls=True, tls_pin=pem)) is True
+
+
+def test_new_key_without_confirmation_only_when_stored_key_is_dead(live, monkeypatch):
+    """UniFi toont een API-key maar één keer. Weigert de controller de opgeslagen sleutel (401/403), dan mag een nieuwe
+    sleutel voor dezelfde controller zonder de oude; werkt de oude nog, of gaat het om een ander adres of de demo, niet."""
+    from app import setup as setup_mod
+    c, _ = first_login(live)
+    dead = {"v": False}
+
+    async def rejected(s):
+        return dead["v"]
+
+    async def ok(address, api_key, *a):
+        return {"ok": True, "url": "https://unifi.invalid", "tls_pin": ""}
+
+    async def nothing(*a, **k):
+        return None
+    monkeypatch.setattr(setup_mod, "credentials_rejected", rejected)
+    monkeypatch.setattr(setup_mod, "test_connection", ok)
+    monkeypatch.setattr(main.rt, "apply", nothing)
+    monkeypatch.setattr(main.asyncio, "sleep", nothing)
+    new = {"address": "unifi.invalid", "api_key": "nieuw", "site": "default"}
+    assert c.post("/api/setup/test", json=new).status_code == 403          # oude sleutel werkt nog: bevestiging nodig
+    assert c.post("/api/setup/save", json=new).status_code == 403
+    dead["v"] = True
+    assert c.post("/api/setup/test", json={**new, "address": "10.0.0.9"}).status_code == 403   # andere controller
+    assert c.post("/api/setup/demo", json={}).status_code == 403                                # demo blijft streng
+    assert c.post("/api/setup/test", json=new).status_code == 200
+    assert c.post("/api/setup/save", json=new).status_code == 200
+    assert Settings.load(live.data_dir).api_key == "nieuw"
+
+
+def test_credentials_rejected_needs_a_clear_401(monkeypatch):
+    from app import setup as setup_mod
+    req = httpx.Request("GET", "https://unifi.invalid/x")
+    e401 = httpx.HTTPStatusError("401", request=req, response=httpx.Response(401, request=req))
+    e500 = httpx.HTTPStatusError("500", request=req, response=httpx.Response(500, request=req))
+    timeout = httpx.ConnectTimeout("te traag", request=req)
+    s = Settings(mode="live", controller_url="https://unifi.invalid", api_key="oud", verify_tls=True)
+
+    def run(errors):
+        async def fetch(self):
+            self.errors = dict(errors)
+            raise RuntimeError("Geen enkele UniFi-bron werkt")
+        monkeypatch.setattr(uc.UnifiClient, "fetch", fetch)
+        return asyncio.run(setup_mod.credentials_rejected(s))
+    assert run({"legacy-key": e401, "integration": e401}) is True
+    assert run({"legacy-key": e401, "integration": timeout}) is False      # onbereikbaar telt niet
+    assert run({"legacy-key": e500}) is False
+    assert run({}) is False

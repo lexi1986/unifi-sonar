@@ -250,3 +250,23 @@ def test_refused_channel_heals_when_ap_uses_it():
     snap["devices"][0]["radios"][0]["channel"] = 116
     channels.heal_refused(db, snap)
     assert "a@5" not in channels._kv(db, channels.KV_REFUSED)
+
+
+def test_channel_auto_does_not_break_the_poll():
+    """UniFi geeft bij sommige radio's 'auto' als kanaal door (geen kanaal in radio_table_stats). Met een eerder
+    geweigerd kanaal liet dat elke meting mislukken (int('auto')); nu telt zo'n radio als 'geen kanaal bekend'."""
+    from app.unifi_client import normalize_legacy
+    raw = {"mac": "aa:00:00:00:00:0a", "type": "uap", "name": "AP", "state": 1,
+           "radio_table": [{"name": "wifi0", "radio": "ng", "channel": "auto", "ht": 20},
+                           {"name": "wifi1", "radio": "na", "channel": "auto", "ht": 80}],
+           "radio_table_stats": [{"name": "wifi0", "radio": "ng"}, {"name": "wifi1", "radio": "na", "channel": 36}]}
+    dev = next(d for d in normalize_legacy([raw], [], [])["devices"] if d["mac"] == raw["mac"])
+    assert {r["radio"]: r["channel"] for r in dev["radios"]} == {"2.4": None, "5": 36}
+    db = KV()
+    channels.remember_refused(db, raw["mac"], "2.4", 11)
+    snap = {"devices": [dev, _ap("b", ("2.4", 6, 20)), {**_ap("c", ("2.4", 1, 20)), "radios": [{"radio": "2.4", "channel": "auto", "width": 20}]}]}
+    assert channels.heal_refused(db, snap) == []
+    assert channels._kv(db, channels.KV_REFUSED) == {f"{raw['mac']}@2.4": [11]}
+    p = channels.plan({"devices": [dev, _ap("b", ("2.4", 6, 20))]}, {"neighbors": []}, KV())
+    assert [r["mac"] for r in p["bands"]["2.4"]["radios"]] == ["b"]
+    assert channels.chnum("auto") is None and channels.chnum("36") == 36 and channels.chnum(None) is None
