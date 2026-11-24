@@ -297,10 +297,20 @@ class DB:
 
     # ------------------------------------------------------------- datagebruik per dag/maand
     def store_usage(self, period: str, rows: list[dict]) -> None:
-        """Rapportregels van de controller; de lopende dag/maand wordt telkens overschreven."""
+        """Rapportregels van de controller. De lopende dag/maand groeit mee, maar een totaal wordt nooit lager:
+        begint de controller opnieuw te tellen (zoals na de overstap naar PostgreSQL in Network 11), dan blijft wat
+        Sonar al had staan. Een maand is daarna minstens de som van de dagen die Sonar van die maand heeft."""
         with self.lock, self.conn:
-            self.conn.executemany("INSERT OR REPLACE INTO usage VALUES (?,?,?,?)",
+            self.conn.executemany("INSERT INTO usage VALUES (?,?,?,?) ON CONFLICT(period, ts) DO UPDATE SET "
+                                  "rx=MAX(rx, excluded.rx), tx=MAX(tx, excluded.tx)",
                                   [(period, r["ts"], r["rx"], r["tx"]) for r in rows])
+            months = [r[0] for r in self.conn.execute("SELECT ts FROM usage WHERE period='month' ORDER BY ts")]
+            for i, start in enumerate(months):
+                end = months[i + 1] if i + 1 < len(months) else 2 ** 40
+                self.conn.execute(
+                    "UPDATE usage SET rx=MAX(rx, IFNULL((SELECT SUM(rx) FROM usage WHERE period='day' AND ts>=? AND ts<?), 0)), "
+                    "tx=MAX(tx, IFNULL((SELECT SUM(tx) FROM usage WHERE period='day' AND ts>=? AND ts<?), 0)) "
+                    "WHERE period='month' AND ts=?", (start, end, start, end, start))
 
     def usage(self, period: str, since: int) -> list[dict]:
         return [dict(r) for r in self.q("SELECT ts, rx, tx FROM usage WHERE period=? AND ts>=? ORDER BY ts", (period, since))]
@@ -320,7 +330,8 @@ class DB:
     # ------------------------------------------------------------- verbruik per apparaat
     def store_client_usage(self, period: str, rows: list[dict]) -> None:
         with self.lock, self.conn:
-            self.conn.executemany("INSERT OR REPLACE INTO client_usage VALUES (?,?,?,?,?)",
+            self.conn.executemany("INSERT INTO client_usage VALUES (?,?,?,?,?) ON CONFLICT(period, ts, mac) DO UPDATE SET "
+                                  "down=MAX(down, excluded.down), up=MAX(up, excluded.up)",   # nooit lager, zie store_usage
                                   [(period, r["ts"], r["mac"], r["down"], r["up"]) for r in rows])
 
     def client_usage_totals(self, period: str, since: int, until: int | None = None) -> dict[str, dict]:

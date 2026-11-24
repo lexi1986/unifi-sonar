@@ -2,6 +2,15 @@
 
 All notable changes to UniFi Sonar. Versions follow [semantic versioning](https://semver.org).
 
+## 1.16.0 – 2026-11-24
+
+### Added
+- **UniFi Network 11 support for usage and speed tests.** Network 11 moves its database to PostgreSQL and no longer fills the old `stat/report` reports, so internet usage, usage per device, traffic per category and the speed test history stayed empty. When those reports come back empty, Sonar now reads the new sources: the WAN total from the dashboard (per day and month), per-device traffic (per hour and day), the category of each app, and the speed test history. Network 10 and older work as before.
+- On Network 11, usage per device only counts traffic UniFi tracks per app, so it can be somewhat lower than the internet total. Speed tests show the WAN name instead of the test server, which Network 11 no longer reports.
+
+### Fixed
+- **Usage never drops when the controller starts counting again.** Network 11 does not take its statistics along to the new database, so today and this month started at zero after the update. Sonar now never lowers a stored day or month total (also per device), and a month is at least the sum of the days Sonar has for it, so your history and the running month stay intact.
+
 ## 1.15.2 – 2026-11-17
 
 ### Fixed

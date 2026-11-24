@@ -491,6 +491,87 @@ def normalize_usage(rows: list[dict]) -> list[dict]:
     return out
 
 
+def _midnight(ts: int) -> int:
+    t = time.localtime(ts)
+    return int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)))
+
+
+def _month_start(ts: int) -> int:
+    t = time.localtime(ts)
+    return int(time.mktime((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+
+
+def _hour_start(ts: int) -> int:
+    t = time.localtime(ts)
+    return int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, 0, 0, 0, 0, -1)))
+
+
+def usage_windows(period: str, now: int) -> list[tuple[int, int]]:
+    """De lopende en de vorige periode (lokale tijd), als (begin, eind). De vorige erbij zodat die na middernacht,
+    het hele uur of de maandwissel nog compleet wordt."""
+    if period == "hour":
+        cur = _hour_start(now)
+        starts = [cur, _hour_start(cur - 1), _hour_start(_hour_start(cur - 1) - 1)]
+        return [(a, b) for a, b in zip(starts, [now, cur, _hour_start(cur - 1)])]
+    if period == "day":
+        cur = _midnight(now)
+        return [(cur, now), (_midnight(cur - 1), cur)]
+    cur = _month_start(now)
+    return [(cur, now), (_month_start(cur - 1), cur)]
+
+
+def normalize_wan_activity(d: dict) -> dict | None:
+    """v2 aggregated-dashboard (widget wan_activity): het WAN-verkeer over het gevraagde venster, alle WAN-poorten
+    samen. rx = gedownload, tx = geüpload. None als UniFi over dat venster niets heeft."""
+    wa = (d or {}).get("wan_activity") or {}
+    s = (wa.get("total_activity") or {}).get("summary")
+    if not s:
+        groups = [g.get("summary") or {} for g in (wa.get("activity_by_network_group") or {}).values()]
+        if not groups:
+            return None
+        s = {"rx_bytes": sum(_num(g.get("rx_bytes"), 0) or 0 for g in groups), "tx_bytes": sum(_num(g.get("tx_bytes"), 0) or 0 for g in groups)}
+    return {"rx": round(_num(s.get("rx_bytes"), 0) or 0), "tx": round(_num(s.get("tx_bytes"), 0) or 0)}
+
+
+def normalize_speedtests_v2(rows: list[dict]) -> list[dict]:
+    """v2 speedtest (Network 11): Mbit/s en ms, zonder servernaam. Lege metingen (een WAN zonder test) vallen weg."""
+    out = []
+    for r in rows or []:
+        ts = int((_num(r.get("time")) or 0) / 1000)
+        if ts and _num(r.get("download_mbps")):
+            out.append({"ts": ts, "down": _num(r.get("download_mbps")), "up": _num(r.get("upload_mbps")),
+                        "latency": _num(r.get("latency_ms")), "server": r.get("wan_networkgroup") or ""})
+    return sorted(out, key=lambda x: x["ts"])
+
+
+def dpi_from_traffic(d: dict) -> list[dict]:
+    """v2 traffic → verkeer per apparaat per categorie, in dezelfde vorm als stat/stadpi (by_cat)."""
+    acc: dict[tuple, list[float]] = {}
+    for c in (d or {}).get("client_usage_by_app") or []:
+        mac = ((c.get("client") or {}).get("mac") or "").lower()
+        for a in c.get("usage_by_app") or []:
+            if not mac or a.get("category") is None:
+                continue
+            v = acc.setdefault((mac, a["category"]), [0.0, 0.0])
+            v[0] += _num(a.get("bytes_received"), 0) or 0
+            v[1] += _num(a.get("bytes_transmitted"), 0) or 0
+    return [{"mac": m, "cat": cat, "down": v[0], "up": v[1]} for (m, cat), v in acc.items() if v[0] or v[1]]
+
+
+def normalize_traffic(d: dict, ts: int) -> list[dict]:
+    """v2 traffic (verkeer per apparaat per app) over één venster → per apparaat down/up, zoals de oude rapporten.
+    bytes_received = naar het apparaat (download). Telt wat UniFi per app bijhoudt, met het niet-herkende verkeer erbij."""
+    out = []
+    for c in (d or {}).get("client_usage_by_app") or []:
+        mac = ((c.get("client") or {}).get("mac") or "").lower()
+        apps = c.get("usage_by_app") or []
+        down = sum(_num(a.get("bytes_received"), 0) or 0 for a in apps)
+        up = sum(_num(a.get("bytes_transmitted"), 0) or 0 for a in apps)
+        if mac and (down or up):
+            out.append({"ts": ts, "mac": mac, "down": float(down), "up": float(up)})
+    return out
+
+
 def _block_policy(f: dict) -> tuple[str, str | None]:
     """Waardoor een verbinding tegengehouden werd, in gewone woorden, plus de naam van de regel als die er is."""
     for p in f.get("policies") or []:
@@ -807,7 +888,12 @@ class UnifiClient:
                                  json={"attrs": ["xput_download", "xput_upload", "latency", "time", "rundate", "server"],
                                        "start": since_s * 1000, "end": until_s * 1000})
         r.raise_for_status()
-        return normalize_speedtests(r.json().get("data", []))
+        rows = normalize_speedtests(r.json().get("data", []))
+        if rows:
+            return rows
+        r = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/speedtest",     # Network 11
+                                params={"start": since_s * 1000, "end": until_s * 1000}, headers=self._write_headers())
+        return normalize_speedtests_v2(r.json().get("data", [])) if r.status_code == 200 else []
 
     async def usage(self, period: str, since_s: int, until_s: int) -> list[dict]:
         """Internetverbruik per dag of maand (stat/report/daily.site, monthly.site), alle WAN-poorten samen."""
@@ -818,7 +904,24 @@ class UnifiClient:
                                  json={"attrs": ["wan-rx_bytes", "wan-tx_bytes", "wan2-rx_bytes", "wan2-tx_bytes", "time"],
                                        "start": since_s * 1000, "end": until_s * 1000})
         r.raise_for_status()
-        return normalize_usage(r.json().get("data", []))
+        rows = normalize_usage(r.json().get("data", []))
+        return rows or await self._usage_v2(period, since_s, until_s)
+
+    async def _usage_v2(self, period: str, since_s: int, until_s: int) -> list[dict]:
+        """Network 11 vult stat/report niet meer (de statistieken staan sinds de overstap naar PostgreSQL ergens
+        anders). Dan het WAN-totaal uit het nieuwe dashboard, voor de lopende en de vorige dag of maand."""
+        out = []
+        for a, b in usage_windows(period, min(until_s, int(time.time()))):
+            if b <= since_s:
+                continue
+            r = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/aggregated-dashboard",
+                                    params={"widgets": "wan_activity", "start": a * 1000, "end": b * 1000}, headers=self._write_headers())
+            if r.status_code != 200:
+                break
+            tot = normalize_wan_activity(r.json())
+            if tot:
+                out.append({"ts": a, **tot})
+        return sorted(out, key=lambda x: x["ts"])
 
     # ----------------------------------------------------------- inzichten (alleen lezen)
     async def insights(self, now: int) -> dict | None:
@@ -851,7 +954,21 @@ class UnifiClient:
                                  headers=self._write_headers(),
                                  json={"attrs": ["rx_bytes", "tx_bytes", "time", "user"], "start": since_s * 1000, "end": until_s * 1000})
         r.raise_for_status()
-        return normalize_client_usage(r.json().get("data", []))
+        rows = normalize_client_usage(r.json().get("data", []))
+        return rows or await self._client_usage_v2(period, since_s, until_s)
+
+    async def _client_usage_v2(self, period: str, since_s: int, until_s: int) -> list[dict]:
+        """Network 11: verkeer per apparaat uit v2 traffic, per venster (de lopende en vorige uren of dagen)."""
+        out: list[dict] = []
+        for a, b in usage_windows(period, min(until_s, int(time.time()))):
+            if b <= since_s:
+                continue
+            r = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/traffic",
+                                    params={"start": a * 1000, "end": b * 1000, "includeUnidentified": "true"}, headers=self._write_headers())
+            if r.status_code != 200:
+                break
+            out += normalize_traffic(r.json(), a)
+        return out
 
     # ------------------------------------------------------------------ backups
     def _legacy_get_headers(self) -> dict:
@@ -884,7 +1001,14 @@ class UnifiClient:
         r = await self.http.post(f"/proxy/network/api/s/{self.s.site}/stat/stadpi", headers=self._write_headers(),
                                  json={"type": "by_cat"})
         r.raise_for_status()
-        return normalize_dpi(r.json().get("data", []))
+        rows = normalize_dpi(r.json().get("data", []))
+        if rows:
+            return rows
+        now = int(time.time())     # Network 11: stat/stadpi blijft leeg; de categorieën staan per app in v2 traffic
+        r = await self.http.get(f"/proxy/network/v2/api/site/{self.s.site}/traffic",
+                                params={"start": (now - 30 * 86400) * 1000, "end": now * 1000, "includeUnidentified": "true"},
+                                headers=self._write_headers())
+        return dpi_from_traffic(r.json()) if r.status_code == 200 else []
 
     async def fetch_ips(self, since_ms: int, until_ms: int) -> list[dict] | None:
         """Door de IPS geblokkeerde flows. None = niet beschikbaar met deze bron."""
